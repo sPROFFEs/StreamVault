@@ -13,7 +13,7 @@ def test_keyboard_login_and_session(baseline_page):
     page.get_by_label("Username").focus()
     page.keyboard.type("baseline-viewer")
     page.keyboard.press("Tab")
-    expect(page.get_by_label("Password")).to_be_focused()
+    expect(page.get_by_label("Password", exact=True)).to_be_focused()
     page.keyboard.type("Baseline123!")
     page.keyboard.press("Enter")
     expect(page).to_have_url(f"{baseline_page.base_url}/browse?type=movie")
