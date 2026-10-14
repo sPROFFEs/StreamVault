@@ -105,3 +105,11 @@ def test_packaging_rejects_apks_containing_private_material(tmp_path, private_en
         archive.writestr(private_entry, b"fixture private material")
     with pytest.raises(ValueError, match="private"):
         release_tools().validate_apk(apk)
+
+
+@pytest.mark.parametrize("filename", ("build.yml", "release.yml"))
+def test_sdk_setup_does_not_request_the_removed_legacy_tools_package(filename):
+    workflow = (ROOT / ".github/workflows" / filename).read_text()
+    setup = workflow.split("- uses: android-actions/setup-android@", 1)[1].split("- ", 1)[0]
+    assert "packages: ''" in setup
+    assert "sdkmanager 'platforms;android-35' 'build-tools;35.0.0' 'platform-tools'" in workflow

@@ -94,6 +94,9 @@ jobs:
       - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
         with:
           cmdline-tools-version: '11076708'
+          # The default requests the removed legacy "tools" package. Install
+          # only the explicitly pinned platform/build tools in the next step.
+          packages: ''
       - name: Install the pinned Android platform
         run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0' 'platform-tools'
       - name: Test, lint and build both APK variants
