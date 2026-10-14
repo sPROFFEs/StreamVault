@@ -1,0 +1,26 @@
+{
+    "name": "example_workflow",
+    "base_url": "https://archive.org",
+    "version": "1.0",
+    "recorded_at": "2026-01-28T18:00:00",
+    "description": "Ejemplo de workflow para archive.org (sitio legal de prueba)",
+    "actions": [
+        {
+            "type": "navigate",
+            "url": "https://archive.org/details/movies"
+        },
+        {
+            "type": "wait",
+            "selector": ".results",
+            "timeout": 5000
+        }
+    ],
+    "captured_requests": [],
+    "extraction_points": [
+        {
+            "name": "movie_titles",
+            "type": "list",
+            "selector": ".item-ttl"
+        }
+    ]
+}

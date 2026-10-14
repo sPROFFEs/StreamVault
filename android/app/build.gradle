@@ -1,0 +1,76 @@
+plugins {
+    id 'com.android.application'
+}
+
+def serverUrl = providers.gradleProperty('STREAMVAULT_SERVER_URL').getOrElse('')
+def releaseVersion = new groovy.json.JsonSlurper().parse(rootProject.file('../vault/core/version.json'))
+def signingNames = ['STREAMVAULT_KEYSTORE', 'STREAMVAULT_STORE_PASSWORD',
+                    'STREAMVAULT_KEY_ALIAS', 'STREAMVAULT_KEY_PASSWORD']
+def signingValues = signingNames.collect { System.getenv(it) }
+if (signingValues.any { it } && !signingValues.every { it }) {
+    throw new GradleException('Set all four STREAMVAULT signing environment variables, or none.')
+}
+
+android {
+    namespace 'com.streamvault.app'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.streamvault.app'
+        minSdk 26
+        targetSdk 35
+        versionCode releaseVersion.android_version_code
+        versionName releaseVersion.version
+        buildConfigField 'String', 'SERVER_URL', groovy.json.JsonOutput.toJson(serverUrl)
+    }
+    buildFeatures { buildConfig true }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    signingConfigs {
+        if (signingValues.every { it }) {
+            release {
+                storeFile file(signingValues[0])
+                storePassword signingValues[1]
+                keyAlias signingValues[2]
+                keyPassword signingValues[3]
+            }
+        }
+    }
+    buildTypes {
+        debug {
+            applicationIdSuffix '.debug'
+            versionNameSuffix '-debug'
+        }
+        release {
+            minifyEnabled true
+            shrinkResources true
+            // APKs must not embed metadata from a developer's private checkout.
+            vcsInfo.include = false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt')
+            if (signingValues.every { it }) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+    lint {
+        abortOnError true
+        warningsAsErrors true
+    }
+}
+
+tasks.register('validateReleaseServer') {
+    doLast {
+        if (serverUrl && !serverUrl.startsWith('https://')) {
+            throw new GradleException('Release server URLs must use HTTPS; omit the URL for on-device setup.')
+        }
+    }
+}
+tasks.configureEach {
+    if (name == 'preReleaseBuild') dependsOn 'validateReleaseServer'
+}
+
+dependencies {
+    testImplementation 'junit:junit:4.13.2'
+}

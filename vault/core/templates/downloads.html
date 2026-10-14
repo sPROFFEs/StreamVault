@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+{% set lang = request.cookies.get('lang', 'en') %}
+<html lang="{{ lang }}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ "Downloads" if lang == "en" else "Descargas" }} · StreamVault</title>
+    {% include "_metadata.html" %}
+    <link rel="stylesheet" href="/assets/css/app.css?v=20261008-1">
+    <link rel="stylesheet" href="/assets/css/ui-extras.css?v=20261008-1">
+</head>
+<body class="app-shell">
+    {% set active = 'downloads' %}
+    {% include "_header.html" %}
+
+    <main class="page downloads-page">
+
+        <!-- Storage bar -->
+        <section class="downloads-overview">
+            <div>
+                <p class="downloads-overview__eyebrow">STREAMVAULT</p>
+                <h1>{{ "Downloads" if lang == "en" else "Descargas" }}</h1>
+                <p id="storage-label">{{ "Loading storage info…" if lang == "en" else "Cargando almacenamiento…" }}</p>
+            </div>
+            <button id="refresh-btn" class="button button--ghost" type="button">{{ "Refresh" if lang == "en" else "Actualizar" }}</button>
+            <div class="downloads-storage">
+                <div class="progress-bar-track">
+                    <div id="storage-bar" class="progress-bar-fill" style="width:0%"></div>
+                </div>
+            </div>
+        </section>
+
+        <section class="downloads-section">
+            <div class="downloads-section__header">
+                <div>
+                    <h2>{{ "Active downloads" if lang == "en" else "Descargas activas" }}</h2>
+                    <p>{{ "Live speed, progress and estimated completion." if lang == "en" else "Velocidad, progreso y finalización estimada." }}</p>
+                </div>
+                <span class="badge badge--neutral" id="active-count">0</span>
+            </div>
+            <div id="active-list" class="download-list"></div>
+            <div class="empty-state empty-state--rich" id="active-empty">
+                <div class="empty-state__icon empty-state__icon--text">0</div>
+                <strong>{{ "No active downloads" if lang == "en" else "No hay descargas activas" }}</strong>
+                <p>{{ "Choose a movie or episode, then select one download source." if lang == "en" else "Elige una película o episodio y después una fuente de descarga." }}</p>
+                <a class="button button--primary" href="/browse">{{ "Browse catalog" if lang == "en" else "Explorar catálogo" }}</a>
+            </div>
+        </section>
+
+        <section class="downloads-section">
+            <div class="downloads-section__header">
+                <div>
+                    <h2>{{ "On this server" if lang == "en" else "En este servidor" }}</h2>
+                    <p>{{ "Completed movies and episodes ready to play." if lang == "en" else "Películas y episodios terminados listos para reproducir." }}</p>
+                </div>
+                <span class="badge badge--neutral" id="library-count">0</span>
+            </div>
+            <div class="library-toolbar" role="search" aria-label="{{ 'Search downloaded content' if lang == 'en' else 'Buscar contenido descargado' }}">
+                <label class="library-search">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+                    <span class="sr-only">{{ "Search downloads" if lang == "en" else "Buscar descargas" }}</span>
+                    <input id="library-search" class="search-input" type="search" autocomplete="off" placeholder="{{ 'Search by title or filename…' if lang == 'en' else 'Buscar por título o archivo…' }}">
+                </label>
+                <label class="library-filter">
+                    <span>{{ "Content" if lang == "en" else "Contenido" }}</span>
+                    <select id="library-type" class="filter-select">
+                        <option value="all">{{ "All content" if lang == "en" else "Todo el contenido" }}</option>
+                        <option value="movie">{{ "Movies" if lang == "en" else "Películas" }}</option>
+                        <option value="series">{{ "Series" if lang == "en" else "Series" }}</option>
+                    </select>
+                </label>
+                <label class="library-filter">
+                    <span>{{ "Sort by" if lang == "en" else "Ordenar por" }}</span>
+                    <select id="library-sort" class="filter-select">
+                        <option value="recent">{{ "Recently downloaded" if lang == "en" else "Más recientes" }}</option>
+                        <option value="title">{{ "Title · A–Z" if lang == "en" else "Título · A–Z" }}</option>
+                        <option value="size">{{ "Largest first" if lang == "en" else "Mayor tamaño" }}</option>
+                    </select>
+                </label>
+                <button id="library-reset" class="button button--ghost" type="button" disabled>{{ "Clear filters" if lang == "en" else "Limpiar filtros" }}</button>
+            </div>
+            <p id="library-summary" class="library-summary" role="status" aria-live="polite"></p>
+            <div id="library-list" class="local-library"></div>
+            <div class="empty-state empty-state--rich" id="library-empty">
+                <div class="empty-state__icon empty-state__icon--text">0</div>
+                <strong id="library-empty-title">{{ "Library is empty" if lang == "en" else "La biblioteca está vacía" }}</strong>
+                <p id="library-empty-description">{{ "Completed downloads will be grouped here as movies and series." if lang == "en" else "Las descargas terminadas aparecerán aquí agrupadas como películas y series." }}</p>
+            </div>
+            <nav class="downloads-section__header" aria-label="{{ 'Library pages' if lang == 'en' else 'Páginas de biblioteca' }}">
+                <button id="library-previous" class="button" disabled>{{ "Previous" if lang == "en" else "Anterior" }}</button>
+                <span id="library-page">1 / 1</span>
+                <button id="library-next" class="button" disabled>{{ "Next" if lang == "en" else "Siguiente" }}</button>
+            </nav>
+        </section>
+
+    </main>
+
+    <!-- Delete confirm toast -->
+    <div id="confirm-overlay" class="modal-overlay" style="display:none;">
+        <div class="modal-panel" style="max-width:400px;">
+            <div style="padding:1.5rem;">
+                <p id="confirm-message" style="margin-bottom:1.25rem;"></p>
+                <div style="display:flex;gap:.75rem;justify-content:flex-end;">
+                    <button id="confirm-cancel" class="button" type="button">{{ "Cancel" if lang == "en" else "Cancelar" }}</button>
+                    <button id="confirm-ok" class="button button--danger" type="button">{{ "Delete" if lang == "en" else "Eliminar" }}</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Local player overlay -->
+    <div id="local-player-overlay" class="modal-overlay" style="display:none;">
+        <div class="modal-panel modal-panel--wide">
+            <div class="modal__header">
+                <h2 id="local-player-title">{{ "Local playback" if lang == "en" else "Reproducción local" }}</h2>
+                <div class="local-player__controls">
+                    <label id="local-player-audio-wrapper" class="local-player__audio" hidden>
+                        <span>{{ "Audio" if lang == "en" else "Audio" }}</span>
+                        <select id="local-player-audio" class="filter-select"></select>
+                    </label>
+                    <button id="local-player-close" class="button" type="button">{{ "Close" if lang == "en" else "Cerrar" }}</button>
+                </div>
+            </div>
+            <video id="local-player" class="local-player" controls playsinline></video>
+        </div>
+    </div>
+
+    <!-- File preview overlay -->
+    <div id="preview-overlay" class="preview-overlay">
+        <div class="preview-panel">
+            <div class="preview-panel__header">
+                <span id="preview-title" class="preview-panel__title"></span>
+                <button id="preview-close" class="button" type="button">{{ "Close" if lang == "en" else "Cerrar" }}</button>
+            </div>
+            <div id="preview-body" class="preview-panel__body"></div>
+        </div>
+    </div>
+
+    <script>window.APP_LANG = "{{ lang }}"; window.IS_ADMIN = {{ 'true' if is_admin else 'false' }};</script>
+    <script defer src="/assets/js/local-player.js?v=20260919-2"></script>
+    <script defer src="/assets/js/download-manager.js?v=20261003-1"></script>
+</body>
+</html>

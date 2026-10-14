@@ -1,0 +1,25 @@
+<div id="system-update" class="system-update" aria-busy="false">
+    <div class="system-update__heading">
+        <strong>{{ "System updates" if lang == "en" else "Actualizaciones del sistema" }}</strong>
+        <span id="update-badge" class="badge badge--neutral">{{ "Not checked" if lang == "en" else "Sin comprobar" }}</span>
+    </div>
+    <p class="muted">{{ "Install from the configured branch or stable release, back up databases/configuration, build images and recreate Docker Compose services. Service may be interrupted; user data is kept." if lang == "en" else "Instala la rama o release estable configurada, guarda una copia de bases de datos/configuración, construye imágenes y recrea Docker Compose. El servicio puede interrumpirse; los datos se conservan." }}</p>
+    <p class="muted">{{ "This updates the hosted web application and does not install a new Android APK. Install Android app updates separately; reload the app after the server is ready." if lang == "en" else "Esto actualiza la aplicación web del servidor y no instala un nuevo APK de Android. Instala las actualizaciones de Android por separado y recarga la aplicación cuando el servidor esté listo." }}</p>
+    <p id="update-result" role="status" aria-live="polite">{{ "Check for updates to see the configured repository and version." if lang == "en" else "Comprueba las actualizaciones para ver el repositorio y la versión configurados." }}</p>
+    <p id="update-time" class="muted" hidden></p>
+    <p id="update-release" hidden></p>
+    <pre id="update-notes" class="release-notes" hidden></pre>
+    <dl id="update-version" class="system-update__version" hidden>
+        <dt>{{ "Repository" if lang == "en" else "Repositorio" }}</dt><dd id="update-repository"></dd>
+        <dt>{{ "Remote / branch" if lang == "en" else "Remoto / rama" }}</dt><dd id="update-branch"></dd>
+        <dt>{{ "Checkout commit" if lang == "en" else "Commit del código local" }}</dt><dd><code id="update-local"></code></dd>
+        <dt>{{ "Branch commit" if lang == "en" else "Commit de la rama" }}</dt><dd><code id="update-remote"></code></dd>
+    </dl>
+    <div class="inline-actions">
+        <button class="button button--compact" type="button" id="btn-update-check">{{ "Check for updates" if lang == "en" else "Comprobar actualizaciones" }}</button>
+        <button class="button button--compact" type="button" id="btn-update-pull" disabled>{{ "Install update" if lang == "en" else "Instalar actualización" }}</button>
+        <button class="button button--compact button--ghost" type="button" id="btn-update-restart">{{ "Restart core" if lang == "en" else "Reiniciar core" }}</button>
+        <button class="button button--compact button--ghost" type="button" id="btn-update-recreate">{{ "Rebuild deployment" if lang == "en" else "Reconstruir despliegue" }}</button>
+    </div>
+    <noscript><p>{{ "Enable JavaScript to check and install updates." if lang == "en" else "Activa JavaScript para comprobar e instalar actualizaciones." }}</p></noscript>
+</div>

@@ -1,0 +1,50 @@
+/* Account and preference controls; navigation offsets belong to shell.css. */
+.settings-page .main { max-width: 1440px; margin-inline: auto; }
+.settings-hero { padding: 32px 48px 0; }
+.settings-hero h1 { margin: 0 0 8px; font-family: var(--font-display); font-size: clamp(32px, 4vw, 48px); }
+.settings-hero p { margin: 0; color: var(--text2); line-height: 1.6; }
+.settings-page .settings-layout { grid-template-columns: 200px minmax(0, 1fr); }
+.settings-page .settings-layout > div { min-width: 0; }
+.settings-page .settings-nav { top: calc(var(--nav-height) + 24px); }
+.settings-page .settings-nav a { min-height: 44px; display: flex; align-items: center; text-decoration: none; }
+.settings-page .settings-search { position: static; }
+.settings-save-feedback { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 16px; margin-bottom: 24px; background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius); font-size: 14px; color: var(--text2); }
+.settings-save-feedback.is-error { border-color: var(--danger); }
+.settings-page .settings-section { padding: 24px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); scroll-margin-top: calc(var(--nav-height) + 24px); }
+.settings-page .setting-row__label { font-weight: 600; font-size: 15px; }
+.settings-page .setting-row__hint { line-height: 1.65; font-size: 14px; max-width: 54ch; }
+.settings-page .setting-row > div:first-child { min-width: 0; }
+.settings-page .setting-row__control { min-width: 0; max-width: 55%; flex-wrap: wrap; justify-content: flex-end; }
+.settings-page .setting-row__control .input { min-width: 0; width: 100%; max-width: 280px; }
+.settings-page .setting-key-status { flex-basis: 100%; text-align: right; overflow-wrap: anywhere; line-height: 1.5; }
+.settings-page .password-fields { flex-direction: column; align-items: stretch; gap: 8px; width: 280px; }
+.settings-page .password-fields label { font-size: 14px; }
+.settings-page .accent-picker { flex-wrap: wrap; gap: 8px; }
+.settings-page .accent-swatch { min-width: 44px; min-height: 44px; border: 3px solid transparent; }
+.settings-page .accent-swatch.active { border-color: var(--text); box-shadow: 0 0 0 2px var(--border); }
+.settings-page .switch { min-width: 44px; min-height: 44px; }
+.settings-page .switch__slider { inset: 10px 0; }
+.settings-page .switch:has(input:focus-visible) { outline: 3px solid var(--focus); outline-offset: 4px; border-radius: var(--radius); }
+.settings-page input[type="checkbox"]:not(.switch input) { min-width: 24px; min-height: 24px; accent-color: var(--accent); }
+.settings-page :is(input, select)[aria-invalid="true"] { border-color: var(--danger); }
+@media (max-width: 1050px) {
+    .settings-page .settings-layout { grid-template-columns: minmax(0, 1fr); gap: 24px; padding: 24px; }
+    .settings-hero { padding-inline: 24px; }
+    .settings-page .settings-nav { position: static; flex-direction: row; flex-wrap: wrap; gap: 4px; }
+}
+@media (max-width: 600px) {
+    .settings-page .settings-layout { padding: 16px; }
+    .settings-hero { padding-inline: 16px; }
+    .settings-page .settings-section { padding: 16px; }
+    .settings-page .setting-row { flex-direction: column; align-items: stretch; gap: 12px; padding-block: 20px; }
+    .settings-page .setting-row__control { max-width: 100%; justify-content: flex-start; width: 100%; }
+    .settings-page .setting-row__control .input { max-width: none; }
+    .settings-page .setting-key-status { text-align: left; }
+}
+@media (min-width: 1800px) {
+    .settings-page .main { max-width: 1640px; }
+    .settings-page .settings-layout { grid-template-columns: 260px minmax(0, 1fr); }
+    .settings-page :is(.setting-row__label, .setting-row__hint, .settings-nav a, .password-fields label, .settings-save-feedback, .input, .button, .btn, .settings-search input, .setting-key-status) { font-size: 18px; }
+    .settings-page :is(.settings-nav a, .input, .button, .btn, .accent-swatch) { min-height: 56px; }
+    .settings-page .accent-swatch { min-width: 56px; }
+}

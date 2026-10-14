@@ -1,0 +1,55 @@
+{% macro txt(en, es) %}{{ en if lang == 'en' else es }}{% endmacro %}
+<section class="panel admin-tab-panel" id="admin-panel-system" role="tabpanel" aria-labelledby="admin-tab-system" data-admin-panel="system" {% if selected_tab != 'system' %}hidden{% endif %}>
+    <div class="panel__body stack">
+        <div class="operations-heading"><h2>{{ txt('System monitor', 'Monitor del sistema') }}</h2><button type="button" class="button button--compact button--ghost" id="system-refresh">{{ txt('Refresh', 'Actualizar') }}</button></div>
+        <p class="muted">{{ txt('Host-visible resources. Sampling pauses when hidden. Updates are never installed automatically.', 'Recursos visibles del host. El muestreo se pausa al ocultar esta pestaña. Las actualizaciones nunca se instalan automáticamente.') }}</p>
+        <p id="system-feedback" role="status" aria-live="polite"></p>
+        <div class="operations-metrics">
+            <div class="operations-metric"><span>CPU</span><strong id="system-cpu">—</strong></div>
+            <div class="operations-metric"><span>RAM</span><strong id="system-memory">—</strong></div>
+            <div class="operations-metric"><span>{{ txt('Storage', 'Disco') }}</span><strong id="system-disk">—</strong></div>
+            <div class="operations-metric"><span>{{ txt('Core uptime', 'Uptime del core') }}</span><strong id="system-uptime">—</strong></div>
+        </div>
+        <h3>{{ txt('Deployment services', 'Servicios del despliegue') }}</h3><div id="system-services" class="operations-list"></div>
+        <a class="button button--compact" href="/admin/?tab=overview">{{ txt('Configure and install updates', 'Configurar e instalar actualizaciones') }}</a>
+        <h3>{{ txt('Operation history', 'Historial de operaciones') }}</h3><div id="system-history" class="operations-list"></div>
+        <div class="operations-heading"><h3>{{ txt('Database and configuration backups', 'Copias de bases de datos y configuración') }}</h3><button class="button button--compact" type="button" id="system-backup">{{ txt('Create backup', 'Crear copia') }}</button></div>
+        <p class="muted">{{ txt('Backups contain credentials: store privately. Videos are excluded. Restore is manual; this panel never overwrites databases.', 'Las copias contienen credenciales: guárdalas de forma privada. No incluyen vídeos. La restauración es manual; este panel no sobrescribe bases de datos.') }}</p>
+        <div id="system-backups" class="operations-list"></div>
+    </div>
+</section>
+<section class="panel admin-tab-panel" id="admin-panel-federation" role="tabpanel" aria-labelledby="admin-tab-federation" data-admin-panel="federation" {% if selected_tab != 'federation' %}hidden{% endif %}>
+    <div class="panel__body stack">
+        <h2>{{ txt('Federation nodes', 'Nodos federados') }}</h2>
+        <p class="muted">{{ txt('Connect trusted StreamVault nodes. Only completed downloads are shared; remote media is streamed, not copied. Configure each direction separately.', 'Conecta nodos StreamVault de confianza. Solo se comparten descargas completas; los vídeos remotos se reproducen sin copiarlos. Configura cada dirección por separado.') }}</p>
+        <p id="federation-feedback" role="status" aria-live="polite"></p>
+        <form id="federation-config" class="operations-form">
+            <label>{{ txt('Node name', 'Nombre del nodo') }}<input class="filter-input" name="node_name" maxlength="80" required></label>
+            <label class="operations-check"><input type="checkbox" name="enabled">{{ txt('Allow authorized nodes to read shared data', 'Permitir acceso a los nodos autorizados') }}</label>
+            <button type="submit" class="button button--compact">{{ txt('Save publication settings', 'Guardar publicación') }}</button>
+        </form>
+        <h3>{{ txt('Nodes we consume', 'Nodos que consultamos') }}</h3>
+        <form id="federation-peer" class="operations-form">
+            <label>{{ txt('Name', 'Nombre') }}<input class="filter-input" name="name" maxlength="80" required></label>
+            <label>{{ txt('Node URL', 'URL del nodo') }}<input class="filter-input" name="base_url" type="url" placeholder="https://node.example.com" required></label>
+            <label>{{ txt('Credential issued by that node', 'Credencial emitida por ese nodo') }}<input class="filter-input" name="token" type="password" autocomplete="off" minlength="32" required></label>
+            <label class="operations-check"><input name="allow_private" type="checkbox">{{ txt('Explicitly allow a private LAN address', 'Permitir explícitamente una dirección de la LAN') }}</label>
+            <button type="submit" class="button button--compact">{{ txt('Add node', 'Añadir nodo') }}</button>
+        </form>
+        <div id="federation-peers" class="operations-list"></div>
+        <h3>{{ txt('Credentials for nodes that consume us', 'Credenciales para nodos que nos consultan') }}</h3>
+        <form id="federation-grant" class="operations-form">
+            <label>{{ txt('Authorized node name', 'Nombre del nodo autorizado') }}<input class="filter-input" name="name" maxlength="80" required></label>
+            <label class="operations-check"><input type="checkbox" name="share_media" checked>{{ txt('Share completed movies and episodes', 'Compartir películas y episodios completos') }}</label>
+            <label class="operations-check"><input type="checkbox" name="share_profiles">{{ txt('Share profiles that opted into federation', 'Compartir perfiles que han elegido federarse') }}</label>
+            <button type="submit" class="button button--compact">{{ txt('Issue credential', 'Emitir credencial') }}</button>
+        </form>
+        <div id="federation-issued" class="operations-secret" hidden>
+            <p>{{ txt('Copy this credential now: it will not be shown again. Share it privately with the other administrator.', 'Copia esta credencial ahora: no volverá a mostrarse. Compártela de forma privada con el otro administrador.') }}</p>
+            <label>{{ txt('New credential', 'Nueva credencial') }}<input class="filter-input" id="federation-token" readonly autocomplete="off"></label>
+            <button class="button button--compact button--ghost" type="button" id="federation-token-hide">{{ txt('Hide credential', 'Ocultar credencial') }}</button>
+        </div>
+        <div id="federation-grants" class="operations-list"></div>
+        <a href="/community">{{ txt('Community profiles', 'Perfiles de la comunidad') }}</a>
+    </div>
+</section>

@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+{% set lang = request.cookies.get('lang', 'en') %}
+<html lang="{{ lang }}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>StreamVault</title>
+    {% include "_metadata.html" %}
+    <link rel="stylesheet" href="/assets/css/app.css?v=20261008-1">
+    <link rel="stylesheet" href="/assets/css/ui-extras.css?v=20261008-1">
+    <script defer src="/assets/js/components/media-card.js?v=20261012-1"></script>
+    <link rel="stylesheet" href="/assets/css/discovery.css?v=20261012-1">
+</head>
+<body class="app-shell">
+    {% set active = 'portal' %}
+    {% include "_header.html" %}
+
+    <main class="main home-main">
+        <div id="home-host">
+            <div class="loader" role="status" aria-label="{{ 'Loading recommendations' if lang == 'en' else 'Cargando recomendaciones' }}"><div class="spinner" aria-hidden="true"></div></div>
+        </div>
+    </main>
+
+    <script>window.APP_LANG = "{{ lang }}";</script>
+    <script defer src="/assets/js/portal.js?v=20261012-1"></script>
+</body>
+</html>

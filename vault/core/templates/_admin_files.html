@@ -1,0 +1,85 @@
+<section class="admin-tab-panel" id="admin-panel-files" role="tabpanel" aria-labelledby="admin-tab-files" data-admin-panel="files" {% if selected_tab != 'files' %}hidden{% endif %}>
+    <div class="admin-section-heading">
+        <div>
+            <h2 class="panel__title" id="downloaded-content-title">{{ 'File manager' if lang == 'en' else 'Explorador de archivos' }}</h2>
+            <p class="panel__subtle">{{ 'Browse and manage the files stored on your server.' if lang == 'en' else 'Explora y gestiona los archivos guardados en tu servidor.' }}</p>
+        </div>
+        <div class="admin-section-heading__actions">
+            <button class="button button--ghost" type="button" id="fm-cleaner">{{ 'Clean storage' if lang == 'en' else 'Limpiar almacenamiento' }} <span id="fm-cleaner-count" class="admin-cleaner-count" hidden></span></button>
+            <a class="button" href="/downloads">{{ 'View downloads' if lang == 'en' else 'Ver descargas' }} ↗</a>
+        </div>
+    </div>
+    <div class="admin-explorer">
+        <aside class="admin-explorer__sidebar" aria-label="{{ 'File locations' if lang == 'en' else 'Ubicaciones' }}">
+            <p class="admin-explorer__label">{{ 'STORAGE' if lang == 'en' else 'ALMACENAMIENTO' }}</p>
+            <button class="admin-explorer__location" id="fm-root" type="button">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 14h18M7 17h.01M11 17h.01"/></svg>
+                {{ 'Downloads' if lang == 'en' else 'Descargas' }}
+            </button>
+            <div class="admin-explorer__storage">
+                <span>{{ stats.download_usage_gb }} / {{ stats.download_quota_gb }} GB</span>
+                <div class="meter"><span style="width: {{ stats.download_usage_percent }}%"></span></div>
+                <small>{{ 'Shared download space' if lang == 'en' else 'Espacio compartido de descargas' }}</small>
+            </div>
+            <p class="admin-explorer__hint">{{ 'Open a folder to see its contents. Search includes its subfolders.' if lang == 'en' else 'Abre una carpeta para ver su contenido. La búsqueda incluye sus subcarpetas.' }}</p>
+        </aside>
+        <div class="admin-explorer__main">
+            <div class="admin-explorer__pathbar">
+                <button class="button button--compact" type="button" id="fm-up" disabled aria-label="{{ 'Parent folder' if lang == 'en' else 'Carpeta superior' }}" title="{{ 'Parent folder' if lang == 'en' else 'Carpeta superior' }}">↑</button>
+                <nav id="fm-breadcrumbs" aria-label="{{ 'Current location' if lang == 'en' else 'Ubicación actual' }}"></nav>
+                <button class="button button--compact" type="button" id="fm-refresh" aria-label="{{ 'Refresh files' if lang == 'en' else 'Actualizar archivos' }}" title="{{ 'Refresh files' if lang == 'en' else 'Actualizar archivos' }}">↻</button>
+            </div>
+            <form id="fm-form" class="admin-explorer__toolbar">
+                <label class="admin-explorer__search"><span class="sr-only">{{ 'Search in this folder' if lang == 'en' else 'Buscar en esta carpeta' }}</span><input id="fm-search" class="filter-input" type="search" placeholder="{{ 'Search in this folder…' if lang == 'en' else 'Buscar en esta carpeta…' }}"></label>
+                <select id="fm-kind" class="filter-input" aria-label="{{ 'File type' if lang == 'en' else 'Tipo de archivo' }}">
+                    {% for value, en, es in [('all', 'All types', 'Todos los tipos'), ('video', 'Videos', 'Vídeos'), ('subtitle', 'Subtitles', 'Subtítulos'), ('metadata', 'Images & metadata', 'Imágenes y metadatos'), ('other', 'Other', 'Otros')] %}
+                    <option value="{{ value }}">{{ en if lang == 'en' else es }}</option>
+                    {% endfor %}
+                </select>
+                <button class="button" type="submit">{{ 'Search' if lang == 'en' else 'Buscar' }}</button>
+            </form>
+            <div class="admin-explorer__options">
+                <label class="admin-explorer__select"><input type="checkbox" id="fm-select-all" aria-label="{{ 'Select files on this page' if lang == 'en' else 'Seleccionar archivos de esta página' }}"><span id="fm-selection">{{ 'Select files' if lang == 'en' else 'Seleccionar archivos' }}</span></label>
+                <button id="fm-delete-selected" class="button button--danger button--compact" type="button" hidden>{{ 'Delete selected' if lang == 'en' else 'Eliminar selección' }}</button>
+                <button id="fm-clear" class="button button--ghost button--compact" type="button" hidden>{{ 'Clear filters' if lang == 'en' else 'Limpiar filtros' }}</button>
+                <label class="admin-explorer__sort"><span class="sr-only">{{ 'Sort files' if lang == 'en' else 'Ordenar archivos' }}</span><select id="fm-sort" class="filter-input">
+                    {% for value, en, es in [('name:asc', 'Name A–Z', 'Nombre A–Z'), ('name:desc', 'Name Z–A', 'Nombre Z–A'), ('modified:desc', 'Newest first', 'Más recientes'), ('modified:asc', 'Oldest first', 'Más antiguos'), ('size:desc', 'Largest first', 'Mayor tamaño'), ('size:asc', 'Smallest first', 'Menor tamaño')] %}
+                    <option value="{{ value }}">{{ en if lang == 'en' else es }}</option>
+                    {% endfor %}
+                </select></label>
+                <div class="admin-explorer__views" role="group" aria-label="{{ 'File view' if lang == 'en' else 'Vista de archivos' }}">
+                    <button type="button" data-fm-view="list" aria-pressed="true" title="{{ 'List' if lang == 'en' else 'Lista' }}" aria-label="{{ 'List' if lang == 'en' else 'Lista' }}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13M3 6h1M3 12h1M3 18h1"/></svg></button>
+                    <button type="button" data-fm-view="grid" aria-pressed="false" title="{{ 'Grid' if lang == 'en' else 'Cuadrícula' }}" aria-label="{{ 'Grid' if lang == 'en' else 'Cuadrícula' }}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></button>
+                </div>
+            </div>
+            <div id="fm-error" class="message message--error" role="alert" hidden></div>
+            <div id="fm-columns" class="admin-explorer__columns" aria-hidden="true"><span></span><span>{{ 'Name' if lang == 'en' else 'Nombre' }}</span><span>{{ 'Size' if lang == 'en' else 'Tamaño' }}</span><span>{{ 'Modified' if lang == 'en' else 'Modificado' }}</span><span>{{ 'Actions' if lang == 'en' else 'Acciones' }}</span></div>
+            <div id="fm-list" class="admin-explorer__list" data-view="list" aria-busy="false"></div>
+            <footer class="admin-explorer__footer">
+                <span id="fm-summary" role="status" aria-live="polite"></span>
+                <nav aria-label="{{ 'File pages' if lang == 'en' else 'Páginas de archivos' }}"><button id="fm-previous" class="button button--compact" type="button" disabled>← {{ 'Previous' if lang == 'en' else 'Anterior' }}</button><span id="fm-page">1 / 1</span><button id="fm-next" class="button button--compact" type="button" disabled>{{ 'Next' if lang == 'en' else 'Siguiente' }} →</button></nav>
+            </footer>
+        </div>
+    </div>
+</section>
+
+<div id="fm-cleaner-overlay" class="preview-overlay" role="dialog" aria-modal="true" aria-labelledby="fm-cleaner-title" hidden>
+    <div class="preview-panel admin-cleaner-panel">
+        <div class="preview-panel__header">
+            <div>
+                <h2 id="fm-cleaner-title" class="preview-panel__title">{{ 'Storage cleaner' if lang == 'en' else 'Limpiador de almacenamiento' }}</h2>
+                <p class="panel__subtle">{{ 'Only abandoned downloader artifacts and empty folders are offered.' if lang == 'en' else 'Solo se ofrecen residuos de descargas abandonadas y carpetas vacías.' }}</p>
+            </div>
+            <button class="button button--compact" type="button" id="fm-cleaner-close" aria-label="{{ 'Close cleaner' if lang == 'en' else 'Cerrar limpiador' }}">×</button>
+        </div>
+        <div id="fm-cleaner-summary" class="admin-cleaner-summary" role="status" aria-live="polite"></div>
+        <div id="fm-cleaner-list" class="admin-cleaner-list" aria-busy="false"></div>
+        <div class="admin-cleaner-footer">
+            <label class="admin-explorer__select"><input type="checkbox" id="fm-cleaner-select-all"><span>{{ 'Select all' if lang == 'en' else 'Seleccionar todo' }}</span></label>
+            <div>
+                <button class="button button--ghost" type="button" id="fm-cleaner-cancel">{{ 'Cancel' if lang == 'en' else 'Cancelar' }}</button>
+                <button class="button button--danger" type="button" id="fm-cleaner-run" disabled>{{ 'Remove selected' if lang == 'en' else 'Eliminar seleccionados' }}</button>
+            </div>
+        </div>
+    </div>
+</div>

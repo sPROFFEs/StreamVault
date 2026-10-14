@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+{% set lang = request.cookies.get('lang', 'en') %}
+<html lang="{{ lang }}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ "Live TV" if lang == "en" else "TV en vivo" }} · StreamVault</title>
+    {% include "_metadata.html" %}
+    <link rel="stylesheet" href="/assets/css/app.css?v=20261008-1">
+    <link rel="stylesheet" href="/assets/css/ui-extras.css?v=20261008-1">
+    <script defer src="https://cdn.jsdelivr.net/npm/hls.js@1.6.16/dist/hls.min.js"></script>
+</head>
+<body class="app-shell">
+    {% set active = 'iptv' %}
+    {% include "_header.html" %}
+
+    <main class="main iptv-page">
+        <!-- Hero player ---------------------------------------------------- -->
+        <section class="iptv-hero" id="iptv-hero">
+            <div class="iptv-player" id="iptv-player-wrap">
+                <video id="iptv-player" controls playsinline></video>
+                <div class="iptv-player__overlay" id="iptv-player-empty">
+                    <div>
+                        <h2 style="font-family:var(--font-display);font-size:36px;letter-spacing:1px;margin:0 0 8px">
+                            {{ "PICK A CHANNEL" if lang == "en" else "ELIGE UN CANAL" }}
+                        </h2>
+                        <p class="text-muted">{{ "Use the grid below or favorites to start watching." if lang == "en" else "Usa la cuadrícula o tus favoritos para empezar." }}</p>
+                    </div>
+                </div>
+                <div class="iptv-player__error" id="iptv-player-error" hidden>
+                    <strong>{{ "Stream unavailable." if lang == "en" else "Canal no disponible." }}</strong>
+                    <p id="iptv-player-error-msg" class="text-muted text-sm"></p>
+                    <button class="btn btn-secondary" id="iptv-retry">{{ "Retry" if lang == "en" else "Reintentar" }}</button>
+                </div>
+            </div>
+            <aside class="iptv-now">
+                <div class="iptv-now__logo" id="iptv-now-logo">
+                    <svg viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="14" width="52" height="36" rx="4"/><path d="M22 50v6h20v-6"/></svg>
+                </div>
+                <div class="iptv-now__meta">
+                    <div class="iptv-now__group text-xs text-muted" id="iptv-now-group"></div>
+                    <h1 class="iptv-now__title" id="iptv-now-name">{{ "Not playing" if lang == "en" else "Sin reproducir" }}</h1>
+                    <div class="iptv-now__tags" id="iptv-now-tags"></div>
+                </div>
+                <div class="iptv-now__actions">
+                    <button class="btn btn-ghost" id="iptv-fav-toggle" disabled>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg>
+                        <span id="iptv-fav-label">{{ "Save" if lang == "en" else "Guardar" }}</span>
+                    </button>
+                    <button class="btn btn-ghost" id="iptv-health-check" disabled>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+                        {{ "Health" if lang == "en" else "Estado" }}
+                    </button>
+                    <button class="btn" id="iptv-pip" disabled>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><rect x="12" y="12" width="7" height="5" rx="1"/></svg>
+                        PiP
+                    </button>
+                </div>
+            </aside>
+        </section>
+
+        <!-- Tabs (Featured / Favorites / Recents / Browse) ----------------- -->
+        <section class="iptv-tabs">
+            <div class="subnav" id="iptv-tabs">
+                <button type="button" data-tab="featured" class="active">{{ "Featured" if lang == "en" else "Destacados" }}</button>
+                <button type="button" data-tab="favorites">{{ "Favorites" if lang == "en" else "Favoritos" }}
+                    <span class="badge" id="iptv-fav-count" style="margin-left:6px;background:var(--surface3);color:var(--text2);padding:1px 7px;border-radius:10px;font-size:10px"></span>
+                </button>
+                <button type="button" data-tab="recents">{{ "Recent" if lang == "en" else "Recientes" }}</button>
+                <button type="button" data-tab="browse">{{ "Browse all" if lang == "en" else "Explorar todo" }}</button>
+                <span style="flex:1"></span>
+                {% if is_admin %}<button type="button" id="iptv-open-import" style="cursor:pointer;color:var(--text2)">+ {{ "Import M3U" if lang == "en" else "Importar M3U" }}</a>{% endif %}
+            </div>
+        </section>
+
+        <!-- Filters bar -->
+        <section class="iptv-filters" id="iptv-filters">
+            <input class="input" id="iptv-search" type="search" placeholder="{{ 'Search channels…' if lang == 'en' else 'Buscar canales…' }}" autocomplete="off">
+            <select class="input" id="iptv-source-sel"><option value="">{{ "All sources" if lang == "en" else "Todas las fuentes" }}</option></select>
+            <select class="input" id="iptv-group-sel"><option value="">{{ "All groups" if lang == "en" else "Todos los grupos" }}</option></select>
+            <select class="input" id="iptv-country-sel"><option value="">{{ "Any country" if lang == "en" else "Cualquier país" }}</option></select>
+            <select class="input" id="iptv-lang-sel"><option value="">{{ "Any language" if lang == "en" else "Cualquier idioma" }}</option></select>
+            <button class="btn btn-ghost" id="iptv-reload" title="Reload">↻</button>
+        </section>
+
+        <!-- Content -->
+        <section class="iptv-content">
+            <div id="iptv-pane-loading" class="loader" hidden><div class="spinner"></div></div>
+            <div id="iptv-pane-empty" class="empty-state" hidden>
+                <h3>{{ "No channels yet" if lang == "en" else "Sin canales aún" }}</h3>
+                <p id="iptv-empty-message">{{ "Bootstrap public sources or import your own M3U." if lang == "en" else "Importa fuentes públicas o un M3U propio." }}</p>
+                <button class="btn btn-primary" id="iptv-bootstrap-btn">{{ "Load public lists" if lang == "en" else "Cargar listas públicas" }}</button>
+            </div>
+            <div class="iptv-grid" id="iptv-grid"></div>
+            <button class="btn btn-secondary iptv-load-more" id="iptv-load-more" type="button" hidden></button>
+        </section>
+    </main>
+
+    <!-- M3U import modal -->
+    {% if is_admin %}<div class="modal-backdrop" id="iptv-import-modal" style="display:none">
+        <div class="modal" role="dialog" aria-modal="true" aria-label="{{ 'Import M3U' if lang == 'en' else 'Importar M3U' }}">
+            <div class="modal__header">
+                {{ "IMPORT M3U" if lang == "en" else "IMPORTAR M3U" }}
+                <button class="icon-btn" id="iptv-import-close" aria-label="{{ 'Close' if lang == 'en' else 'Cerrar' }}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+            </div>
+            <div class="modal__body">
+                <div class="field" style="margin-bottom:12px">
+                    <label for="iptv-import-source">{{ "Public source" if lang == "en" else "Fuente pública" }}</label>
+                    <select class="input" id="iptv-import-source"><option value="">{{ "Custom URL" if lang == "en" else "URL propia" }}</option></select>
+                </div>
+                <div class="field">
+                    <label for="iptv-import-url">{{ "URL or local path" if lang == "en" else "URL o ruta local" }}</label>
+                    <input class="input" id="iptv-import-url" placeholder="https://…/playlist.m3u8">
+                </div>
+                <div class="field" style="margin-top:12px">
+                    <label for="iptv-import-name">{{ "Source name (optional)" if lang == "en" else "Nombre (opcional)" }}</label>
+                    <input class="input" id="iptv-import-name" placeholder="custom">
+                </div>
+            </div>
+            <div class="modal__footer">
+                <button class="btn btn-ghost" id="iptv-import-cancel">{{ "Cancel" if lang == "en" else "Cancelar" }}</button>
+                <button class="btn btn-primary" id="iptv-import-go">{{ "Import" if lang == "en" else "Importar" }}</button>
+            </div>
+        </div>
+    </div>{% endif %}
+
+    <script>window.APP_LANG = "{{ lang }}";</script>
+    <script defer src="/assets/js/iptv.js?v=20261010-1"></script>
+</body>
+</html>

@@ -1,0 +1,127 @@
+name: Prepare draft release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing stable tag, matching vault/core/version.json
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      branch: ${{ steps.version.outputs.branch }}
+      commit: ${{ steps.version.outputs.commit }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate tag and configured distribution branch
+        id: version
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          RELEASE_BRANCH: ${{ vars.STREAMVAULT_RELEASE_BRANCH }}
+        run: |
+          python3 vault/scripts/release.py check --tag "$RELEASE_TAG"
+          test -n "$RELEASE_BRANCH"
+          git check-ref-format "refs/heads/$RELEASE_BRANCH"
+          RELEASE_COMMIT=$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")
+          test "$RELEASE_COMMIT" = "$(git rev-parse HEAD)"
+          git merge-base --is-ancestor HEAD "refs/remotes/origin/$RELEASE_BRANCH"
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "branch=$RELEASE_BRANCH" >> "$GITHUB_OUTPUT"
+          echo "commit=$RELEASE_COMMIT" >> "$GITHUB_OUTPUT"
+
+  checks:
+    needs: contract
+    uses: ./.github/workflows/build.yml
+    with:
+      ref: ${{ needs.contract.outputs.commit }}
+
+  assets:
+    needs: [contract, checks]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # Configure this environment with the signing secrets and desired reviewers.
+    environment: release
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.contract.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+        with:
+          cmdline-tools-version: '11076708'
+      - run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0' 'platform-tools'
+      - name: Build and verify signed APK
+        working-directory: android
+        env:
+          KEYSTORE_BASE64: ${{ secrets.STREAMVAULT_KEYSTORE_BASE64 }}
+          STREAMVAULT_STORE_PASSWORD: ${{ secrets.STREAMVAULT_STORE_PASSWORD }}
+          STREAMVAULT_KEY_ALIAS: ${{ secrets.STREAMVAULT_KEY_ALIAS }}
+          STREAMVAULT_KEY_PASSWORD: ${{ secrets.STREAMVAULT_KEY_PASSWORD }}
+        run: |
+          test -n "$KEYSTORE_BASE64"
+          export STREAMVAULT_KEYSTORE="$RUNNER_TEMP/streamvault-release.jks"
+          trap 'rm -f "$STREAMVAULT_KEYSTORE"' EXIT
+          umask 077
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$STREAMVAULT_KEYSTORE"
+          unset KEYSTORE_BASE64
+          ./gradlew --no-daemon lintRelease assembleRelease
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose app/build/outputs/apk/release/app-release.apk
+      - name: Package versioned assets and checksums
+        env:
+          RELEASE_TAG: ${{ needs.contract.outputs.tag }}
+          RELEASE_BRANCH: ${{ needs.contract.outputs.branch }}
+        run: |
+          python3 vault/scripts/release.py package --tag "$RELEASE_TAG" \
+            --repository "$GITHUB_REPOSITORY" --branch "$RELEASE_BRANCH" \
+            --apk android/app/build/outputs/apk/release/app-release.apk
+          cd dist
+          sha256sum --check SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-assets
+          path: dist/
+          if-no-files-found: error
+
+  draft:
+    needs: [contract, assets]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-assets
+          path: dist
+      - name: Create a draft for maintainer review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.contract.outputs.tag }}
+        run: |
+          cd dist
+          sha256sum --check SHA256SUMS
+          gh release create "$RELEASE_TAG" --verify-tag --draft --generate-notes ./*

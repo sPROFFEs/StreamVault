@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+{% set lang = request.cookies.get('lang', 'en') %}
+<html lang="{{ lang }}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Anime · StreamVault</title>
+    {% include "_metadata.html" %}
+    <link rel="stylesheet" href="/assets/css/app.css?v=20261008-1">
+    <link rel="stylesheet" href="/assets/css/ui-extras.css?v=20261008-1">
+</head>
+<body class="app-shell">
+    {% set active = 'anime' %}
+    {% include "_header.html" %}
+    <div class="page-search">
+        <input id="anime-search" class="search-input" type="search" placeholder="{{ 'Search anime...' if lang == 'en' else 'Buscar anime...' }}">
+    </div>
+
+    <main class="page stack">
+        <section class="panel">
+            <div class="panel__body">
+                <div class="section-header">
+                    <div>
+                        <h1 class="panel__title">Anime</h1>
+                        <p class="panel__subtle">{{ "Current season, top anime and official trailer or streaming links when available." if lang == "en" else "Temporada actual, top anime y enlaces oficiales de trailer y streaming cuando existen." }}</p>
+                    </div>
+                    <div class="actions">
+                        <button id="anime-season" class="button button--primary" type="button">{{ "Current season" if lang == "en" else "Temporada actual" }}</button>
+                        <button id="anime-top" class="button" type="button">Top</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="anime-grid" class="poster-grid"></section>
+    </main>
+
+    <div id="anime-modal" class="modal-overlay">
+        <div class="modal-panel modal-panel--wide">
+            <div class="catalog-modal">
+                <section class="catalog-modal__media">
+                    <div class="player-box player-box--cinema" id="anime-media-box"></div>
+                </section>
+                <section class="catalog-modal__info">
+                    <div class="detail-header">
+                        <div>
+                            <h2 id="anime-title">Anime</h2>
+                            <p id="anime-meta" class="muted"></p>
+                        </div>
+                        <button id="anime-close" class="button" type="button">{{ "Close" if lang == "en" else "Cerrar" }}</button>
+                    </div>
+                    <p id="anime-description" class="detail-description"></p>
+                    <section class="subtitle-box">
+                        <div class="section-header section-header--compact">
+                            <strong>{{ "Sources" if lang == "en" else "Fuentes" }}</strong>
+                            <span class="badge badge--neutral" id="anime-source-count">0</span>
+                        </div>
+                        <div id="anime-sources" class="source-list source-list--bounded"></div>
+                    </section>
+                </section>
+            </div>
+        </div>
+    </div>
+
+    <script>window.APP_LANG = "{{ lang }}";</script>
+    <script defer src="/assets/js/anime.js"></script>
+</body>
+</html>

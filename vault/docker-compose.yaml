@@ -1,0 +1,139 @@
+services:
+  core:
+    build: ./core
+    container_name: streamvault_core
+    user: root
+    restart: unless-stopped
+    cpu_shares: 1024
+    # Explicit resolvers — the host's resolver was leaking into the
+    # container and failing for external DNS (api.themoviedb.org etc.).
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    ports:
+      - "8000:8000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ..:/workspace
+      - ${HOST_DATA_ROOT:-./data}:/saas-data
+      - ./core/templates:/app/templates
+      - ./core:/app
+      - ./assets:/app/assets
+    environment:
+      - SECRET_KEY=${SECRET_KEY:?Set SECRET_KEY in vault/.env before starting StreamVault}
+      - ALGORITHM=${ALGORITHM:-HS256}
+      - ACCESS_TOKEN_EXPIRE_MINUTES=${ACCESS_TOKEN_EXPIRE_MINUTES:-1440}
+      - DOMAIN=${DOMAIN:-localhost}
+      - CHECK_INTERVAL_MINUTES=${CHECK_INTERVAL_MINUTES:-30}
+      - HOST_DATA_ROOT=${HOST_DATA_ROOT:-/opt/saas-data}
+      - UPDATE_WORKSPACE=/workspace
+      - UPDATE_REMOTE=${UPDATE_REMOTE:-}
+      - UPDATE_BRANCH=${UPDATE_BRANCH:-}
+      - UPDATE_MODE=${UPDATE_MODE:-branch}
+      - UPDATE_PROVIDER=${UPDATE_PROVIDER:-auto}
+      - UPDATE_API_URL=${UPDATE_API_URL:-}
+      - UPDATE_REPOSITORY=${UPDATE_REPOSITORY:-}
+      - UPDATE_CHECK_INTERVAL_HOURS=${UPDATE_CHECK_INTERVAL_HOURS:-24}
+      - CONCURRENT_DOWNLOADS=${CONCURRENT_DOWNLOADS:-1}
+      - DOWNLOAD_RATE_LIMIT=${DOWNLOAD_RATE_LIMIT:-4194304}
+      - TORRENT_UPLOAD_RATE_LIMIT=${TORRENT_UPLOAD_RATE_LIMIT:-65536}
+      - MAX_LIVE_REMUXES=${MAX_LIVE_REMUXES:-2}
+      - CLOUDFLARED_EXTERNAL=true
+      - CLOUDFLARED_URL=http://cloudflared:8080
+      - DOWNLOADER_URL=http://downloader:8001
+      - ALLOWED_HOSTS=${ALLOWED_HOSTS:-["*"]}
+      - TMDB_API_KEY=${TMDB_API_KEY}
+      - TMDB_TOKEN=${TMDB_TOKEN}
+      - OPENSUBTITLES_API_KEY=${OPENSUBTITLES_API_KEY}
+      - OPENSUBTITLES_USER_AGENT=${OPENSUBTITLES_USER_AGENT:-StreamVaultDebug/1.0}
+    depends_on:
+      - downloader
+
+  downloader:
+    build:
+      context: ./core
+      dockerfile: Dockerfile.downloader
+    container_name: streamvault_downloader
+    restart: unless-stopped
+    init: true
+    # Leave host resources for playback and the tunnel under download load.
+    cpu_shares: 256
+    cpus: ${DOWNLOADER_CPUS:-1.0}
+    mem_limit: ${DOWNLOADER_MEMORY_LIMIT:-768m}
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    volumes:
+      - ${HOST_DATA_ROOT:-./data}:/saas-data
+      - ./core:/app
+    environment:
+      - SECRET_KEY=${SECRET_KEY:?Set SECRET_KEY in vault/.env before starting StreamVault}
+      - CONCURRENT_DOWNLOADS=${CONCURRENT_DOWNLOADS:-1}
+      - DOWNLOAD_RATE_LIMIT=${DOWNLOAD_RATE_LIMIT:-4194304}
+      - TORRENT_UPLOAD_RATE_LIMIT=${TORRENT_UPLOAD_RATE_LIMIT:-65536}
+      - DATA_ROOT=/saas-data
+      - DOWNLOADS_ROOT=/saas-data/downloads
+      - OPENSUBTITLES_API_KEY=${OPENSUBTITLES_API_KEY}
+      - OPENSUBTITLES_USER_AGENT=${OPENSUBTITLES_USER_AGENT:-StreamVaultDebug/1.0}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  cloudflared:
+    build:
+      context: ./core
+      dockerfile: Dockerfile.tunnel
+    container_name: streamvault_cloudflared
+    restart: unless-stopped
+    init: true
+    cpu_shares: 1024
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    volumes:
+      - ${HOST_DATA_ROOT:-./data}/config:/saas-data/config
+    environment:
+      - SECRET_KEY=${SECRET_KEY:?Set SECRET_KEY in vault/.env before starting StreamVault}
+      - TUNNEL_API_PORT=8080
+      - TUNNEL_PROTOCOL=${TUNNEL_PROTOCOL:-http2}
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN:-}
+      - TUNNEL_HOSTNAME=${TUNNEL_HOSTNAME:-}
+      - TUNNEL_ORIGIN=${TUNNEL_ORIGIN:-http://nginx:80}
+      - TUNNEL_MODE=${TUNNEL_MODE:-}
+      - TUNNEL_ENABLED=${TUNNEL_ENABLED:-}
+    tmpfs:
+      - /tmp
+    mem_limit: ${TUNNEL_MEMORY_LIMIT:-512m}
+    pids_limit: 64
+    healthcheck:
+      test: ["CMD", "python", "-m", "services.cloudflared_worker", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  nginx:
+    image: nginx:latest
+    container_name: streamvault_nginx
+    restart: unless-stopped
+    cpu_shares: 1024
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./assets:/app/assets:ro
+    depends_on:
+      - core

@@ -1,0 +1,15 @@
+<details class="system-update">
+    <summary>{{ 'Update source and schedule' if lang == 'en' else 'Origen de actualizaciones y programación' }}</summary>
+    <p class="muted">{{ 'Git credentials come from the checkout. Blank URL/repository infer the remote for public releases. Private API tokens require an explicit API URL; changing URL/provider clears the old token.' if lang == 'en' else 'Las credenciales Git proceden del checkout. URL/repositorio vacíos usan el remoto para releases públicas. Un token privado requiere URL API explícita; cambiar URL/proveedor borra el token anterior.' }}</p>
+    <form id="update-source-form" class="operations-form">
+        <label>{{ 'Channel' if lang == 'en' else 'Canal' }}<select class="filter-input" name="mode"><option value="branch">{{ 'Configured branch' if lang == 'en' else 'Rama configurada' }}</option><option value="release">{{ 'Published stable releases' if lang == 'en' else 'Releases estables publicadas' }}</option></select></label>
+        <label>{{ 'Provider' if lang == 'en' else 'Proveedor' }}<select class="filter-input" name="provider"><option value="auto">Auto</option><option value="gitea">Gitea</option><option value="github">GitHub</option></select></label>
+        <label>{{ 'Forge/API URL' if lang == 'en' else 'URL de Gitea/API' }}<input class="filter-input" name="api_url" type="url" placeholder="https://gitea.example.com"></label>
+        <label>{{ 'Repository (owner/name)' if lang == 'en' else 'Repositorio (propietario/nombre)' }}<input class="filter-input" name="repository" placeholder="owner/StreamVault"></label>
+        <label>{{ 'API token (blank keeps current)' if lang == 'en' else 'Token API (vacío conserva el actual)' }}<input class="filter-input" type="password" name="api_token" autocomplete="off"></label>
+        <label>{{ 'Check interval (hours)' if lang == 'en' else 'Intervalo de comprobación (horas)' }}<input class="filter-input" type="number" name="check_interval_hours" min="1" max="168" value="24" required></label>
+        <label class="operations-check"><input type="checkbox" name="automatic_checks" checked>{{ 'Check periodically; never auto-install' if lang == 'en' else 'Comprobar periódicamente; nunca instalar automáticamente' }}</label>
+        <button type="submit" class="button button--compact">{{ 'Save source' if lang == 'en' else 'Guardar origen' }}</button>
+    </form>
+    <p id="update-source-result" role="status" aria-live="polite"></p>
+</details>

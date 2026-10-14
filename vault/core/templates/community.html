@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+{% set lang = request.cookies.get('lang', 'en') %}
+<html lang="{{ lang }}">
+<head>
+    <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ 'Community' if lang == 'en' else 'Comunidad' }} · StreamVault</title>
+    {% include "_metadata.html" %}
+    <link rel="stylesheet" href="/assets/css/app.css?v=20261008-1">
+    <link rel="stylesheet" href="/assets/css/ui-extras.css?v=20261008-1">
+    <link rel="stylesheet" href="/assets/css/operations.css?v=20261014-1">
+</head>
+<body class="app-shell">
+    {% set active = 'community' %}{% include "_header.html" %}
+    <main class="page stack" id="main-content">
+        <h1>{{ 'Community' if lang == 'en' else 'Comunidad' }}</h1>
+        <p class="muted">{{ 'Discover people on this server and trusted nodes. Profiles are private until their owners choose to share them.' if lang == 'en' else 'Descubre usuarios de este servidor y de nodos de confianza. Los perfiles son privados hasta que sus propietarios decidan compartirlos.' }}</p>
+        <p id="community-feedback" role="status" aria-live="polite"></p>
+        <div class="community-layout">
+            <section class="panel"><div class="panel__body stack">
+                <h2>{{ 'My profile' if lang == 'en' else 'Mi perfil' }}</h2>
+                <form id="profile-form" class="operations-form">
+                    <label>{{ 'Display name' if lang == 'en' else 'Nombre visible' }}<input class="filter-input" name="display_name" maxlength="80"></label>
+                    <label>{{ 'About me' if lang == 'en' else 'Sobre mí' }}<textarea class="filter-input" name="bio" maxlength="500" rows="3"></textarea></label>
+                    <label>{{ 'Who can see my profile?' if lang == 'en' else '¿Quién puede ver mi perfil?' }}<select class="filter-input" name="visibility"><option value="private">{{ 'Only me' if lang == 'en' else 'Solo yo' }}</option><option value="local">{{ 'Users of this server' if lang == 'en' else 'Usuarios de este servidor' }}</option><option value="federated">{{ 'This server and authorized nodes' if lang == 'en' else 'Este servidor y nodos autorizados' }}</option></select></label>
+                    <label class="operations-check"><input type="checkbox" name="show_metrics">{{ 'Share aggregate metrics' if lang == 'en' else 'Compartir métricas agregadas' }}</label>
+                    <button class="button" type="submit">{{ 'Save profile' if lang == 'en' else 'Guardar perfil' }}</button>
+                </form>
+                <div id="my-profile-metrics"></div>
+            </div></section>
+            <section class="panel"><div class="panel__body stack">
+                <h2>{{ 'People' if lang == 'en' else 'Usuarios' }}</h2>
+                <label for="community-node">{{ 'Server' if lang == 'en' else 'Servidor' }}</label>
+                <select id="community-node" class="filter-input"><option value="local">{{ 'This server' if lang == 'en' else 'Este servidor' }}</option></select>
+                <div id="community-profiles" class="community-cards"></div>
+                <button type="button" class="button button--ghost" id="community-more" hidden>{{ 'Load more' if lang == 'en' else 'Cargar más' }}</button>
+            </div></section>
+        </div>
+    </main>
+    <script>window.APP_LANG = {{ lang | tojson }};</script>
+    <script defer src="/assets/js/community.js?v=20261014-1"></script>
+</body></html>

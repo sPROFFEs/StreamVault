@@ -1,0 +1,7 @@
+.system-update { min-width: 0; }
+.system-update__heading { display: flex; align-items: center; justify-content: space-between; gap: .75rem; flex-wrap: wrap; }
+.system-update p, .system-update dd { overflow-wrap: anywhere; }
+.system-update__version { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: .5rem .75rem; }
+.system-update__version[hidden] { display: none; }
+.system-update dd { min-width: 0; margin: 0; }
+.system-update[data-state="failure"] #update-result { color: var(--danger); }

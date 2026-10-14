@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+{% set lang = request.cookies.get('lang', 'en') if request is defined else 'en' %}
+<html lang="{{ lang }}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ "Local Catalog" if lang == "en" else "Catálogo Local" }} · StreamVault</title>
+    {% include "_metadata.html" %}
+    <link rel="stylesheet" href="/assets/css/app.css?v=20261008-1">
+    <link rel="stylesheet" href="/assets/css/ui-extras.css?v=20261008-1">
+    <link rel="stylesheet" href="/assets/css/discovery.css?v=20261012-1">
+</head>
+<body class="app-shell">
+    {% set active = 'movies' %}
+    {% include "_header.html" %}
+
+    <main class="page stack local-library-page">
+        <section class="panel">
+            <div class="panel__body">
+                <div class="section-header">
+                    <div>
+                        <h1 class="panel__title">{{ "My Library" if lang == "en" else "Mi Biblioteca" }}</h1>
+                        <p class="panel__subtle" id="channel-count" role="status" aria-live="polite">{{ "Downloaded and indexed content" if lang == "en" else "Contenido descargado e indexado" }}</p>
+                    </div>
+                    <div class="filter-pills">
+                        <button onclick="filterByType('all')" aria-pressed="true" class="filter-pill active" id="btn-all" type="button">{{ "All" if lang == "en" else "Todo" }}</button>
+                        <button onclick="filterByType('movie')" aria-pressed="false" class="filter-pill" id="btn-movie" type="button">{{ "Movies" if lang == "en" else "Películas" }}</button>
+                        <button onclick="filterByType('series')" aria-pressed="false" class="filter-pill" id="btn-tv" type="button">{{ "Series" if lang == "en" else "Series" }}</button>
+                    </div>
+                </div>
+                <div class="page-search" style="margin-top:1rem;">
+                    <input type="search" class="search-input" id="catalog-search" placeholder="{{ 'Search my list...' if lang == 'en' else 'Buscar en mi lista...' }}" oninput="performSearch(this.value)" aria-label="{{ 'Search library' if lang == 'en' else 'Buscar biblioteca' }}">
+                </div>
+
+                <div id="loading" class="empty-state" role="status">
+                    {{ "Loading library..." if lang == "en" else "Cargando biblioteca..." }}
+                </div>
+
+                <div id="media-grid" class="poster-grid" aria-busy="true"></div>
+
+                <div id="catalog-error" class="empty-state" role="alert" hidden>
+                    <p>{{ "Could not load the library." if lang == "en" else "No se pudo cargar la biblioteca." }}</p>
+                    <button class="button" type="button" onclick="loadCatalog()">{{ "Retry" if lang == "en" else "Reintentar" }}</button>
+                </div>
+                <div id="no-results" class="empty-state empty-state--rich" style="display:none;">
+                    <div class="empty-state__icon">📂</div>
+                    <strong id="local-empty-title">{{ "Your library is empty" if lang == "en" else "Tu biblioteca está vacía" }}</strong>
+                    <p>{{ "Save favorites or download content to see it here." if lang == "en" else "Guarda favoritos o descarga contenido para verlo aquí." }}</p>
+                    <a class="button button--primary" href="/browse">{{ "Browse catalog" if lang == "en" else "Explorar catálogo" }}</a>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <div id="detail-modal" class="modal-overlay modal-overlay--fullscreen" hidden style="display:none;">
+        <div class="modal-panel modal-panel--fullscreen" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+            <div id="modal-backdrop-bg" class="modal-fullscreen-bg" aria-hidden="true"></div>
+            <div class="modal-fullscreen-gradient" aria-hidden="true"></div>
+            <button class="modal-fullscreen-close" type="button" onclick="closeDetailModal()" aria-label="{{ 'Close' if lang == 'en' else 'Cerrar' }}">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 6L6 18M6 6l12 12"/></svg>
+            </button>
+            <div class="catalog-modal catalog-modal--fullscreen">
+                <section class="catalog-modal__media">
+                    <div class="catalog-modal__poster-wrap">
+                        <img id="modal-img" alt="" width="400" height="600" decoding="async" class="detail-poster detail-poster--featured" hidden>
+                        <span id="modal-artwork-placeholder" class="local-artwork-placeholder">{{ "No artwork" if lang == "en" else "Sin carátula" }}</span>
+                    </div>
+                </section>
+                <section class="catalog-modal__info">
+                    <div class="detail-header">
+                        <div class="modal-title-wrap">
+                            <span class="modal-eyebrow">STREAMVAULT</span>
+                            <h2 id="modal-title"></h2>
+                            <div class="modal-badges" id="modal-badges">
+                                <span class="badge-match" id="modal-match" hidden></span>
+                                <span class="badge-type" id="modal-type-badge">{{ "Movie" if lang == "en" else "Película" }}</span>
+                                <span id="modal-year" hidden></span>
+                                <span id="modal-duration" hidden></span>
+                            </div>
+                        </div>
+                    </div>
+                    <p id="modal-overview" class="detail-description"></p>
+                    <div class="actions">
+                        <button class="button button--primary" type="button" onclick="watchMedia()">
+                            <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20" class="btn-icon-svg"><path d="M8 5v14l11-7z"/></svg>
+                            <span>{{ "Play" if lang == "en" else "Reproducir" }}</span>
+                        </button>
+                        <button class="button button--secondary" type="button" onclick="closeDetailModal()">{{ "Close" if lang == "en" else "Cerrar" }}</button>
+                    </div>
+                </section>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const CATALOG_LANG = "{{ lang }}";
+        let allResults = [];
+        let currentFilter = "all";
+        let searchQuery = "";
+
+        async function loadCatalog() {
+            const retrying = document.getElementById("catalog-error").contains(document.activeElement);
+            document.getElementById("catalog-error").hidden = true;
+            document.getElementById("loading").style.display = "block";
+            document.getElementById("no-results").style.display = "none";
+            document.getElementById("media-grid").setAttribute("aria-busy", "true");
+            try {
+                const resp = await fetch("/api/local/browse");
+                if (!resp.ok) throw new Error("Library request failed");
+                const data = await resp.json();
+                allResults = data.items || [];
+                document.getElementById("loading").style.display = "none";
+                renderGrid();
+                if (retrying) (document.querySelector("#media-grid button") || document.getElementById("catalog-search")).focus();
+            } catch (e) {
+                document.getElementById("loading").style.display = "none";
+                document.getElementById("catalog-error").hidden = false;
+            } finally {
+                document.getElementById("media-grid").setAttribute("aria-busy", "false");
+            }
+        }
+
+        function escapeHTML(value) {
+            return String(value).replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+        }
+
+        function renderGrid() {
+            const grid = document.getElementById("media-grid");
+            const data = allResults.filter(item => (currentFilter === "all" || item.type === currentFilter) && String(item.title || "").toLowerCase().includes(searchQuery));
+            document.getElementById("channel-count").textContent = `${data.length} ${CATALOG_LANG === "en" ? "results" : "resultados"}`;
+            document.getElementById("local-empty-title").textContent = allResults.length
+                ? (CATALOG_LANG === "en" ? "No matches for these filters" : "Sin coincidencias para estos filtros")
+                : (CATALOG_LANG === "en" ? "Your library is empty" : "Tu biblioteca está vacía");
+
+            if (data.length === 0) {
+                grid.innerHTML = "";
+                document.getElementById("no-results").style.display = "flex";
+                return;
+            }
+
+            document.getElementById("no-results").style.display = "none";
+            grid.innerHTML = data.map((m) => `
+                <button class="catalog-card" type="button" onclick="openDetail(${Number(m.id)}, '${m.type === "movie" ? "movie" : "series"}')">
+                    <img src="${escapeHTML(window.SVArtwork.url(m.poster_path || m.poster_url, 'w342')) || "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA1MDAgNzUwIiB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIj48cmVjdCB3aWR0aD0iNTAwIiBoZWlnaHQ9Ijc1MCIgZmlsbD0iIzE4MTgxOCIvPjx0ZXh0IHg9IjUwJSIgeT0iNTAlIiBkb21pbmFudC1iYXNlbGluZT0ibWlkZGxlIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LWZhbWlseT0ic2Fucy1zZXJpZiIgZm9udC1zaXplPSI0MHB4IiBmaWxsPSIjZjNmM2YzIj5TdHJlYW1WYXVsdDwvdGV4dD48L3N2Zz4="}" loading="lazy" width="342" height="513" alt="">
+                    <span class="catalog-card__title">${escapeHTML(m.title || (CATALOG_LANG === "en" ? "Untitled" : "Sin título"))}</span>
+                    <span class="catalog-card__meta">${m.type === "movie" ? (CATALOG_LANG === "en" ? "Movie" : "Película") : (CATALOG_LANG === "en" ? "Series" : "Serie")}</span>
+                </button>
+            `).join("");
+            grid.querySelectorAll("img").forEach(image => image.addEventListener("error", () => {
+                const fallback = document.createElement("span");
+                fallback.className = "local-artwork-placeholder";
+                fallback.textContent = CATALOG_LANG === "en" ? "No artwork" : "Sin carátula";
+                image.replaceWith(fallback);
+            }, { once: true }));
+        }
+
+        function filterByType(type) {
+            currentFilter = type;
+            document.querySelectorAll(".filter-pill").forEach(b => { b.classList.remove("active"); b.setAttribute("aria-pressed", "false"); });
+            const map = { all: "btn-all", movie: "btn-movie", series: "btn-tv" };
+            document.getElementById(map[type])?.classList.add("active");
+            document.getElementById(map[type])?.setAttribute("aria-pressed", "true");
+            renderGrid();
+        }
+
+        function performSearch(q) {
+            searchQuery = q.toLowerCase().trim();
+            renderGrid();
+        }
+
+        let currentItem = null;
+        function openDetail(id, type) {
+            currentItem = allResults.find((i) => i.id == id && (!type || i.type === type));
+            if (!currentItem) return;
+            window.SVArtwork.setImage(document.getElementById("modal-img"), currentItem.poster_path || currentItem.poster_url, {
+                alt: currentItem.title || "", placeholder: document.getElementById("modal-artwork-placeholder"),
+            });
+            window.SVArtwork.setBackdrop(document.getElementById("modal-backdrop-bg"), currentItem.backdrop_path);
+
+            document.getElementById("modal-title").innerText = currentItem.title || (CATALOG_LANG === "en" ? "Untitled" : "Sin título");
+            document.getElementById("modal-overview").innerText = currentItem.overview || (CATALOG_LANG === "en" ? "No description." : "Sin descripción.");
+
+            const typeBadge = document.getElementById("modal-type-badge");
+            if (typeBadge) {
+                typeBadge.textContent = currentItem.type === "movie" ? (CATALOG_LANG === "en" ? "Movie" : "Película") : (CATALOG_LANG === "en" ? "Series" : "Serie");
+            }
+            const score = Number(currentItem.rating || currentItem.vote_average || 0);
+            const values = {
+                "modal-match": Number.isFinite(score) && score > 0 ? `${score.toFixed(1)}/10` : "",
+                "modal-year": currentItem.year || (currentItem.first_air_date || "").slice(0, 4),
+                "modal-duration": Number(currentItem.duration) > 0 ? `${currentItem.duration} min` : "",
+            };
+            for (const [id, value] of Object.entries(values)) {
+                const badge = document.getElementById(id);
+                badge.textContent = value || "";
+                badge.hidden = !value;
+            }
+
+            window.SVShell.open(document.getElementById("detail-modal"), { trigger: document.activeElement });
+        }
+
+        function closeDetailModal() {
+            window.SVShell.close(document.getElementById("detail-modal"));
+        }
+
+        function watchMedia() {
+            if (currentItem) {
+                const type = currentItem.type === "movie" ? "movie" : "tv";
+                const target = currentItem.tmdb_id
+                    ? `/media/${currentItem.tmdb_id}?type=${type}`
+                    : `/player/${type}/${currentItem.id}`;
+                window.SVShell.navigate(target);
+            }
+        }
+
+        window.addEventListener("load", loadCatalog);
+
+    </script>
+</body>
+</html>

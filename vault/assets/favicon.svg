@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <title>StreamVault</title>
+  <rect width="512" height="512" rx="112" fill="#0a0a0a"/>
+  <path d="M256 96 388 148v124c0 74-50 124-132 148-82-24-132-74-132-148V148Z" fill="none" stroke="#e50914" stroke-width="28" stroke-linejoin="round"/>
+  <path d="m214 184 112 72-112 72Z" fill="#fff"/>
+</svg>

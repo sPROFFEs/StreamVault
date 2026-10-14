@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+{% set lang = request.cookies.get('lang', 'en') %}
+<html lang="{{ lang }}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ "Catalog" if lang == "en" else "Catálogo" }} · StreamVault</title>
+    {% include "_metadata.html" %}
+    <link rel="stylesheet" href="/assets/css/app.css?v=20261008-1">
+    <link rel="stylesheet" href="/assets/css/ui-extras.css?v=20261008-1">
+    <link rel="stylesheet" href="/assets/css/discovery.css?v=20261012-1">
+</head>
+<body class="app-shell">
+
+    <div id="toast-container" class="toast-container"></div>
+
+    {% set active = 'series' if request.query_params.get('type') == 'tv' else 'movies' %}
+    {% include "_header.html" %}
+
+    <main class="page browse-page">
+        <section class="browse-hero">
+            <p class="browse-hero__eyebrow">STREAMVAULT</p>
+            <h1 id="results-title">{{ "Movies" if lang == "en" else "Películas" }}</h1>
+            <p id="results-caption">{{ "Discover what to watch next." if lang == "en" else "Descubre qué ver a continuación." }}</p>
+        </section>
+
+        <section class="browse-toolbar" aria-label="{{ 'Catalog filters' if lang == 'en' else 'Filtros del catálogo' }}">
+            <label class="browse-filter">
+                <span>{{ "Type" if lang == "en" else "Tipo" }}</span>
+                <select id="type-filter" class="filter-select">
+                    <option value="movie">{{ "Movies" if lang == "en" else "Películas" }}</option>
+                    <option value="tv">{{ "Series" if lang == "en" else "Series" }}</option>
+                </select>
+            </label>
+            <label class="browse-filter">
+                <span>{{ "Genre" if lang == "en" else "Género" }}</span>
+                <select id="genre-filter" class="filter-select">
+                    <option value="">{{ "All genres" if lang == "en" else "Todos los géneros" }}</option>
+                </select>
+            </label>
+            <label class="browse-filter">
+                <span>{{ "Sort by" if lang == "en" else "Ordenar por" }}</span>
+                <select id="sort-filter" class="filter-select">
+                    <option value="popularity.desc">{{ "Popular" if lang == "en" else "Populares" }}</option>
+                    <option value="vote_average.desc">{{ "Top rated" if lang == "en" else "Mejor valoradas" }}</option>
+                    <option value="primary_release_date.desc">{{ "Newest" if lang == "en" else "Más recientes" }}</option>
+                </select>
+            </label>
+            <label class="browse-search">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+                <span class="sr-only">{{ "Search" if lang == "en" else "Buscar" }}</span>
+                <input id="browse-search" class="search-input" type="search" placeholder="{{ 'Search movies and series' if lang == 'en' else 'Buscar películas y series' }}">
+            </label>
+            <label class="browse-filter">
+                <span>{{ "View" if lang == "en" else "Vista" }}</span>
+                <select id="view-filter" class="filter-select">
+                    <option value="discover">{{ "Catalog" if lang == "en" else "Catálogo" }}</option>
+                    <option value="downloads">{{ "Downloaded" if lang == "en" else "Descargado" }}</option>
+                    <option value="favorites">{{ "My List" if lang == "en" else "Mi lista" }}</option>
+                </select>
+            </label>
+            <button id="refresh-button" class="button button--ghost" type="button">{{ "Reload" if lang == "en" else "Recargar" }}</button>
+            <span class="browse-count" id="results-count" role="status" aria-live="polite" aria-atomic="true">0</span>
+        </section>
+
+        <section class="browse-results">
+            <div id="browse-grid" class="poster-grid" aria-busy="false" aria-label="{{ 'Results' if lang == 'en' else 'Resultados' }}"></div>
+            <div id="browse-empty" class="empty-state" hidden>
+                <p>{{ "No results for this view." if lang == "en" else "No hay resultados para esta vista." }}</p>
+                <button id="reset-filters" class="button button--ghost" type="button">{{ "Clear filters" if lang == "en" else "Limpiar filtros" }}</button>
+            </div>
+            <div id="browse-error" class="empty-state" role="alert" hidden>
+                <p>{{ "Could not load this view. Try again." if lang == "en" else "No se pudo cargar esta vista. Inténtalo de nuevo." }}</p>
+                <button id="retry-catalog" class="button" type="button">{{ "Retry" if lang == "en" else "Reintentar" }}</button>
+            </div>
+            <div class="browse-load-more">
+                <button id="load-more-button" class="button button--ghost" type="button" hidden>{{ "Load more" if lang == "en" else "Cargar más" }}</button>
+            </div>
+        </section>
+    </main>
+
+    <script>window.APP_LANG = "{{ lang }}";</script>
+    <script defer src="/assets/js/components/media-card.js?v=20261012-1"></script>
+    <script defer src="/assets/js/browse.js?v=20261008-1"></script>
+</body>
+</html>

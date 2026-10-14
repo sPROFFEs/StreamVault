@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+{% set lang = lang|default('es' if request.cookies.get('lang') == 'es' else 'en') %}
+{% set setup = action == '/setup' %}
+<html lang="{{ lang }}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content">
+    <title>{{ "Create administrator" if setup and lang == "en" else "Crear administrador" if setup else "Sign in" if lang == "en" else "Iniciar sesión" }} · StreamVault</title>
+    {% include "_metadata.html" %}
+    <link rel="stylesheet" href="/assets/css/app.css?v=20261008-1">
+    <link rel="stylesheet" href="/assets/css/auth.css?v=20261012-1">
+    <script defer src="/assets/js/auth.js?v=20261008-1"></script>
+    <script defer src="/assets/js/shell.js?v=20261010-1"></script>
+</head>
+<body class="app-shell no-sidebar auth-body">
+    <main class="auth-page">
+        <div class="auth-backdrop" aria-hidden="true"><img src="/assets/icon.png?v=20261008-1" alt=""></div>
+        <header class="auth-topbar">
+            <a class="auth-brand" href="/"><img src="/assets/icon.png?v=20261008-1" alt="" width="40" height="40"><span>STREAMVAULT</span></a>
+            <nav class="auth-language" aria-label="{{ 'Language' if lang == 'en' else 'Idioma' }}">
+                <a class="{{ 'active' if lang == 'en' else '' }}" href="/set-language/en" lang="en" aria-label="English" {% if lang == 'en' %}aria-current="true"{% endif %}>EN</a>
+                <a class="{{ 'active' if lang == 'es' else '' }}" href="/set-language/es" lang="es" aria-label="Español" {% if lang == 'es' %}aria-current="true"{% endif %}>ES</a>
+            </nav>
+        </header>
+        <section class="auth-card" aria-labelledby="auth-title">
+            <p class="auth-eyebrow">{{ "PRIVATE MEDIA" if lang == "en" else "CONTENIDO PRIVADO" }}</p>
+            <h1 id="auth-title">{{ "Create initial account" if setup and lang == "en" else "Crear cuenta inicial" if setup else "Sign in" if lang == "en" else "Iniciar sesión" }}</h1>
+            <p class="auth-intro">{{ "Configure the first administrator." if setup and lang == "en" else "Configura el primer administrador." if setup else "Your movies, series and live TV. One private place." if lang == "en" else "Tus películas, series y TV en directo. Un único espacio privado." }}</p>
+
+            {% if notice_success %}
+            <div class="message message--success" role="status">{{ notice }}</div>
+            {% endif %}
+            <div id="auth-error" class="message message--error" role="alert" tabindex="-1" {% if not notice or notice_success %}hidden{% endif %}>{{ notice if not notice_success else '' }}</div>
+
+            <form action="{{ action or '/login' }}" method="post" class="form-grid" data-setup="{{ 'true' if setup else 'false' }}" data-messages='{{ messages|default({})|tojson }}' aria-busy="false">
+                <div class="field">
+                    <label for="username">{{ "Username" if lang == "en" else "Usuario" }}</label>
+                    <input id="username" class="filter-input" type="text" name="username" required autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" enterkeyhint="next" aria-describedby="username-hint username-error" {% if setup %}minlength="3" maxlength="32"{% endif %}>
+                    <p id="username-hint" class="auth-hint">{{ messages.invalid_username if setup else "Use the username provided by your administrator." if lang == "en" else "Usa el nombre de usuario que te facilitó tu administrador." }}</p>
+                    <span id="username-error" class="auth-field-error" hidden></span>
+                </div>
+                <div class="field">
+                    <label for="password">{{ "Password" if lang == "en" else "Contraseña" }}</label>
+                    <div class="auth-password">
+                        <input id="password" class="filter-input" type="password" name="password" required autocomplete="{{ 'new-password' if setup else 'current-password' }}" autocapitalize="none" autocorrect="off" spellcheck="false" enterkeyhint="{{ 'done' if setup else 'go' }}" aria-describedby="password-hint password-error" {% if setup %}minlength="8"{% endif %}>
+                        <button id="password-toggle" class="button button--ghost" type="button" aria-controls="password" aria-pressed="false" data-show="{{ 'Show password' if lang == 'en' else 'Mostrar contraseña' }}" data-hide="{{ 'Hide password' if lang == 'en' else 'Ocultar contraseña' }}" hidden>{{ 'Show password' if lang == 'en' else 'Mostrar contraseña' }}</button>
+                    </div>
+                    <p id="password-hint" class="auth-hint">{{ messages.weak_password if setup else "Your password is case-sensitive." if lang == "en" else "Tu contraseña distingue mayúsculas y minúsculas." }}</p>
+                    <span id="password-error" class="auth-field-error" hidden></span>
+                </div>
+                <input type="hidden" name="next" value="{{ next }}">
+                <button class="button button--primary" type="submit" data-pending="{{ 'Creating account…' if setup and lang == 'en' else 'Creando cuenta…' if setup else 'Signing in…' if lang == 'en' else 'Entrando…' }}">{{ "Create account" if setup and lang == "en" else "Crear cuenta" if setup else "Sign in" if lang == "en" else "Entrar" }}</button>
+                <p id="auth-status" class="auth-hint" role="status" aria-live="polite" aria-atomic="true"></p>
+            </form>
+            <p class="auth-security">{{ "Private access · Sign out on shared devices" if lang == "en" else "Acceso privado · Cierra sesión en dispositivos compartidos" }}</p>
+        </section>
+    </main>
+</body>
+</html>

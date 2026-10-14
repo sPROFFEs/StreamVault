@@ -1,0 +1,156 @@
+{# Shared 1Flex-style top navigation.
+   The filename is retained so existing template includes remain compatible.
+   Reads user info from request.state.user (set by enforce_security_boundary)
+   so it's always correct regardless of what the route handler passes. #}
+{% set _path = request.scope.get('path', '') %}
+{% set _active = {'/portal': 'portal', '/iptv': 'iptv', '/youtube': 'youtube', '/anime': 'anime', '/downloads': 'downloads', '/admin': 'admin', '/admin/': 'admin', '/settings': 'settings'}.get(_path, active|default('')) %}
+{% if _path == '/browse' %}
+{% set _active = 'favorites' if request.query_params.get('view') == 'favorites' else ('series' if request.query_params.get('type') == 'tv' else 'movies') %}
+{% endif %}
+{% macro current(name) %}{% if _active == name %}aria-current="page"{% endif %}{% endmacro %}
+{% set _user = request.state.user if request and request.state else None %}
+{% set _is_admin = _user.is_admin if _user else false %}
+{% set _username = _user.username if _user else '' %}
+{% set _can_dl = (_user and (_user.is_admin or _user.can_download)) if _user else false %}
+{% set _dl_count = downloads_active_count|default(0) %}
+
+<a class="skip-link" href="#main-content">{{ 'Skip to content' if lang == 'en' else 'Ir al contenido' }}</a>
+<header class="top-nav" id="top-nav">
+    <a class="top-nav__brand" href="/portal" aria-label="{{ 'StreamVault home' if lang == 'en' else 'Inicio de StreamVault' }}">
+        <span class="top-nav__mark"><img src="/assets/icon.png?v=20261008-1" alt="" width="31" height="31"></span>
+        <span>STREAMVAULT</span>
+    </a>
+
+    <nav class="top-nav__links" aria-label="{{ 'Primary navigation' if lang == 'en' else 'Navegación principal' }}">
+        <a class="{{ 'active' if _active == 'portal' else '' }}" href="/portal" {{ current('portal') }}>{{ 'Home' if lang == 'en' else 'Inicio' }}</a>
+        <a class="{{ 'active' if _active == 'movies' else '' }}" href="/browse?type=movie" {{ current('movies') }}>{{ 'Movies' if lang == 'en' else 'Películas' }}</a>
+        <a class="{{ 'active' if _active == 'series' else '' }}" href="/browse?type=tv" {{ current('series') }}>{{ 'Series' if lang == 'en' else 'Series' }}</a>
+        <a class="{{ 'active' if _active == 'iptv' else '' }}" href="/iptv" {{ current('iptv') }}>{{ 'Live TV' if lang == 'en' else 'TV en vivo' }}</a>
+        <a class="{{ 'active' if _active == 'anime' else '' }}" href="/anime" {{ current('anime') }}>Anime</a>
+        <a class="{{ 'active' if _active == 'youtube' else '' }}" href="/youtube" {{ current('youtube') }}>YouTube</a>
+        <a class="{{ 'active' if _active == 'favorites' else '' }}" href="/browse?type=movie&view=favorites" {{ current('favorites') }}>{{ 'My List' if lang == 'en' else 'Mi lista' }}</a>
+    </nav>
+
+    <div class="top-nav__actions">
+        <button class="top-nav__icon" type="button" id="search-trigger" aria-haspopup="dialog" aria-label="{{ 'Search' if lang == 'en' else 'Buscar' }}" title="{{ 'Search' if lang == 'en' else 'Buscar' }}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+        </button>
+        <a class="top-nav__icon {{ 'active' if _active == 'downloads' else '' }}" href="/downloads" {{ current('downloads') }} aria-label="{{ 'Downloads' if lang == 'en' else 'Descargas' }}" title="{{ 'Downloads' if lang == 'en' else 'Descargas' }}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 19h16"/></svg>
+            {% if _dl_count is defined and _dl_count is number and _dl_count > 0 %}<span class="top-nav__badge">{{ _dl_count }}</span>{% endif %}
+        </a>
+        {% if _is_admin %}
+        <a class="top-nav__icon {{ 'active' if _active == 'admin' else '' }}" href="/admin" {{ current('admin') }} aria-label="Admin" title="Admin">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8 4v6c0 5-4 9-8 10-4-1-8-5-8-10V6l8-4z"/></svg>
+        </a>
+        {% endif %}
+        <a class="top-nav__icon {{ 'active' if _active == 'settings' else '' }}" href="/settings" {{ current('settings') }} aria-label="{{ 'Settings' if lang == 'en' else 'Ajustes' }}" title="{{ 'Settings' if lang == 'en' else 'Ajustes' }}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.8-.3A1.7 1.7 0 0014 21h-4a1.7 1.7 0 00-1.1-1.6 1.7 1.7 0 00-1.8.3l-.1.1A2 2 0 114.2 17l.1-.1a1.7 1.7 0 00.3-1.8A1.7 1.7 0 003 14v-4a1.7 1.7 0 001.6-1.1 1.7 1.7 0 00-.3-1.8L4.2 7A2 2 0 117 4.2l.1.1a1.7 1.7 0 001.8.3A1.7 1.7 0 0010 3h4a1.7 1.7 0 001.1 1.6 1.7 1.7 0 001.8-.3l.1-.1A2 2 0 1119.8 7l-.1.1a1.7 1.7 0 00-.3 1.8A1.7 1.7 0 0021 10v4a1.7 1.7 0 00-1.6 1z"/></svg>
+        </a>
+        <div class="top-nav__lang" aria-label="{{ 'Language' if lang == 'en' else 'Idioma' }}">
+            <a class="{{ 'active' if lang == 'en' else '' }}" href="/set-language/en">EN</a>
+            <a class="{{ 'active' if lang == 'es' else '' }}" href="/set-language/es">ES</a>
+        </div>
+        {% if _username %}
+        <a class="top-nav__user" href="/community" title="{{ 'Community and profile' if lang == 'en' else 'Comunidad y perfil' }}" aria-label="{{ 'Community and profile' if lang == 'en' else 'Comunidad y perfil' }}">{{ _username[0]|upper }}</a>
+        {% endif %}
+        <form class="top-nav__logout" action="/logout" method="post">
+            <button class="top-nav__signout" type="submit">{{ 'Sign out' if lang == 'en' else 'Salir' }}</button>
+        </form>
+    </div>
+
+    <button id="shortcuts-trigger" type="button" hidden>Shortcuts</button>
+    <button id="block-stats-trigger" type="button" hidden>Blocked ads</button>
+</header>
+
+    {# Mobile bottom tab bar — hidden on desktop, visible only on ≤640px #}
+    <nav class="mobile-tabbar" aria-label="{{ 'Mobile navigation' if lang == 'en' else 'Navegación móvil' }}">
+        <a class="mobile-tabbar__tab {{ 'active' if _active == 'portal' else '' }}" href="/portal" {{ current('portal') }}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12l9-9 9 9M5 10v10h5v-6h4v6h5V10"/></svg>
+            <span>{{ 'Home' if lang == 'en' else 'Inicio' }}</span>
+        </a>
+        <a class="mobile-tabbar__tab {{ 'active' if _active == 'movies' else '' }}" href="/browse?type=movie" {{ current('movies') }}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M9 4v16"/></svg>
+            <span>{{ 'Movies' if lang == 'en' else 'Pelis' }}</span>
+        </a>
+        <a class="mobile-tabbar__tab {{ 'active' if _active == 'series' else '' }}" href="/browse?type=tv" {{ current('series') }}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="20" height="13" rx="2"/><path d="M8 21h8M12 18v3"/></svg>
+            <span>{{ 'Series' if lang == 'en' else 'Series' }}</span>
+        </a>
+        <button class="mobile-tabbar__tab" type="button" id="mobile-search-trigger" aria-haspopup="dialog">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+            <span>{{ 'Search' if lang == 'en' else 'Buscar' }}</span>
+        </button>
+        <button class="mobile-tabbar__tab" type="button" id="mobile-more-trigger" aria-controls="mobile-more-sheet" aria-expanded="false" aria-haspopup="dialog" aria-label="{{ 'More' if lang == 'en' else 'Más' }}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="1.5" fill="currentColor"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/><circle cx="12" cy="19" r="1.5" fill="currentColor"/></svg>
+            <span>{{ 'More' if lang == 'en' else 'Más' }}</span>
+        </button>
+    </nav>
+
+
+{# Mobile "More" sheet — MUST live outside <header> because the header's
+   backdrop-filter creates a containing block that would trap fixed children. #}
+<div class="mobile-more-sheet" id="mobile-more-sheet" hidden>
+    <div class="mobile-more-sheet__backdrop" data-close-more></div>
+    <div class="mobile-more-sheet__panel" role="dialog" aria-modal="true" aria-label="{{ 'More options' if lang == 'en' else 'Más opciones' }}">
+        <div class="mobile-more-sheet__handle"></div>
+        <div class="mobile-more-sheet__heading">
+            <h2>{{ 'More options' if lang == 'en' else 'Más opciones' }}</h2>
+            <button class="icon-btn" type="button" data-close-more aria-label="{{ 'Close menu' if lang == 'en' else 'Cerrar menú' }}">×</button>
+        </div>
+        <div class="mobile-more-sheet__list">
+            <a class="mobile-more-sheet__item" href="/browse?type=movie&view=favorites" {{ current('favorites') }}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/></svg>
+                <span>{{ 'My List' if lang == 'en' else 'Mi lista' }}</span>
+            </a>
+            <a class="mobile-more-sheet__item" href="/iptv" {{ current('iptv') }}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="20" height="13" rx="2"/><path d="M8 21h8M12 18v3"/></svg>
+                <span>{{ 'Live TV' if lang == 'en' else 'TV en vivo' }}</span>
+            </a>
+            <a class="mobile-more-sheet__item" href="/anime" {{ current('anime') }}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2M9 9h.01M15 9h.01"/></svg>
+                <span>{{ 'Anime' if lang == 'en' else 'Anime' }}</span>
+            </a>
+            <a class="mobile-more-sheet__item {{ 'active' if _active == 'downloads' else '' }}" href="/downloads" {{ current('downloads') }}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 19h16"/></svg>
+                <span>{{ 'Downloads' if lang == 'en' else 'Descargas' }}</span>
+                {% if _dl_count is defined and _dl_count is number and _dl_count > 0 %}<span class="mobile-more-sheet__badge">{{ _dl_count }}</span>{% endif %}
+            </a>
+            {% if _is_admin %}
+            <a class="mobile-more-sheet__item {{ 'active' if _active == 'admin' else '' }}" href="/admin" {{ current('admin') }}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8 4v6c0 5-4 9-8 10-4-1-8-5-8-10V6l8-4z"/></svg>
+                <span>Admin</span>
+            </a>
+            {% endif %}
+            <a class="mobile-more-sheet__item {{ 'active' if _active == 'settings' else '' }}" href="/settings" {{ current('settings') }}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.8-.3A1.7 1.7 0 0014 21h-4a1.7 1.7 0 00-1.1-1.6 1.7 1.7 0 00-1.8.3l-.1.1A2 2 0 114.2 17l.1-.1a1.7 1.7 0 00.3-1.8A1.7 1.7 0 003 14v-4a1.7 1.7 0 001.6-1.1 1.7 1.7 0 00-.3-1.8L4.2 7A2 2 0 117 4.2l.1.1a1.7 1.7 0 001.8.3A1.7 1.7 0 0010 3h4a1.7 1.7 0 001.1 1.6 1.7 1.7 0 001.8-.3l.1-.1A2 2 0 1119.8 7l-.1.1a1.7 1.7 0 00-.3 1.8A1.7 1.7 0 0021 10v4a1.7 1.7 0 00-1.6 1z"/></svg>
+                <span>{{ 'Settings' if lang == 'en' else 'Ajustes' }}</span>
+            </a>
+            <a class="mobile-more-sheet__item {{ 'active' if _active == 'youtube' else '' }}" href="/youtube" {{ current('youtube') }}>
+                <span class="ico ico-play" aria-hidden="true"></span><span>YouTube</span>
+            </a>
+            <div class="mobile-more-sheet__divider"></div>
+            <div class="mobile-more-sheet__item mobile-more-sheet__lang">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15 15 0 010 20M12 2a15 15 0 000 20"/></svg>
+                <span>EN / ES</span>
+            </div>
+            <div class="mobile-more-sheet__lang-btns">
+                <a class="mobile-more-sheet__lang-btn {{ 'active' if lang == 'en' else '' }}" href="/set-language/en">EN</a>
+                <a class="mobile-more-sheet__lang-btn {{ 'active' if lang == 'es' else '' }}" href="/set-language/es">ES</a>
+            </div>
+            {% if _username %}
+            <form action="/logout" method="post" class="mobile-more-sheet__item mobile-more-sheet__logout">
+                <button type="submit">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9"/></svg>
+                    <span>{{ 'Sign out' if lang == 'en' else 'Salir' }} ({{ _username }})</span>
+                </button>
+            </form>
+            {% endif %}
+        </div>
+    </div>
+</div>
+<script>
+if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));
+}
+</script>

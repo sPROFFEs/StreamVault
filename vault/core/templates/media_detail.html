@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+{% set lang = request.cookies.get('lang', 'en') %}
+<html lang="{{ lang }}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>StreamVault</title>
+    {% include "_metadata.html" %}
+    <link rel="stylesheet" href="/assets/css/app.css?v=20261008-2">
+    <link rel="stylesheet" href="/assets/css/ui-extras.css?v=20261008-1">
+    <link rel="stylesheet" href="/assets/css/discovery.css?v=20261012-1">
+</head>
+<body class="app-shell detail-page">
+    <div id="toast-container" class="toast-container"></div>
+
+    {% set active = '' %}
+    {% include "_header.html" %}
+
+    <main class="media-layout media-layout--cinematic">
+        <section class="detail-feature" aria-labelledby="detail-title">
+            <div id="detail-page-bg" class="detail-feature__backdrop" aria-hidden="true"></div>
+            <div class="detail-feature__content">
+                <a id="detail-back" href="/browse" class="back-link" aria-label="{{ 'Back to catalog' if lang == 'en' else 'Volver al catálogo' }}">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+                    <span>{{ "Catalog" if lang == "en" else "Catálogo" }}</span>
+                </a>
+                <div id="detail-error" class="empty-state" role="alert" hidden>
+                    <p>{{ "Could not load details. Try again." if lang == "en" else "No se pudieron cargar los detalles. Inténtalo de nuevo." }}</p>
+                    <button id="retry-detail" class="button" type="button">{{ "Retry" if lang == "en" else "Reintentar" }}</button>
+                </div>
+                <div class="media-meta-row">
+                    <div id="detail-poster" class="media-poster"></div>
+                    <div class="detail-feature__summary">
+                        <span class="modal-eyebrow">STREAMVAULT · {{ ("SERIES" if lang == "en" else "SERIE") if media_type == "tv" else ("FILM" if lang == "en" else "PELÍCULA") }}</span>
+                        <h1 id="detail-title" class="media-title">{{ "Loading…" if lang == "en" else "Cargando…" }}</h1>
+                        <p id="detail-meta" class="media-meta-line"></p>
+                        <p id="detail-description" class="media-desc"></p>
+                        <p id="detail-genres" class="detail-feature__genres"></p>
+                        <a class="button detail-feature__watch" href="#player-container">
+                            {{ "Playback options" if lang == "en" else "Opciones de reproducción" }}
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ── LEFT: Player ── -->
+        <div class="media-player-col">
+            <div id="player-container" class="player-box player-box--cinema">
+                <div class="player-placeholder" id="player-placeholder">
+                    <div class="player-placeholder__backdrop"></div>
+                    <div class="player-placeholder__gradient"></div>
+                    <div class="player-placeholder__content">
+                        <button class="player-placeholder__play" type="button" aria-label="{{ 'Play' if lang == 'en' else 'Reproducir' }}">
+                            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+                        </button>
+                        <div class="player-placeholder__hint">{{ "Select a source and press play" if lang == "en" else "Selecciona una fuente y pulsa reproducir" }}</div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="torrent-status" class="torrent-status" hidden>
+                <div class="progress-bar-track">
+                    <div id="torrent-bar" class="progress-bar-fill" style="width:0%"></div>
+                </div>
+                <span id="torrent-info" class="muted" style="font-size:.8rem;"></span>
+            </div>
+
+            <div class="media-actions">
+                {% set _user = request.state.user if request and request.state else None %}
+                {% set _can_dl = (_user and (_user.is_admin or _user.can_download)) if _user else false %}
+                <button id="play-button" class="button button--primary" type="button">
+                    <svg viewBox="0 0 24 24" fill="currentColor" class="btn-icon-svg"><path d="M8 5v14l11-7z"/></svg>
+                    <span class="button-text">{{ "Play" if lang == "en" else "Reproducir" }}</span>
+                </button>
+                <button aria-pressed="false" id="favorite-button" class="button button--ghost" type="button">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon-svg"><path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/></svg>
+                    <span class="button-text">{{ "Save" if lang == "en" else "Guardar" }}</span>
+                </button>
+                {% if _can_dl %}
+                <button id="download-button" class="button button--ghost" type="button">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon-svg"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 19h16"/></svg>
+                    <span class="button-text">{{ "Download" if lang == "en" else "Descargar" }}</span>
+                </button>
+                {% else %}
+                <button id="download-button" class="button button--ghost" type="button" hidden>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon-svg"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 19h16"/></svg>
+                    <span class="button-text">{{ "Download" if lang == "en" else "Descargar" }}</span>
+                </button>
+                {% endif %}
+                <button id="fullscreen-button" class="button button--ghost" type="button">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon-svg"><path d="M3 7V3h4M21 7V3h-4M3 17v4h4M21 17v4h-4"/></svg>
+                    <span class="button-text">{{ "Fullscreen" if lang == "en" else "Pantalla" }}</span>
+                </button>
+                <span id="detail-status" class="footer-note" role="status" aria-live="polite"></span>
+            </div>
+        </div>
+
+        <!-- ── RIGHT: Info ── -->
+        <div class="media-info-col">
+            <div class="playback-heading">
+                <span class="modal-eyebrow">{{ "WATCH YOUR WAY" if lang == "en" else "A TU MANERA" }}</span>
+                <h2>{{ "Playback options" if lang == "en" else "Opciones de reproducción" }}</h2>
+            </div>
+
+            <div id="series-controls" class="detail-controls" style="display:none;">
+                <label class="field">
+                    <span>{{ "Season" if lang == "en" else "Temporada" }}</span>
+                    <select id="season-select" class="filter-select"></select>
+                </label>
+                <label class="field">
+                    <span>{{ "Episode" if lang == "en" else "Episodio" }}</span>
+                    <select id="episode-select" class="filter-select"></select>
+                </label>
+            </div>
+
+            <div class="field">
+                <label for="source-select" class="field-label">{{ "Source" if lang == "en" else "Fuente" }}</label>
+                <select id="source-select" class="filter-select"></select>
+            </div>
+
+            <div class="field" id="audio-wrapper" style="display:none;">
+                <label for="audio-select" class="field-label">Audio</label>
+                <select id="audio-select" class="filter-select"></select>
+            </div>
+
+            <section class="subtitle-box">
+                <div class="section-header section-header--compact">
+                    <strong>{{ "Subtitles" if lang == "en" else "Subtitulos" }}</strong>
+                    <select aria-label="{{ 'Subtitle language' if lang == 'en' else 'Idioma de subtítulos' }}" id="subtitle-lang-select" class="filter-select" style="font-size:.75rem;padding:.15rem .4rem;">
+                        <option value="en">EN</option>
+                        <option value="es">ES</option>
+                        <option value="pt">PT</option>
+                        <option value="fr">FR</option>
+                        <option value="de">DE</option>
+                    </select>
+                    <span class="badge badge--neutral" id="subtitle-badge">{{ "pending" if lang == "en" else "pendiente" }}</span>
+                </div>
+                <div id="subtitle-summary" class="muted" style="font-size:.83rem;">{{ "No check yet." if lang == "en" else "Sin comprobacion aun." }}</div>
+                <div id="subtitle-list" class="source-list source-list--bounded subtitle-list"></div>
+                <div class="subtitle-size-control">
+                    <label for="subtitle-size-slider" class="subtitle-size-label">{{ "Subtitle size" if lang == "en" else "Tamano subtitulos" }}</label>
+                    <input type="range" id="subtitle-size-slider" min="50" max="200" value="100" step="10" class="subtitle-size-slider">
+                    <span class="subtitle-size-value" id="subtitle-size-value">100%</span>
+                </div>
+            </section>
+        </div>
+    </main>
+
+    <div id="download-picker" class="modal-overlay" style="display:none;">
+        <div class="modal-panel download-picker" role="dialog" aria-modal="true" aria-labelledby="download-picker-title">
+            <div class="modal__header">
+                <div>
+                    <h2 id="download-picker-title">{{ "Choose download source" if lang == "en" else "Elegir fuente de descarga" }}</h2>
+                    <p class="muted">{{ "Torrent speed depends on seeders and swarm health." if lang == "en" else "La velocidad torrent depende de los seeders y la salud del swarm." }}</p>
+                </div>
+                <button id="download-picker-close" class="button" type="button">{{ "Close" if lang == "en" else "Cerrar" }}</button>
+            </div>
+            <div id="download-options" class="download-options"></div>
+        </div>
+    </div>
+
+    <script>
+        window.APP_LANG   = "{{ lang }}";
+        window.MEDIA_TMDB_ID = "{{ tmdb_id }}";
+        window.MEDIA_TYPE    = "{{ media_type }}";
+        window.PLAYBACK_LIBRARY_URLS = {
+            Hls: "https://cdn.jsdelivr.net/npm/hls.js@1.6.16/dist/hls.min.js",
+            WebTorrent: "https://cdn.jsdelivr.net/npm/webtorrent@3.0.21/dist/webtorrent.min.js",
+        };
+        window.CAN_DOWNLOAD  = {{ 'true' if _can_dl else 'false' }};
+    </script>
+    <script defer src="/assets/js/local-player.js?v=20261014-1"></script>
+    <script defer src="/assets/js/custom-player.js?v=20261008-2"></script>
+    <script defer src="/assets/js/media_detail.js?v=20261014-1"></script>
+</body>
+</html>

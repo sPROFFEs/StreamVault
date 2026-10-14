@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+{% set lang = request.cookies.get('lang', 'en') %}
+<html lang="{{ lang }}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ "Settings" if lang == "en" else "Ajustes" }} · StreamVault</title>
+    {% include "_metadata.html" %}
+    <link rel="stylesheet" href="/assets/css/app.css?v=20261008-1">
+    <link rel="stylesheet" href="/assets/css/ui-extras.css?v=20261008-1">
+    <link rel="stylesheet" href="/assets/css/settings.css?v=20261008-1">
+</head>
+<body class="app-shell settings-page">
+    {% set is_admin = request.state.user.is_admin if request.state.user is defined else is_admin | default(false) %}
+    {% set active = 'settings' %}
+    {% include "_header.html" %}
+
+    <main class="main">
+        <header class="settings-hero">
+            <h1>{{ "Settings" if lang == "en" else "Ajustes" }}</h1>
+            <p>{{ "Your account, appearance and viewing preferences." if lang == "en" else "Tu cuenta, apariencia y preferencias de reproducción." }}</p>
+        </header>
+        <div class="settings-layout">
+            <nav class="settings-nav" id="settings-nav" aria-label="{{ 'Settings sections' if lang == 'en' else 'Secciones de ajustes' }}">
+                <a href="#sec-account" data-jump="account" class="active">{{ "Account" if lang == "en" else "Cuenta" }}</a>
+                <a href="#sec-interface" data-jump="interface">{{ "Interface" if lang == "en" else "Interfaz" }}</a>
+                <a href="#sec-playback" data-jump="playback">{{ "Playback" if lang == "en" else "Reproducción" }}</a>
+                <a href="#sec-subtitles" data-jump="subtitles">{{ "Subtitles" if lang == "en" else "Subtítulos" }}</a>
+                <a href="#sec-age" data-jump="age">{{ "Age Rating" if lang == "en" else "Clasificación" }}</a>
+                <a href="#sec-downloads" data-jump="downloads">{{ "Downloads" if lang == "en" else "Descargas" }}</a>
+                <a href="#sec-library" data-jump="library">{{ "Library" if lang == "en" else "Biblioteca" }}</a>
+                <a href="#sec-notifications" data-jump="notifications">{{ "Notifications" if lang == "en" else "Notificaciones" }}</a>
+            </nav>
+
+            <div>
+                <div class="settings-search">
+                    <label for="settings-find" class="visually-hidden">{{ "Find a setting" if lang == "en" else "Buscar un ajuste" }}</label>
+                    <input type="search" id="settings-find" autocomplete="off"
+                           placeholder="{{ 'Find a setting…' if lang == 'en' else 'Buscar un ajuste…' }}" aria-describedby="settings-find-status">
+                    <span id="settings-find-status" class="setting-row__hint" role="status"></span>
+                </div>
+
+                <div class="settings-save-feedback">
+                    <span id="settings-save-status" role="status" aria-live="polite">{{ "Preferences save automatically. API keys use Save." if lang == "en" else "Las preferencias se guardan automáticamente. Las claves API usan Guardar." }}</span>
+                    <button id="settings-save-retry" class="button" type="button" hidden>{{ "Retry" if lang == "en" else "Reintentar" }}</button>
+                </div>
+
+                {% if msg %}
+                <div role="{{ 'alert' if type == 'error' else 'status' }}" class="message {{ 'message--success' if type == 'success' else 'message--error' if type == 'error' else '' }}">
+                    {{ msg }}
+                </div>
+                {% endif %}
+
+                <!-- Account -->
+                <section class="settings-section" id="sec-account" data-section="account" tabindex="-1" aria-labelledby="heading-account">
+                    <h2 id="heading-account">{{ "Account" if lang == "en" else "Cuenta" }}</h2>
+                    <form action="/settings" method="post" class="form-grid">
+                        <div class="setting-row">
+                            <div>
+                                <div class="setting-row__label">{{ "Username" if lang == "en" else "Usuario" }}</div>
+                                <div class="setting-row__hint">{{ username }}{% if is_admin %} · Admin{% endif %}</div>
+                            </div>
+                        </div>
+                        <div class="setting-row">
+                            <div>
+                                <div class="setting-row__label">{{ "Change password" if lang == "en" else "Cambiar contraseña" }}</div>
+                                <div id="password-help" class="setting-row__hint">{{ "Use at least 8 characters, with uppercase and lowercase letters, a number and a symbol." if lang == "en" else "Usa al menos 8 caracteres, mayúsculas y minúsculas, un número y un símbolo." }}</div>
+                            </div>
+                            <div class="setting-row__control password-fields">
+                                <label for="old_password">{{ "Current password" if lang == "en" else "Contraseña actual" }}</label>
+                                <input class="input" type="password" name="old_password" id="old_password" autocomplete="current-password" placeholder="{{ 'Current password' if lang == 'en' else 'Contraseña actual' }}" required>
+                                <label for="new_password">{{ "New password" if lang == "en" else "Nueva contraseña" }}</label>
+                                <input class="input" type="password" name="new_password" id="new_password" autocomplete="new-password" aria-describedby="password-help" placeholder="{{ 'New password' if lang == 'en' else 'Nueva contraseña' }}" required>
+                                <label for="confirm_password">{{ "Confirm password" if lang == "en" else "Confirmar contraseña" }}</label>
+                                <input class="input" type="password" name="confirm_password" id="confirm_password" autocomplete="new-password" placeholder="{{ 'Confirm' if lang == 'en' else 'Confirmar' }}" required>
+                                <button class="button button--primary" type="submit">{{ "Update password" if lang == "en" else "Actualizar contraseña" }}</button>
+                            </div>
+                        </div>
+                    </form>
+                </section>
+
+                <!-- Interface -->
+                <section class="settings-section" id="sec-interface" data-section="interface" tabindex="-1" aria-labelledby="heading-interface">
+                    <h2 id="heading-interface">{{ "Interface" if lang == "en" else "Interfaz" }}</h2>
+
+                    <div class="setting-row">
+                        <div>
+                            <div class="setting-row__label">{{ "Accent color" if lang == "en" else "Color de acento" }}</div>
+                            <div class="setting-row__hint">{{ "Pick the highlight color used across the app." if lang == "en" else "Elige el color destacado de la app." }}</div>
+                        </div>
+                        <div class="setting-row__control">
+                            <div class="accent-picker" id="accent-picker" role="group" aria-label="{{ 'Accent color' if lang == 'en' else 'Color de acento' }}"></div>
+                        </div>
+                    </div>
+
+                    <div class="setting-row">
+                        <div>
+                            <label for="font-size" class="setting-row__label">{{ "Font size" if lang == "en" else "Tamaño de fuente" }}</label>
+                        </div>
+                        <div class="setting-row__control">
+                            <select class="input" id="font-size">
+                                <option value="sm">{{ "Small" if lang == "en" else "Pequeño" }}</option>
+                                <option value="normal" selected>{{ "Normal" if lang == "en" else "Normal" }}</option>
+                                <option value="lg">{{ "Large" if lang == "en" else "Grande" }}</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="setting-row">
+                        <div>
+                            <label for="opt-compact" class="setting-row__label">{{ "Compact mode" if lang == "en" else "Modo compacto" }}</label>
+                            <div id="opt-compact-hint" class="setting-row__hint">{{ "Smaller cards, denser layout." if lang == "en" else "Tarjetas más pequeñas y diseño más denso." }}</div>
+                        </div>
+                        <div class="setting-row__control">
+                            <label class="switch"><input type="checkbox" id="opt-compact" aria-describedby="opt-compact-hint"><span class="switch__slider"></span></label>
+                        </div>
+                    </div>
+
+                    <div class="setting-row">
+                        <div>
+                            <label for="opt-no-anim" class="setting-row__label">{{ "Reduce animations" if lang == "en" else "Reducir animaciones" }}</label>
+                        </div>
+                        <div class="setting-row__control">
+                            <label class="switch"><input type="checkbox" id="opt-no-anim"><span class="switch__slider"></span></label>
+                        </div>
+                    </div>
+
+                    <div class="setting-row">
+                        <div>
+                            <label for="opt-home-view" class="setting-row__label">{{ "Home view" if lang == "en" else "Vista de inicio" }}</label>
+                            <div id="opt-home-view-hint" class="setting-row__hint">{{ "Carousel or flat grid." if lang == "en" else "Carrusel o cuadrícula." }}</div>
+                        </div>
+                        <div class="setting-row__control">
+                            <select class="input" id="opt-home-view" aria-describedby="opt-home-view-hint">
+                                <option value="carousel">{{ "Carousel" if lang == "en" else "Carrusel" }}</option>
+                                <option value="list">{{ "List" if lang == "en" else "Lista" }}</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="setting-row">
+                        <div>
+                            <div class="setting-row__label">{{ "Language" if lang == "en" else "Idioma" }}</div>
+                        </div>
+                        <div class="setting-row__control">
+                            <a class="button {{ 'button--primary' if lang == 'en' else '' }}" href="/set-language/en">English</a>
+                            <a class="button {{ 'button--primary' if lang == 'es' else '' }}" href="/set-language/es">Español</a>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Playback -->
+                <section class="settings-section" id="sec-playback" data-section="playback" tabindex="-1" aria-labelledby="heading-playback">
+                    <h2 id="heading-playback">{{ "Playback" if lang == "en" else "Reproducción" }}</h2>
+
+                    <div class="setting-row">
+                        <div>
+                            <label for="opt-default-source" class="setting-row__label">{{ "Default source" if lang == "en" else "Fuente por defecto" }}</label>
+                            <div id="opt-default-source-hint" class="setting-row__hint">{{ "The provider tried first on a media page." if lang == "en" else "El proveedor que se prueba primero." }}</div>
+                        </div>
+                        <div class="setting-row__control">
+                            <select class="input" id="opt-default-source" aria-describedby="opt-default-source-hint">
+                                <option value="videasy">Videasy</option>
+                                <option value="vidlink">VidLink</option>
+                                <option value="vidfast">VidFast</option>
+                                <option value="vidrock">VidRock</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="setting-row">
+                        <div>
+                            <label for="opt-source-failover" class="setting-row__label">{{ "Automatic source fallback" if lang == "en" else "Cambio automático de fuente" }}</label>
+                            <div id="opt-source-failover-hint" class="setting-row__hint">{{ "Try the next provider when the active player reports a failure." if lang == "en" else "Prueba el siguiente proveedor cuando el reproductor activo informa de un fallo." }}</div>
+                        </div>
+                        <div class="setting-row__control">
+                            <input type="checkbox" id="opt-source-failover" aria-describedby="opt-source-failover-hint">
+                        </div>
+                    </div>
+
+                    <div class="setting-row">
+                        <div>
+                            <label for="opt-torrent-sources" class="setting-row__label">{{ "Torrent sources" if lang == "en" else "Fuentes torrent" }}</label>
+                            <div id="opt-torrent-sources-hint" class="setting-row__hint">{{ "Include slower peer-to-peer results after embed sources." if lang == "en" else "Incluye resultados P2P más lentos después de las fuentes embed." }}</div>
+                        </div>
+                        <div class="setting-row__control">
+                            <input type="checkbox" id="opt-torrent-sources" aria-describedby="opt-torrent-sources-hint">
+                        </div>
+                    </div>
+
+                    <div class="setting-row">
+                        <div>
+                            <label for="opt-invidious" class="setting-row__label">{{ "Invidious instance" if lang == "en" else "Instancia Invidious" }}</label>
+                            <div id="opt-invidious-hint" class="setting-row__hint">{{ "Used for trailers." if lang == "en" else "Usada para tráilers." }}</div>
+                        </div>
+                        <div class="setting-row__control">
+                            <input class="input" id="opt-invidious" aria-describedby="opt-invidious-hint"  placeholder="inv.nadeko.net">
+                        </div>
+                    </div>
+
+                    <div class="setting-row">
+                        <div>
+                            <label for="opt-aniskip" class="setting-row__label">AniSkip</label>
+                            <div id="opt-aniskip-hint" class="setting-row__hint">{{ "Skip anime intros/outros automatically." if lang == "en" else "Saltar intros/outros de anime automáticamente." }}</div>
+                        </div>
+                        <div class="setting-row__control">
+                            <select class="input" id="opt-aniskip" aria-describedby="opt-aniskip-hint">
+                                <option value="off">{{ "Off" if lang == "en" else "Desactivado" }}</option>
+                                <option value="manual">{{ "Manual button" if lang == "en" else "Botón manual" }}</option>
+                                <option value="auto">{{ "Auto" if lang == "en" else "Automático" }}</option>
+                            </select>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Subtitles -->
+                <section class="settings-section" id="sec-subtitles" data-section="subtitles" tabindex="-1" aria-labelledby="heading-subtitles">
+                    <h2 id="heading-subtitles">{{ "Subtitles" if lang == "en" else "Subtítulos" }}</h2>
+                    <div class="setting-row">
+                        <div>
+                            <label for="key-opensubtitles" class="setting-row__label">OpenSubtitles API key</label>
+                            <div id="key-opensubtitles-hint" class="setting-row__hint">{{ "A saved personal key takes priority. Save an empty field to use the server key again." if lang == "en" else "La clave personal tiene prioridad. Guarda el campo vacío para volver a usar la clave del servidor." }}</div>
+                        </div>
+                        <div class="setting-row__control">
+                            <input class="input" type="password" id="key-opensubtitles" aria-describedby="key-opensubtitles-hint opensubtitles-key-status" placeholder="•••••••" autocomplete="new-password">
+                            <button class="btn" id="save-opensubtitles" aria-label="{{ 'Save OpenSubtitles API key' if lang == 'en' else 'Guardar clave API de OpenSubtitles' }}" type="button">{{ "Save" if lang == "en" else "Guardar" }}</button>
+                            <span id="opensubtitles-key-status" class="setting-key-status" role="status" aria-live="polite"></span>
+                        </div>
+                    </div>
+                    <div class="setting-row">
+                        <div>
+                            <label for="key-subdl" class="setting-row__label">Subdl API key</label>
+                            <div id="key-subdl-hint" class="setting-row__hint">{{ "Optional. Higher daily quota." if lang == "en" else "Opcional. Mayor cuota diaria." }}</div>
+                        </div>
+                        <div class="setting-row__control">
+                            <input class="input" type="password" id="key-subdl" aria-describedby="key-subdl-hint subdl-key-status" placeholder="•••••••" autocomplete="new-password">
+                            <button class="btn" id="save-subdl" aria-label="{{ 'Save Subdl API key' if lang == 'en' else 'Guardar clave API de Subdl' }}" type="button">{{ "Save" if lang == "en" else "Guardar" }}</button>
+                            <span id="subdl-key-status" class="setting-key-status" aria-live="polite" role="status"></span>
+                        </div>
+                    </div>
+                    <div class="setting-row">
+                        <div>
+                            <label for="key-wyzie" class="setting-row__label">Wyzie API key</label>
+                            <div id="key-wyzie-hint" class="setting-row__hint">{{ "Optional. Unlocks the premium Wyzie tier." if lang == "en" else "Opcional. Activa la versión premium de Wyzie." }}</div>
+                        </div>
+                        <div class="setting-row__control">
+                            <input class="input" type="password" id="key-wyzie" aria-describedby="key-wyzie-hint wyzie-key-status" placeholder="wyzie-…" autocomplete="new-password">
+                            <button class="btn" id="save-wyzie" aria-label="{{ 'Save Wyzie API key' if lang == 'en' else 'Guardar clave API de Wyzie' }}" type="button">{{ "Save" if lang == "en" else "Guardar" }}</button>
+                            <span id="wyzie-key-status" class="setting-key-status" aria-live="polite" role="status"></span>
+                        </div>
+                    </div>
+                    <div class="setting-row">
+                        <div>
+                            <label for="opt-subtitle-lang" class="setting-row__label">{{ "Preferred subtitle language" if lang == "en" else "Idioma de subtítulos preferido" }}</label>
+                            <div id="opt-subtitle-lang-hint" class="setting-row__hint">{{ "Auto-activates subtitles in this language when available." if lang == "en" else "Activa automáticamente subtítulos en este idioma cuando estén disponibles." }}</div>
+                        </div>
+                        <div class="setting-row__control">
+                            <select class="input" id="opt-subtitle-lang" aria-describedby="opt-subtitle-lang-hint">
+                                <option value="en">English</option>
+                                <option value="es">Español</option>
+                                <option value="pt">Português</option>
+                                <option value="fr">Français</option>
+                                <option value="de">Deutsch</option>
+                            </select>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Age rating -->
+                <section class="settings-section" id="sec-age" data-section="age" tabindex="-1" aria-labelledby="heading-age">
+                    <h2 id="heading-age">{{ "Age Rating" if lang == "en" else "Clasificación por edad" }}</h2>
+                    <div class="setting-row">
+                        <div>
+                            <label for="opt-rating-country" class="setting-row__label">{{ "Country" if lang == "en" else "País" }}</label>
+                            <div id="opt-rating-country-hint" class="setting-row__hint">{{ "Picks which certification system is used." if lang == "en" else "Determina qué sistema de clasificación se usa." }}</div>
+                        </div>
+                        <div class="setting-row__control">
+                            <select class="input" id="opt-rating-country" aria-describedby="opt-rating-country-hint">
+                                <option>US</option><option>DE</option><option>GB</option><option>FR</option>
+                                <option>AU</option><option>NZ</option><option>BR</option><option>CA</option><option>JP</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="setting-row">
+                        <div>
+                            <label for="opt-age-limit" class="setting-row__label">{{ "Age limit" if lang == "en" else "Edad máxima" }}</label>
+                            <div id="opt-age-limit-hint" class="setting-row__hint">{{ "Restricted items show a lock badge." if lang == "en" else "Los elementos restringidos muestran un candado." }}</div>
+                        </div>
+                        <div class="setting-row__control">
+                            <select class="input" id="opt-age-limit" aria-describedby="opt-age-limit-hint">
+                                <option value="none">{{ "No limit" if lang == "en" else "Sin límite" }}</option>
+                                <option value="0">0+</option><option value="7">7+</option>
+                                <option value="12">12+</option><option value="13">13+</option>
+                                <option value="15">15+</option><option value="16">16+</option>
+                                <option value="17">17+</option><option value="18">18+</option>
+                            </select>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Downloads -->
+                <section class="settings-section" id="sec-downloads" data-section="downloads" tabindex="-1" aria-labelledby="heading-downloads">
+                    <h2 id="heading-downloads">{{ "Downloads" if lang == "en" else "Descargas" }}</h2>
+                    <div class="setting-row">
+                        <div>
+                            <div class="setting-row__label">{{ "Storage quota" if lang == "en" else "Cuota de almacenamiento" }}</div>
+                            <div class="setting-row__hint">{{ "Configured in the admin panel." if lang == "en" else "Configurada desde el panel de administración." }}</div>
+                        </div>
+                        <div class="setting-row__control">
+                            {% if is_admin %}
+                            <a class="btn" href="/admin">{{ "Open admin" if lang == "en" else "Abrir admin" }}</a>
+                            {% else %}
+                            <span class="setting-row__hint">{{ "Contact your administrator to change the quota." if lang == "en" else "Contacta con tu administrador para cambiar la cuota." }}</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Library -->
+                <section class="settings-section" id="sec-library" data-section="library" tabindex="-1" aria-labelledby="heading-library">
+                    <h2 id="heading-library">{{ "Library" if lang == "en" else "Biblioteca" }}</h2>
+                    <div class="setting-row">
+                        <div>
+                            <label for="opt-lib-sort" class="setting-row__label">{{ "Default sort" if lang == "en" else "Orden por defecto" }}</label>
+                        </div>
+                        <div class="setting-row__control">
+                            <select class="input" id="opt-lib-sort">
+                                <option value="manual">{{ "Manual (drag order)" if lang == "en" else "Manual" }}</option>
+                                <option value="title">{{ "Title A→Z" if lang == "en" else "Título A→Z" }}</option>
+                                <option value="rating">{{ "Rating" if lang == "en" else "Valoración" }}</option>
+                                <option value="year">{{ "Year" if lang == "en" else "Año" }}</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="setting-row">
+                        <div>
+                            <label for="opt-history" class="setting-row__label">{{ "Watch history" if lang == "en" else "Historial" }}</label>
+                            <div id="opt-history-hint" class="setting-row__hint">{{ "Track what you watched." if lang == "en" else "Registrar lo que has visto." }}</div>
+                        </div>
+                        <div class="setting-row__control">
+                            <label class="switch"><input type="checkbox" id="opt-history" aria-describedby="opt-history-hint" checked><span class="switch__slider"></span></label>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Notifications -->
+                <section class="settings-section" id="sec-notifications" data-section="notifications" tabindex="-1" aria-labelledby="heading-notifications">
+                    <h2 id="heading-notifications">{{ "Notifications" if lang == "en" else "Notificaciones" }}</h2>
+                    <div class="setting-row">
+                        <div>
+                            <label for="opt-notif-dl" class="setting-row__label">{{ "Download finished" if lang == "en" else "Descarga finalizada" }}</label>
+                        </div>
+                        <div class="setting-row__control">
+                            <label class="switch"><input type="checkbox" id="opt-notif-dl" checked><span class="switch__slider"></span></label>
+                        </div>
+                    </div>
+                    <div class="setting-row">
+                        <div>
+                            <label for="opt-notif-ep" class="setting-row__label">{{ "New episodes" if lang == "en" else "Nuevos episodios" }}</label>
+                            <div id="opt-notif-ep-hint" class="setting-row__hint">{{ "On startup, check the watchlist for new episodes." if lang == "en" else "Al arrancar, busca nuevos episodios de tu lista." }}</div>
+                        </div>
+                        <div class="setting-row__control">
+                            <label class="switch"><input type="checkbox" id="opt-notif-ep" aria-describedby="opt-notif-ep-hint" checked><span class="switch__slider"></span></label>
+                        </div>
+                    </div>
+                </section>
+            </div>
+        </div>
+    </main>
+
+    <script defer src="/assets/js/settings.js?v=20261009-1"></script>
+</body>
+</html>

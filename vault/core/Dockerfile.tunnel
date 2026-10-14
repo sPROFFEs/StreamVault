@@ -1,0 +1,15 @@
+FROM cloudflare/cloudflared:2026.9.0 AS connector
+FROM python:3.11-slim
+
+WORKDIR /app
+ENV PYTHONDONTWRITEBYTECODE=1
+COPY requirements-tunnel.lock .
+RUN pip install --no-cache-dir --require-hashes -r requirements-tunnel.lock
+COPY --from=connector /usr/local/bin/cloudflared /usr/local/bin/cloudflared
+COPY services/cloudflared_service.py services/cloudflared_worker.py /app/services/
+
+# Match core's appuser so the encrypted config stays private (mode 0600).
+USER 1000:1000
+ENV PYTHONUNBUFFERED=1
+EXPOSE 8080
+CMD ["python", "-m", "services.cloudflared_worker"]

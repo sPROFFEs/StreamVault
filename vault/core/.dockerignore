@@ -1,0 +1,10 @@
+*
+# These are the only local inputs copied by the three Dockerfiles. Application
+# code/assets are bind-mounted at runtime; never send local databases or secrets.
+!Dockerfile*
+!requirements*.lock
+!entrypoint.sh
+!services/
+services/*
+!services/cloudflared_service.py
+!services/cloudflared_worker.py

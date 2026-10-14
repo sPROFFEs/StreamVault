@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+{% set lang = request.cookies.get('lang', 'en') %}
+<html lang="{{ lang }}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin · StreamVault</title>
+    {% include "_metadata.html" %}
+    <link rel="stylesheet" href="/assets/css/app.css?v=20261008-1">
+    <link rel="stylesheet" href="/assets/css/ui-extras.css?v=20261008-1">
+    <link rel="stylesheet" href="/assets/css/admin.css?v=20261008-2">
+    <link rel="stylesheet" href="/assets/css/updater.css?v=20261008-1">
+    <link rel="stylesheet" href="/assets/css/operations.css?v=20261014-1">
+</head>
+<body class="app-shell">
+    {% set active = 'admin' %}
+    {% include "_header.html" %}
+
+    {% set sys_stats = sys_stats | default({'cpu_usage': 0, 'ram_percent': 0, 'disk_total': 0, 'disk_used': 0, 'disk_percent': 0}) %}
+    {% set stats = stats | default({'download_quota_gb': 0, 'download_usage_gb': 0, 'download_usage_percent': 0}) %}
+    {% set users = users | default([]) %}
+    {% set tabs = [('overview', 'Overview', 'Resumen'), ('files', 'Files', 'Archivos'), ('users', 'Users', 'Usuarios'), ('remote', 'Remote access', 'Acceso remoto'), ('catalog', 'Catalog', 'Catálogo'), ('system', 'System monitor', 'Monitor del sistema'), ('federation', 'Federation', 'Federación')] %}
+    {% set selected_tab = request.query_params.get('tab', 'users' if request.query_params.get('manage_users') else ('files' if request.query_params.get('download_q') or request.query_params.get('download_path') else 'overview')) %}
+    {% if selected_tab not in ['overview', 'files', 'users', 'remote', 'catalog', 'system', 'federation'] %}{% set selected_tab = 'overview' %}{% endif %}
+    <main class="page stack admin-page">
+        <header class="admin-hero">
+            <p class="admin-hero__eyebrow">STREAMVAULT CONTROL</p>
+            <h1>{{ "Administration" if lang == "en" else "Administración" }}</h1>
+            <p>{{ "Accounts, storage and secure remote access." if lang == "en" else "Cuentas, almacenamiento y acceso remoto seguro." }}</p>
+        </header>
+        {% if request.query_params.msg %}
+        <div class="message message--success" role="status">{{ request.query_params.msg }}</div>
+        {% endif %}
+        {% if request.query_params.error %}
+        <div class="message message--error" role="alert">{{ request.query_params.error }}</div>
+        {% endif %}
+
+        <nav class="admin-tabs" role="tablist" data-native-navigation aria-label="{{ 'Administration sections' if lang == 'en' else 'Secciones de administración' }}">
+            {% for key, en, es in tabs %}
+            <a id="admin-tab-{{ key }}" class="admin-tab" href="/admin/?tab={{ key }}" role="tab"
+               data-admin-tab="{{ key }}" aria-controls="{{ 'user-manager-section' if key == 'users' else 'admin-panel-' ~ key }}"
+               aria-selected="{{ 'true' if selected_tab == key else 'false' }}" tabindex="{{ '0' if selected_tab == key else '-1' }}">{{ en if lang == 'en' else es }}</a>
+            {% endfor %}
+        </nav>
+
+        <section class="split-grid admin-tab-panel" id="admin-panel-overview" role="tabpanel" aria-labelledby="admin-tab-overview" data-admin-panel="overview" {% if selected_tab != 'overview' %}hidden{% endif %}>
+            <article class="panel">
+                <div class="panel__body">
+                    <h2 class="panel__title">{{ "System Health" if lang == "en" else "Estado del Sistema" }}</h2>
+                    <div class="meta-list">
+                        <div class="meta-item">
+                            <div>
+                                <strong>CPU & RAM</strong>
+                                <div class="muted">{{ sys_stats.cpu_usage }}% CPU / {{ sys_stats.ram_percent }}% RAM</div>
+                            </div>
+                            <div class="meter" style="width: 80px;"><span style="width: {{ sys_stats.ram_percent }}%;"></span></div>
+                        </div>
+                        <div class="meta-item">
+                            <div>
+                                <strong>{{ "Local Storage" if lang == "en" else "Almacenamiento Local" }}</strong>
+                                <div class="muted">{{ sys_stats.disk_used }} GB / {{ sys_stats.disk_total }} GB ({{ sys_stats.disk_percent }}%)</div>
+                            </div>
+                            <div class="meter" style="width: 80px;"><span style="width: {{ sys_stats.disk_percent }}%;"></span></div>
+                        </div>
+                        <div class="meta-item">
+                            <div>
+                                <strong>{{ "Download Pool" if lang == "en" else "Pool de Descargas" }}</strong>
+                                <div class="muted">{{ stats.download_usage_gb }} GB / {{ stats.download_quota_gb }} GB ({{ stats.download_usage_percent }}%)</div>
+                            </div>
+                            <div class="meter" style="width: 80px;"><span style="width: {{ stats.download_usage_percent }}%;"></span></div>
+                        </div>
+                    </div>
+                </div>
+            </article>
+
+            <article class="panel">
+                <div class="panel__body">
+                    <h2 class="panel__title">{{ "Maintenance & Limits" if lang == "en" else "Mantenimiento y Límites" }}</h2>
+                    <div class="meta-list">
+                        <div class="meta-item">
+                            <div>
+                                <strong>{{ "Global download quota" if lang == "en" else "Cuota de descarga global" }}</strong>
+                                <div class="muted">{{ "Max storage limit for shared downloads." if lang == "en" else "Límite máximo de disco para descargas compartidas." }}</div>
+                            </div>
+                            <form action="/admin/system/update-download-quota" method="post" class="inline-form">
+                                <input class="filter-input filter-input--compact" type="number" name="storage_limit" aria-label="{{ 'Global download quota in GB' if lang == 'en' else 'Cuota global de descargas en GB' }}" min="1" max="{{ sys_stats.disk_total }}" value="{{ stats.download_quota_gb }}" required>
+                                <button class="button" type="submit">{{ "Save" if lang == "en" else "Guardar" }}</button>
+                            </form>
+                        </div>
+                        {% include "_admin_updater.html" %}
+                        {% include "_update_source.html" %}
+                        <div class="inline-actions">
+                            <form action="/admin/system/purge-storage" method="post">
+                                <button class="button button--compact button--ghost" type="submit">{{ "Clean Residue" if lang == "en" else "Limpiar Residuos" }}</button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            </article>
+        </section>
+
+        <section class="panel tunnel-panel admin-tab-panel" id="admin-panel-remote" role="tabpanel" aria-labelledby="admin-tab-remote" data-admin-panel="remote" {% if selected_tab != 'remote' %}hidden{% endif %}>
+            <div class="panel__body">
+                <div class="admin-section-heading">
+                    <div>
+                        <p class="admin-section-heading__eyebrow">REMOTE ACCESS</p>
+                        <h2 class="panel__title" id="tunnel-title">Cloudflare Tunnel</h2>
+                        <p class="panel__subtle">{{ "Expose only StreamVault through an outbound encrypted tunnel. Login remains required." if lang == "en" else "Expone solo StreamVault mediante un túnel cifrado saliente. El inicio de sesión sigue siendo obligatorio." }}</p>
+                    </div>
+                    <div class="tunnel-state">
+                        <span id="tunnel-status" class="badge badge--neutral">{{ "Checking" if lang == "en" else "Comprobando" }}</span>
+                        <label class="switch" title="{{ 'Enable remote access' if lang == 'en' else 'Activar acceso remoto' }}">
+                            <input id="tunnel-enabled" type="checkbox" aria-label="{{ 'Enable remote access' if lang == 'en' else 'Activar acceso remoto' }}">
+                            <span class="switch__slider"></span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="tunnel-layout">
+                    <div class="tunnel-config">
+                        <label class="field">
+                            <span>{{ "Mode" if lang == "en" else "Modo" }}</span>
+                            <select id="tunnel-mode" class="filter-input">
+                                <option value="quick">{{ "Quick temporary URL" if lang == "en" else "URL temporal rápida" }}</option>
+                                <option value="managed">{{ "Managed hostname" if lang == "en" else "Dominio gestionado" }}</option>
+                            </select>
+                        </label>
+                        <label class="field">
+                            <span>{{ "Internal origin" if lang == "en" else "Origen interno" }}</span>
+                            <input id="tunnel-origin" class="filter-input" value="http://nginx:80" autocomplete="off">
+                        </label>
+                        <label class="field" id="tunnel-token-field" hidden>
+                            <span>{{ "Existing tunnel token" if lang == "en" else "Token de túnel existente" }}</span>
+                            <input id="tunnel-token" class="filter-input" type="password" autocomplete="new-password" placeholder="eyJ…">
+                        </label>
+                        <div class="inline-actions tunnel-actions">
+                            <button id="tunnel-save" class="button" type="button">{{ "Save configuration" if lang == "en" else "Guardar configuración" }}</button>
+                            <button id="tunnel-refresh" class="button" type="button">{{ "Refresh status" if lang == "en" else "Actualizar estado" }}</button>
+                            <button id="tunnel-start" class="button button--primary" type="button">{{ "Start" if lang == "en" else "Iniciar" }}</button>
+                            <button id="tunnel-stop" class="button" type="button">{{ "Stop" if lang == "en" else "Detener" }}</button>
+                        </div>
+                    </div>
+
+                    <div class="tunnel-create" id="tunnel-managed-fields" hidden>
+                        <h3>{{ "Create a managed tunnel" if lang == "en" else "Crear túnel gestionado" }}</h3>
+                        <p class="muted">{{ "Requires a scoped Cloudflare API token with Tunnel and DNS write access. The API token is used once and never stored." if lang == "en" else "Requiere un token API limitado con permisos de escritura de Tunnel y DNS. Se usa una vez y nunca se guarda." }}</p>
+                        <div class="tunnel-create__grid">
+                            <label class="field"><span>Account ID</span><input id="tunnel-account" class="filter-input" autocomplete="off"></label>
+                            <label class="field"><span>Zone ID</span><input id="tunnel-zone" class="filter-input" autocomplete="off"></label>
+                            <label class="field"><span>API token</span><input id="tunnel-api-token" class="filter-input" type="password" autocomplete="new-password"></label>
+                            <label class="field"><span>{{ "Tunnel name" if lang == "en" else "Nombre del túnel" }}</span><input id="tunnel-name" class="filter-input" value="streamvault"></label>
+                            <label class="field tunnel-create__hostname"><span>{{ "Public hostname" if lang == "en" else "Dominio público" }}</span><input id="tunnel-hostname" class="filter-input" placeholder="watch.example.com"></label>
+                        </div>
+                        <button id="tunnel-create" class="button button--primary" type="button">{{ "Create tunnel and DNS route" if lang == "en" else "Crear túnel y ruta DNS" }}</button>
+                    </div>
+                </div>
+                <div id="tunnel-result" role="status" aria-live="polite" class="tunnel-result" hidden></div>
+                <pre id="tunnel-logs" class="tunnel-logs" hidden></pre>
+            </div>
+        </section>
+
+        <section class="panel admin-tab-panel" id="admin-panel-catalog" role="tabpanel" aria-labelledby="admin-tab-catalog" data-admin-panel="catalog" {% if selected_tab != 'catalog' %}hidden{% endif %}>
+            <div class="panel__body">
+                <div class="admin-section-heading">
+                    <div>
+                        <p class="admin-section-heading__eyebrow">CATALOG METADATA</p>
+                        <h2 class="panel__title" id="tmdb-title">TMDB API Key</h2>
+                        <p class="panel__subtle">{{ "Powers the movie and series catalog. Get a free key at themoviedb.org/settings/api." if lang == "en" else "Impulsa el catálogo de películas y series. Consigue una clave gratuita en themoviedb.org/settings/api." }}</p>
+                    </div>
+                    <span id="tmdb-status" class="badge badge--neutral">{{ "Checking" if lang == "en" else "Comprobando" }}</span>
+                </div>
+                <div class="tmdb-config">
+                    <label class="field">
+                        <span>API Key</span>
+                        <input id="tmdb-key-input" aria-describedby="tmdb-result" class="filter-input" type="password" autocomplete="new-password" placeholder="{{ 'Enter TMDB API key' if lang == 'en' else 'Introduce la clave API de TMDB' }}">
+                    </label>
+                    <div class="inline-actions">
+                        <button id="tmdb-save" class="button button--primary" type="button">{{ "Save & reload" if lang == "en" else "Guardar y recargar" }}</button>
+                        <button id="tmdb-clear" class="button button--ghost" type="button">{{ "Clear" if lang == "en" else "Limpiar" }}</button>
+                    </div>
+                    <p id="tmdb-result" role="status" aria-live="polite" class="setting-key-status" style="min-height:1em;"></p>
+                </div>
+            </div>
+        </section>
+
+
+
+
+        <section class="panel admin-tab-panel" id="user-manager-section" role="tabpanel" aria-labelledby="admin-tab-users" data-admin-panel="users" {% if selected_tab != 'users' %}hidden{% endif %}>
+            <div class="panel__body">
+                <div class="admin-section-heading">
+                    <div>
+                        <p class="admin-section-heading__eyebrow">ACCOUNTS</p>
+                        <h2 class="panel__title">{{ "Users & Access" if lang == "en" else "Usuarios y Accesos" }}</h2>
+                        <p class="panel__subtle">{{ "Create accounts, manage roles, and control who can download content." if lang == "en" else "Crea cuentas, gestiona roles y controla quién puede descargar." }}</p>
+                    </div>
+                </div>
+                
+                <div class="admin-users-grid">
+                    <!-- Create user -->
+                    <div class="um-section">
+                        <h3 class="um-section__title" style="margin-bottom:1rem; font-size:14px; font-weight:600; color:var(--text-muted)">{{ "Create account" if lang == "en" else "Crear cuenta" }}</h3>
+                        <form action="/admin/users/create" method="post" class="um-create-form" style="display:flex; flex-direction:column; gap:0.75rem;">
+                            <div class="um-field">
+                                <label for="um-username">{{ "Username" if lang == "en" else "Usuario" }}</label>
+                                <input id="um-username" class="filter-input" type="text" autocomplete="username" name="username" aria-describedby="um-username-help" required>
+                                <span id="um-username-help" class="field-hint">{{ "3–32 characters: letters, numbers, underscore, dot or hyphen. Start with a letter or number." if lang == "en" else "3–32 caracteres: letras, números, guion bajo, punto o guion. Empieza con letra o número." }}</span>
+                            </div>
+                            <div class="um-field">
+                                <label for="um-password">{{ "Password" if lang == "en" else "Contraseña" }}</label>
+                                <input id="um-password" class="filter-input" type="password" autocomplete="new-password" name="password" aria-describedby="um-password-help" required>
+                                <span id="um-password-help" class="field-hint">{{ "At least 8 characters, uppercase and lowercase letters, a number and a symbol." if lang == "en" else "Al menos 8 caracteres, mayúsculas y minúsculas, un número y un símbolo." }}</span>
+                            </div>
+                            <div class="um-perms" style="display:flex; gap:1rem; margin-top:0.5rem;">
+                                <label class="field-hint um-check"><input type="checkbox" name="is_admin" value="true"> {{ "Admin" if lang == "en" else "Admin" }}</label>
+                                <label class="field-hint um-check"><input type="checkbox" name="can_download" value="true"> {{ "Allow downloads" if lang == "en" else "Permitir descargas" }}</label>
+                            </div>
+                            <button class="button button--primary" type="submit" style="align-self:flex-start; margin-top:0.5rem;">{{ "Create Account" if lang == "en" else "Crear Cuenta" }}</button>
+                        </form>
+                    </div>
+
+                    <!-- User list -->
+                    <div class="um-section">
+                        <h3 class="um-section__title" style="margin-bottom:1rem; font-size:14px; font-weight:600; color:var(--text-muted)">{{ "Existing users" if lang == "en" else "Usuarios existentes" }}</h3>
+                        <div class="um-user-list" style="max-height: 400px; overflow-y: auto; padding-right: 1rem; display:flex; flex-direction:column; gap:1rem;">
+                            {% for u in users %}
+                            <div class="um-user-card" style="background:var(--surface2); padding:1rem; border-radius:var(--radius); border:1px solid var(--border);">
+                                <div class="um-user-card__head" style="display:flex; justify-content:space-between; margin-bottom:1rem;">
+                                    <div class="um-user-card__identity">
+                                        <strong style="font-size:15px;">{{ u.username }}</strong>
+                                    </div>
+                                    <div class="um-user-card__badges" style="display:flex; gap:0.5rem;">
+                                        {% if u.is_admin %}<span class="badge badge--warn">Admin</span>{% endif %}
+                                        {% if u.can_download %}<span class="badge badge--ok">{{ "Download" if lang == "en" else "Descarga" }}</span>{% endif %}
+                                    </div>
+                                </div>
+                                {% if u.username != username %}
+                                <div class="um-user-card__body">
+                                    <form action="/admin/users/update-state" method="post" class="um-perm-form" style="display:flex; flex-wrap:wrap; gap:1rem; align-items:center; margin-bottom:1rem;">
+                                        <input type="hidden" name="user_id" value="{{ u.id }}">
+                                        <label class="field-hint um-check"><input type="checkbox" name="is_admin" value="true" {% if u.is_admin %}checked{% endif %}> {{ "Admin" if lang == "en" else "Admin" }}</label>
+                                        <label class="field-hint um-check"><input type="checkbox" name="can_download" value="true" {% if u.can_download %}checked{% endif %} {% if u.is_admin %}disabled{% endif %}> {{ "Download" if lang == "en" else "Descarga" }}</label>
+                                        <label class="field-hint um-check"><input type="checkbox" name="is_active" value="true" {% if u.is_active %}checked{% endif %}> {{ "Active" if lang == "en" else "Activo" }}</label>
+                                        <button class="button button--compact" type="submit">{{ "Apply" if lang == "en" else "Aplicar" }}</button>
+                                    </form>
+                                    <div class="um-user-card__actions" style="display:flex; gap:0.5rem;">
+                                        <form action="/admin/users/reset-password" method="post" class="um-inline-form" style="display:flex; gap:0.5rem;">
+                                            <input type="hidden" name="user_id" value="{{ u.id }}">
+                                            <input class="filter-input filter-input--compact" type="password" name="new_password" autocomplete="new-password" aria-label="{{ ('New password for ' if lang == 'en' else 'Nueva contraseña para ') ~ u.username }}" placeholder="{{ 'New password' if lang == 'en' else 'Nueva contraseña' }}" required style="width:120px;">
+                                            <button class="button button--compact" type="submit">{{ "Reset" if lang == "en" else "Reset" }}</button>
+                                        </form>
+                                        <form action="/admin/users/delete" method="post" onsubmit="return confirm('{{ 'This user and their data will be deleted. Continue?' if lang == 'en' else 'Se eliminará este usuario y sus datos. ¿Continuar?' }}')">
+                                            <input type="hidden" name="user_id" value="{{ u.id }}">
+                                            <button class="button button--danger button--compact" type="submit">{{ "Delete" if lang == "en" else "Eliminar" }}</button>
+                                        </form>
+                                    </div>
+                                </div>
+                                {% else %}
+                                <div class="um-user-card__body">
+                                    <a class="button button--ghost" href="/settings#sec-account">{{ "Manage your password in Settings" if lang == "en" else "Gestiona tu contraseña en Ajustes" }}</a>
+                                </div>
+                                {% endif %}
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+
+        {% include "_admin_files.html" %}
+        {% include "_admin_operations.html" %}
+
+    </main>
+
+    <!-- File preview overlay -->
+    <div id="preview-overlay" class="preview-overlay" role="dialog" aria-modal="true" aria-label="{{ 'Preview' if lang == 'en' else 'Vista previa' }}" hidden>
+        <div class="preview-panel">
+            <div class="preview-panel__header">
+                <span id="preview-title" class="preview-panel__title"></span>
+                <button id="preview-close" class="button" type="button">{{ "Close" if lang == "en" else "Cerrar" }}</button>
+            </div>
+            <div id="preview-body" class="preview-panel__body" role="status" aria-live="polite"></div>
+        </div>
+    </div>
+
+    <script>window.APP_LANG = "{{ lang }}";</script>
+    <script defer src="/assets/js/admin-files.js?v=20261008-1"></script>
+    <script defer src="/assets/js/admin.js?v=20261008-1"></script>
+    <script defer src="/assets/js/updater.js?v=20261014-1"></script>
+    <script defer src="/assets/js/operations.js?v=20261014-1"></script>
+</body>
+</html>

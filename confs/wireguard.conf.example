@@ -1,0 +1,12 @@
+# Template only: obtain fresh credentials from your VPN provider.
+# Copy to an ignored *.conf file or to your persistent data directory.
+[Interface]
+PrivateKey = <YOUR_NEW_PRIVATE_KEY>
+Address = <YOUR_ASSIGNED_ADDRESS>
+DNS = <YOUR_PROVIDER_DNS>
+
+[Peer]
+PublicKey = <YOUR_PROVIDER_PUBLIC_KEY>
+AllowedIPs = 0.0.0.0/0, ::/0
+Endpoint = <YOUR_PROVIDER_HOST>:51820
+PersistentKeepalive = 25
