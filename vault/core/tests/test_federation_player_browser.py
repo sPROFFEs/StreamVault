@@ -7,18 +7,44 @@ from test_discovery_routes_browser import discovery_page
 pytestmark = pytest.mark.browser
 
 
-def test_cached_node_sources_do_not_wait_for_external_providers(discovery_page):
+@pytest.mark.parametrize("defer_resolver", [False, True], ids=["immediate", "deferred"])
+def test_cached_node_sources_do_not_wait_for_external_providers(discovery_page, defer_resolver):
     ui, page = discovery_page, discovery_page.page
+    if defer_resolver:
+        # Model a queued request without relying on network or CPU timing.
+        page.add_init_script("""
+            const nativeFetch = window.fetch.bind(window);
+            window.fetch = (url, options) => {
+                if (String(url).startsWith('/api/stream/resolve/7?')) {
+                    return new Promise(resolve => {
+                        window.releaseExternalResolver = () => resolve(nativeFetch(url, options));
+                    });
+                }
+                return nativeFetch(url, options);
+            };
+        """)
     base = "/api/federation/peers/1/media/" + "a" * 64
     ui.payloads["/api/federation/sources/7"] = [{"source": "Node · Ready now", "type": "federation", "quality": "1080p",
         "url": base + "/stream", "playback_url": base + "/playback", "metadata_url": base + "/metadata"}]
-    pending = []
-    page.route("**/api/stream/resolve/7?*", lambda route: pending.append(route))
-    page.goto("https://streamvault.test/media/7?type=movie")
-    expect(page.locator("#source-select")).to_contain_text("Ready now")
-    assert len(pending) == 1
-    pending[0].fulfill(json=ui.payloads["/api/federation/sources/7"])
-    expect(page.locator("#source-select option")).to_have_count(1)
+    external_source = {"source": "External provider", "type": "direct", "url": "/external.mp4"}
+
+    def resolve(route):
+        # The cached source must already be visible before the provider replies.
+        expect(page.locator("#source-select")).to_contain_text("Ready now")
+        route.fulfill(json=[*ui.payloads["/api/federation/sources/7"], external_source])
+
+    page.route("**/api/stream/resolve/7?*", resolve)
+    with page.expect_response("**/api/stream/resolve/7?*") as response:
+        page.goto("https://streamvault.test/media/7?type=movie")
+        if defer_resolver:
+            expect(page.locator("#source-select")).to_contain_text("Ready now")
+            page.wait_for_function("typeof window.releaseExternalResolver === 'function'")
+            page.evaluate("window.releaseExternalResolver(); undefined")
+    assert response.value.ok
+    # Wait for the merge, not an option count that was true before the response.
+    expect(page.locator("#source-select option")).to_have_count(2)
+    expect(page.locator("#source-select option").filter(has_text="Ready now")).to_have_count(1)
+    expect(page.locator("#source-select")).to_contain_text("External provider")
 
 
 def test_federated_source_metadata_audio_and_seek_use_same_origin(discovery_page):
