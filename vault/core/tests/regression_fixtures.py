@@ -44,7 +44,9 @@ def regression_browser():
     # The sync API owns an asyncio loop until stopped. Session scope would
     # leave that loop active during unrelated tests calling asyncio.run().
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch()
+        # GPU-backed frames can stall on virtual/remote desktop hosts, leaving
+        # otherwise valid clicks and screenshots waiting indefinitely.
+        browser = playwright.chromium.launch(args=["--disable-gpu", "--disable-dev-shm-usage"])
         try:
             yield browser
         finally:

@@ -8,8 +8,8 @@
     <title>{{ "Create administrator" if setup and lang == "en" else "Crear administrador" if setup else "Sign in" if lang == "en" else "Iniciar sesión" }} · StreamVault</title>
     {% include "_metadata.html" %}
     <link rel="stylesheet" href="/assets/css/app.css?v=20261008-1">
-    <link rel="stylesheet" href="/assets/css/auth.css?v=20261012-1">
-    <script defer src="/assets/js/auth.js?v=20261008-1"></script>
+    <link rel="stylesheet" href="/assets/css/auth.css?v=20261014-2">
+    <script defer src="/assets/js/auth.js?v=20261014-2"></script>
     <script defer src="/assets/js/shell.js?v=20261010-1"></script>
 </head>
 <body class="app-shell no-sidebar auth-body">
@@ -43,7 +43,11 @@
                     <label for="password">{{ "Password" if lang == "en" else "Contraseña" }}</label>
                     <div class="auth-password">
                         <input id="password" class="filter-input" type="password" name="password" required autocomplete="{{ 'new-password' if setup else 'current-password' }}" autocapitalize="none" autocorrect="off" spellcheck="false" enterkeyhint="{{ 'done' if setup else 'go' }}" aria-describedby="password-hint password-error" {% if setup %}minlength="8"{% endif %}>
-                        <button id="password-toggle" class="button button--ghost" type="button" aria-controls="password" aria-pressed="false" data-show="{{ 'Show password' if lang == 'en' else 'Mostrar contraseña' }}" data-hide="{{ 'Hide password' if lang == 'en' else 'Ocultar contraseña' }}" hidden>{{ 'Show password' if lang == 'en' else 'Mostrar contraseña' }}</button>
+                        <button id="password-toggle" class="button button--ghost auth-password-toggle" type="button" aria-controls="password" aria-pressed="false" aria-label="{{ 'Show password' if lang == 'en' else 'Mostrar contraseña' }}" title="{{ 'Show password' if lang == 'en' else 'Mostrar contraseña' }}" data-show="{{ 'Show password' if lang == 'en' else 'Mostrar contraseña' }}" data-hide="{{ 'Hide password' if lang == 'en' else 'Ocultar contraseña' }}" hidden>
+                            <svg data-password-icon="show" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>
+                            <svg data-password-icon="hide" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false" hidden><path d="m3 3 18 18M10.6 5.1 12 5c6.5 0 10 7 10 7a20 20 0 0 1-3 4M6.1 6.1A22 22 0 0 0 2 12s3.5 7 10 7c1.9 0 3.6-.6 5.1-1.5M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>
+                            <span class="sr-only" data-password-label>{{ 'Show password' if lang == 'en' else 'Mostrar contraseña' }}</span>
+                        </button>
                     </div>
                     <p id="password-hint" class="auth-hint">{{ messages.weak_password if setup else "Your password is case-sensitive." if lang == "en" else "Tu contraseña distingue mayúsculas y minúsculas." }}</p>
                     <span id="password-error" class="auth-field-error" hidden></span>

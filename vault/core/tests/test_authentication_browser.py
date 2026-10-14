@@ -2,6 +2,7 @@
 import pytest
 from playwright.sync_api import expect
 from test_authentication import empty_accounts
+from test_visual_foundations_browser import contrast, rgb
 
 pytestmark = pytest.mark.browser
 
@@ -16,7 +17,7 @@ def fill_login(page, password="Baseline123!"):
     page.get_by_label("Password", exact=True).fill(password)
 
 
-def test_password_visibility_autofill_and_remote_navigation(baseline_page, tmp_path):
+def test_password_visibility_autofill_and_remote_navigation(baseline_page):
     page = open_login(baseline_page)
     username = page.get_by_label("Username", exact=True)
     password = page.get_by_label("Password", exact=True)
@@ -44,7 +45,6 @@ def test_password_visibility_autofill_and_remote_navigation(baseline_page, tmp_p
             rect = control.bounding_box()
             assert rect["height"] >= 44 and rect["width"] >= 44
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
-    page.screenshot(path=str(tmp_path / f"auth-{page.viewport_size['width']}.png"), full_page=True)
     if page.viewport_size["width"] >= 1800:
         assert float(username.evaluate("e => parseFloat(getComputedStyle(e).fontSize)")) >= 20
     page.set_viewport_size({"width": 320, "height": 480})
@@ -179,3 +179,79 @@ def test_initial_setup_uses_creation_rules_and_success_notice(empty_accounts, ba
     expect(page).to_have_url(f"{baseline_page.base_url}/login?notice=created")
     expect(page.get_by_role("status").filter(has_text="Administrator account created")).to_be_visible()
     assert "Baseline123!" not in page.locator("body").inner_text()
+
+
+@pytest.mark.parametrize("language", ["en", "es"])
+def test_language_selector_has_readable_selected_hover_and_focus_states(baseline_page, language):
+    page = baseline_page.page
+    page.context.add_cookies([{"name": "lang", "value": language, "url": baseline_page.base_url}])
+    open_login(baseline_page)
+    selected = page.locator('.auth-language [aria-current="true"]')
+    expect(selected).to_have_attribute("lang", language)
+    for state in ("normal", "hover", "focus"):
+        if state == "hover": selected.hover()
+        if state == "focus": selected.focus()
+        colors = selected.evaluate("e => { const s = getComputedStyle(e); return [s.color, s.backgroundColor]; }")
+        assert contrast(rgb(colors[0]), rgb(colors[1])) >= 4.5, (language, state, colors)
+    if language == "es":
+        expect(page.get_by_role("button", name="Mostrar contraseña", exact=True)).to_be_visible()
+
+
+def test_password_eye_is_inline_and_preserves_editing_focus_and_selection(baseline_page):
+    page = open_login(baseline_page)
+    password = page.get_by_label("Password", exact=True)
+    toggle = page.locator("#password-toggle")
+    expect(toggle).to_have_accessible_name("Show password")
+    input_box, button_box = password.bounding_box(), toggle.bounding_box()
+    assert input_box["y"] <= button_box["y"]
+    assert button_box["y"] + button_box["height"] <= input_box["y"] + input_box["height"]
+    expect(toggle.locator("svg:visible")).to_have_count(1)
+    password.fill("Baseline123!")
+    password.focus()
+    password.evaluate("e => e.setSelectionRange(2, 5)")
+    toggle.click()
+    expect(password).to_be_focused()
+    expect(password).to_have_attribute("type", "text")
+    expect(password).to_have_js_property("selectionStart", 2)
+    expect(password).to_have_js_property("selectionEnd", 5)
+    expect(toggle).to_have_accessible_name("Hide password")
+    expect(toggle).to_have_attribute("title", "Hide password")
+    toggle.click()
+    expect(password).to_be_focused()
+    expect(password).to_have_attribute("type", "password")
+
+
+def test_language_switch_preserves_login_destination_and_localizes_password_button(baseline_page):
+    page = open_login(baseline_page)
+    page.route("**/set-language/*", lambda route: route.continue_())
+    page.get_by_role("link", name="Español", exact=True).click()
+    expect(page.locator("html")).to_have_attribute("lang", "es")
+    expect(page.locator('input[name="next"]')).to_have_value("/browse?type=tv")
+    toggle = page.locator("#password-toggle")
+    expect(toggle).to_have_accessible_name("Mostrar contraseña")
+    toggle.click()
+    expect(toggle).to_have_accessible_name("Ocultar contraseña")
+    expect(page.get_by_label("Contraseña", exact=True)).to_have_attribute("type", "text")
+    page.get_by_role("link", name="English", exact=True).click()
+    expect(page.locator("html")).to_have_attribute("lang", "en")
+    expect(page.locator('input[name="next"]')).to_have_value("/browse?type=tv")
+
+
+def test_submission_and_restored_page_reset_password_visibility(baseline_page):
+    page = open_login(baseline_page)
+    fill_login(page)
+    toggle = page.locator("#password-toggle")
+    toggle.click()
+    page.evaluate("""() => { window.fetch = () => new Promise(resolve => { window.finishLogin = resolve; });
+        document.querySelector('form').requestSubmit(); }""")
+    expect(toggle).to_be_disabled()
+    expect(page.locator("#password")).to_have_attribute("type", "password")
+    page.evaluate("finishLogin(new Response(JSON.stringify({code:'invalid_credentials'}), {status:401}))")
+    expect(toggle).to_be_enabled()
+    expect(toggle).to_have_accessible_name("Show password")
+    expect(toggle.locator("svg:visible")).to_have_count(1)
+    toggle.click()
+    page.evaluate("window.dispatchEvent(new PageTransitionEvent('pageshow', {persisted:true}))")
+    expect(page.locator("#password")).to_have_value("")
+    expect(toggle).to_have_accessible_name("Show password")
+    expect(toggle).to_have_attribute("aria-pressed", "false")

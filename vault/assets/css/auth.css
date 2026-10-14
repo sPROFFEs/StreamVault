@@ -27,8 +27,12 @@
 .auth-topbar { position: relative; inset: auto; min-height: 52px; padding: 0; gap: 16px; flex-wrap: wrap; z-index: 2; }
 .auth-brand { min-height: 44px; font-family: var(--font-display); font-size: 28px; font-weight: 800; letter-spacing: 1.5px; color: var(--red); display: inline-flex; align-items: center; gap: 10px; }
 .auth-brand img { border-radius: 4px; filter: drop-shadow(0 2px 6px rgba(229,9,20,0.5)); }
-.auth-language a { display: grid; place-items: center; min-width: 44px; min-height: 44px; font-size: 14px; color: #a3a3a3; transition: color 0.2s; }
-.auth-language a.active { color: #ffffff; font-weight: 700; }
+.auth-language { flex-shrink: 0; background: #141414; border-color: #555555; border-radius: 8px; }
+.auth-language a { display: grid; place-items: center; min-width: 44px; min-height: 44px; font-size: 14px; color: #bdbdbd; border-radius: 5px; transition: color 0.2s, background-color 0.2s; }
+.auth-language a:hover { color: #ffffff; background: #303030; }
+/* Set both colors: app.css otherwise leaves white text on a white selection. */
+.auth-language a.active { color: #ffffff; background: var(--action-bg); font-weight: 700; }
+.auth-language a.active:hover { background: #c11119; }
 .auth-card {
     align-self: center;
     max-width: 460px;
@@ -59,9 +63,12 @@
 }
 .auth-card .filter-input:focus { border-color: #ffffff; background: #3d3d3d; outline: none; }
 .auth-card .filter-input[aria-invalid="true"] { border-color: var(--danger); }
-.auth-password { display: grid; gap: 8px; }
-.auth-password .button { justify-self: end; min-height: var(--control-height); padding: 6px 14px; border: 1px solid #444444; color: #e5e5e5; background: #2b2b2b; font-size: 13px; border-radius: 4px; cursor: pointer; transition: background 0.2s; }
-.auth-password .button:hover { background: #383838; }
+.auth-password { position: relative; }
+.auth-card .auth-password--toggle .filter-input { padding-right: 60px; }
+.auth-password .auth-password-toggle { position: absolute; top: 50%; right: 4px; transform: translateY(-50%); display: grid; place-items: center; width: 44px; height: 44px; min-height: 44px; padding: 0; border: 0; color: #e5e5e5; background: transparent; border-radius: 4px; cursor: pointer; transition: color 0.2s, background-color 0.2s; }
+.auth-password .auth-password-toggle:hover { color: #ffffff; background: #484848; }
+.auth-password .auth-password-toggle:disabled { opacity: .5; cursor: wait; }
+.auth-password-toggle svg { width: 22px; height: 22px; pointer-events: none; }
 .auth-card .auth-hint { margin: 0; font-size: 13px; line-height: 1.5; color: #888888; }
 .auth-field-error { font-size: 14px; line-height: 1.5; color: var(--danger); }
 .auth-card .button--primary {
@@ -101,4 +108,7 @@
     .auth-card .auth-hint, .auth-field-error, .auth-card .message { font-size: 18px; }
     .auth-card .auth-security { font-size: 18px !important; }
     .auth-language a { min-width: 60px; }
+    .auth-password .auth-password-toggle { width: 56px; height: 56px; min-height: 56px; }
+    .auth-password-toggle svg { width: 28px; height: 28px; }
+    .auth-card .auth-password--toggle .filter-input { padding-right: 72px; }
 }

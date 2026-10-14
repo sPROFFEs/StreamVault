@@ -14,10 +14,37 @@
     let pending = false;
     let controller;
 
+    function passwordVisibility(show) {
+        const start = password.selectionStart;
+        const end = password.selectionEnd;
+        const direction = password.selectionDirection;
+        const text = show ? toggle.dataset.hide : toggle.dataset.show;
+        const type = show ? "text" : "password";
+        password.type = type;
+        toggle.setAttribute("aria-pressed", String(show));
+        toggle.setAttribute("aria-label", text);
+        toggle.title = text;
+        toggle.querySelector("[data-password-label]").textContent = text;
+        toggle.querySelectorAll("[data-password-icon]").forEach(icon => {
+            icon.toggleAttribute("hidden", icon.dataset.passwordIcon !== (show ? "hide" : "show"));
+        });
+        if (typeof start === "number" && typeof end === "number") {
+            password.setSelectionRange(start, end, direction);
+            // Chromium can reset a focused input's selection while rebuilding
+            // its renderer after a type change. Restore it after that update.
+            requestAnimationFrame(() => {
+                if (password.type === type && document.activeElement === password) {
+                    password.setSelectionRange(start, end, direction);
+                }
+            });
+        }
+    }
+
     function busy(value) {
         pending = value;
         form.setAttribute("aria-busy", String(value));
         submit.disabled = value;
+        toggle.disabled = value;
         username.readOnly = password.readOnly = value;
         submit.textContent = value ? submit.dataset.pending : label;
         status.textContent = value ? submit.dataset.pending : "";
@@ -36,9 +63,7 @@
         error.hidden = false;
         if (code === "invalid_credentials") {
             password.value = "";
-            password.type = "password";
-            toggle.setAttribute("aria-pressed", "false");
-            toggle.textContent = toggle.dataset.show;
+            passwordVisibility(false);
             fieldError(password, code);
             password.focus();
         } else if (code === "invalid_username" || code === "weak_password") {
@@ -50,11 +75,14 @@
 
     form.noValidate = true;
     toggle.hidden = false;
+    toggle.parentElement.classList.add("auth-password--toggle");
+    toggle.addEventListener("pointerdown", event => {
+        // Touch/mouse users keep their caret and mobile keyboard while editing.
+        // Keyboard and D-pad activation retain the button's normal focus.
+        if (document.activeElement === password) event.preventDefault();
+    });
     toggle.addEventListener("click", () => {
-        const show = password.type === "password";
-        password.type = show ? "text" : "password";
-        toggle.setAttribute("aria-pressed", String(show));
-        toggle.textContent = show ? toggle.dataset.hide : toggle.dataset.show;
+        passwordVisibility(password.type === "password");
     });
 
     [username, password].forEach(input => {
@@ -87,6 +115,7 @@
         }
         if (invalid) { invalid.focus(); return; }
 
+        passwordVisibility(false);
         const body = new FormData(form);
         busy(true);
         controller = new AbortController();
@@ -134,14 +163,13 @@
     window.addEventListener("pagehide", () => {
         if (controller) controller.abort();
         password.value = "";
+        passwordVisibility(false);
     });
     window.addEventListener("pageshow", event => {
         if (event.persisted) {
             busy(false);
             password.value = "";
-            password.type = "password";
-            toggle.setAttribute("aria-pressed", "false");
-            toggle.textContent = toggle.dataset.show;
+            passwordVisibility(false);
         }
     });
 })();

@@ -209,14 +209,45 @@ fix the error in Compose logs and retry Rebuild. The updater does not automatica
 roll back database changes or install an APK. Preserve `SECRET_KEY`, `.env` and the
 data directory, and take a backup before applying a version with migrations.
 
+### Updating an existing deployment
+
+You do not need to reinstall or recreate accounts to update the hosted frontend.
+Back up `.env` and persistent data, pause downloads/playback, and check that there
+are no uncommitted source changes before updating. Keep `SECRET_KEY`, the existing
+data directory and the Compose project identity; do not run the installer again
+or use `docker compose down -v` as an update procedure.
+
+For testing deployments that already track Gitea, keep that upstream: its history
+is preserved and updates can fast-forward normally. For deployments cloned from
+the public GitHub branch, the same commands update from GitHub. Check the remote
+on the deployed server, not the developer's workstation.
+
 For manual updates on the server, with the checkout's upstream configured:
 
 ```sh
 git status --short
+git remote -v
 git pull --ff-only
 docker compose --env-file vault/.env -f vault/docker-compose.yaml up -d --build --force-recreate
+docker compose --env-file vault/.env -f vault/docker-compose.yaml ps
 curl --fail http://127.0.0.1:8000/api/health
 ```
+
+If Git reports local changes or divergent/unrelated histories, stop; do not force
+the pull or reset the deployment. Moving a legacy Gitea installation to the new
+GitHub history requires a fresh branch clone. Copy its private `.env`, preserve
+`SECRET_KEY`, set `HOST_DATA_ROOT` to the absolute path of the **existing** data
+directory (relative paths resolve against the new Compose directory), and keep
+the original Compose project name before recreating services from the new clone.
+Do not copy the legacy `.git` directory or delete the old data directory.
+
+After the first manual update, Administration → Overview → Update source and
+schedule → **Configured branch** checks the checkout's Git upstream for testing
+updates. Check for updates, review the remote/branch, then confirm Install update.
+**Published stable releases** only checks published matching version tags, not
+every pushed commit. Updates are never installed automatically. The hosted login
+also updates inside the Android WebView: reload it after deployment; a native
+wrapper APK change is not required for a frontend-only correction.
 
 See [updater implementation](../vault/core/services/updater_service.py),
 [release tooling](../vault/scripts/release.py) and
