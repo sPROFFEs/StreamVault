@@ -1,4 +1,4 @@
-name: Prepare draft release
+name: Release server and Android APK
 
 on:
   push:
@@ -9,6 +9,10 @@ on:
         description: Existing stable tag, matching vault/core/version.json
         required: true
         type: string
+      publish:
+        description: Publish the release (leave unchecked to prepare a draft)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -82,7 +86,12 @@ jobs:
           STREAMVAULT_KEY_ALIAS: ${{ secrets.STREAMVAULT_KEY_ALIAS }}
           STREAMVAULT_KEY_PASSWORD: ${{ secrets.STREAMVAULT_KEY_PASSWORD }}
         run: |
-          test -n "$KEYSTORE_BASE64"
+          for variable in KEYSTORE_BASE64 STREAMVAULT_STORE_PASSWORD STREAMVAULT_KEY_ALIAS STREAMVAULT_KEY_PASSWORD; do
+            if test -z "${!variable}"; then
+              echo "::error::Missing Android signing secret: $variable (environment: release)"
+              exit 1
+            fi
+          done
           export STREAMVAULT_KEYSTORE="$RUNNER_TEMP/streamvault-release.jks"
           trap 'rm -f "$STREAMVAULT_KEYSTORE"' EXIT
           umask 077
@@ -106,7 +115,7 @@ jobs:
           path: dist/
           if-no-files-found: error
 
-  draft:
+  publish:
     needs: [contract, assets]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -117,12 +126,17 @@ jobs:
         with:
           name: release-assets
           path: dist
-      - name: Create a draft for maintainer review
+      - name: Publish verified release assets or prepare a draft
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ needs.contract.outputs.tag }}
+          PUBLISH_RELEASE: ${{ github.event_name == 'push' || inputs.publish }}
         run: |
           cd dist
           sha256sum --check SHA256SUMS
-          gh release create "$RELEASE_TAG" --verify-tag --draft --generate-notes ./*
+          flags=(--verify-tag --generate-notes)
+          if test "$PUBLISH_RELEASE" != "true"; then
+            flags+=(--draft)
+          fi
+          gh release create "$RELEASE_TAG" "${flags[@]}" ./*

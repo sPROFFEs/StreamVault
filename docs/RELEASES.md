@@ -110,19 +110,37 @@ account, credentials, Docker daemon or live release.
    offline backup of the original key; APK updates need the same signing identity.
    Optional environment reviewers control access to signing.
 4. The build workflow has read-only repository permission and needs no signing
-   secrets. Only the draft job gets `contents: write`; it uses the built-in
+   secrets. Only the publication job gets `contents: write`; it uses the built-in
    `GITHUB_TOKEN`, with no PAT. Fork pull requests run unsigned checks.
 
 After tests and manual product checks pass, merge version metadata into the
 configured branch and create/push its matching tag through your normal maintainer
 process. The tag workflow validates the contract, reruns the web/Android checks,
 builds and verifies the signed APK, packages/checksums the assets, uploads an Actions
-artifact, then creates a **draft** GitHub release. It never publishes that draft or
-marks a release latest. Review the draft and assets before manually publishing.
-The manual workflow accepts an existing tag for the same process. A rerun after a
-draft was already created will fail at draft creation; use the successful Actions
-artifact to review or replace draft attachments manually. No live release was
-created while implementing these files.
+artifact, then **publishes a GitHub release** containing the signed, installable
+`streamvault-VERSION-android.apk`, the web archive, `release.json` and `SHA256SUMS`.
+Pushing a matching stable tag is the publication action; ordinary branch pushes
+only run build/test checks and do not create releases.
+
+For a preview, run **Release server and Android APK** manually, select an existing
+tag and leave **publish** unchecked. This creates a draft with the same signed
+assets. Check **publish** to publish directly instead. The selected tag must match
+the version metadata and belong to the configured distribution branch. No tag is
+created implicitly, and no unsigned/debug APK is distributed as the release APK.
+
+Example for the first release, after committing the intended release to `main`:
+
+```sh
+python3 vault/scripts/release.py check --tag v1.0.0
+git tag -a v1.0.0 -m "StreamVault 1.0.0"
+git push origin v1.0.0
+```
+
+Use a new version and increment `android_version_code` for subsequent APK updates.
+A rerun with an existing release fails safely instead of overwriting published
+assets. Review or remove incomplete drafts manually before retrying. The signing
+key must remain the same for future updates; keep an offline backup outside this
+repository. Generating new keys on every workflow run would prevent APK updates.
 
 ## Local clean-checkout builds
 

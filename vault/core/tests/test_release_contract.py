@@ -3,9 +3,11 @@ import importlib.util
 import asyncio
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import tarfile
+import textwrap
 import zipfile
 
 import pytest
@@ -35,6 +37,30 @@ def test_version_metadata_matches_server():
     assert main.app.version == metadata["version"]
     assert asyncio.run(main.health_check())["version"] == metadata["version"]
     assert metadata["android_version_code"] > 0
+
+
+@pytest.mark.parametrize("publish", ["true", "false"])
+def test_github_release_attaches_verified_assets_and_supports_draft_preview(tmp_path, publish):
+    workflow = (ROOT / ".github/workflows/release.yml").read_text()
+    script = textwrap.dedent(workflow.rsplit("run: |\n", 1)[1])
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    payload = b"fixture-only-signed-apk"
+    (dist / "streamvault-1.0.0-android.apk").write_bytes(payload)
+    (dist / "SHA256SUMS").write_text(hashlib.sha256(payload).hexdigest() + "  streamvault-1.0.0-android.apk\n")
+    cli = tmp_path / "gh"
+    cli.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$GH_TEST_ARGS"\n')
+    cli.chmod(0o755)
+    arguments = tmp_path / "arguments"
+    subprocess.run(["bash", "-e", "-c", script], cwd=tmp_path, check=True, capture_output=True,
+        env={**os.environ, "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"],
+             "GH_TEST_ARGS": str(arguments), "RELEASE_TAG": "v1.0.0", "PUBLISH_RELEASE": publish})
+    flags = arguments.read_text().splitlines()
+    assert flags[:3] == ["release", "create", "v1.0.0"]
+    assert "--verify-tag" in flags
+    assert ("--draft" in flags) == (publish == "false")
+    assert "./streamvault-1.0.0-android.apk" in flags
+    assert "github.event_name == 'push' || inputs.publish" in workflow
 
 
 @pytest.mark.parametrize("tag", ["1.0.0", "v1.0.1", "v1.0.0-beta", "v01.0.0"])

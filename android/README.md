@@ -1,6 +1,6 @@
 # StreamVault for Android
 
-For GitHub APK distribution, shared version metadata, signing secrets and draft
+For GitHub APK distribution, shared version metadata, signing secrets and signed
 release automation, see [maintainer releases](../docs/RELEASES.md). Installation
 and desktop/mobile/TV use are covered in [setup](../docs/SETUP.md).
 
