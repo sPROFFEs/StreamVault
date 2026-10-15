@@ -345,6 +345,84 @@ def test_downloaded_filter_reuses_library_and_metadata(discovery_page):
     assert sum(path == '/api/tmdb/search/movie' for path, _ in ui.calls) == 1
 
 
+def test_downloaded_filter_includes_federated_movies_and_series_on_later_pages(discovery_page):
+    ui = discovery_page
+    page = ui.page
+    calls = []
+    local_movie = {'title': 'Local movie', 'tmdb_id': 7, 'relative_path': 'Local.mp4'}
+    local_episode = {'title': 'Local show', 'tmdb_id': 8, 'relative_path': 'Local.S01E01.mkv'}
+    remote_movie = {'title': 'Remote movie', 'tmdb_id': 9, 'origin': 'federation',
+                    'relative_path': 'federation:1:movie'}
+    remote_episodes = [{'title': 'Remote show', 'tmdb_id': 10, 'origin': 'federation',
+                        'relative_path': f'federation:1:episode{episode}',
+                        'season_number': 1, 'episode_number': episode} for episode in (1, 2)]
+
+    def library(route):
+        params = parse_qs(urlsplit(route.request.url).query)
+        number = int(params.get('page', ['1'])[0])
+        calls.append(params)
+        if params.get('origin') != ['all']:
+            return route.fulfill(json={'movies': [local_movie], 'series': [local_episode], 'pages': 1})
+        route.fulfill(json={'page': number, 'pages': 2,
+                            'movies': [local_movie] if number == 1 else [remote_movie],
+                            'series': [local_episode] if number == 1 else remote_episodes})
+
+    page.route('**/api/downloads/library*', library)
+    page.goto('https://streamvault.test/browse?view=downloads')
+    cards = page.locator('#browse-grid .poster-card')
+    expect(cards).to_have_count(2)
+    expect(cards.filter(has_text='Local movie')).to_have_attribute('href', '/media/7?type=movie')
+    expect(cards.filter(has_text='Remote movie')).to_have_attribute('href', '/media/9?type=movie')
+    page.locator('#type-filter').select_option('tv')
+    expect(cards).to_have_count(2)
+    expect(cards.filter(has_text='Local show')).to_have_attribute('href', '/media/8?type=tv')
+    remote_show = cards.filter(has_text='Remote show')
+    expect(remote_show).to_have_attribute('href', '/media/10?type=tv')
+    expect(remote_show).to_contain_text('2 episodes')
+    page.locator('#browse-search').fill('Remote')
+    expect(cards).to_have_count(1)
+    expect(cards).to_contain_text('Remote show')
+    page.locator('#sort-filter').select_option('vote_average.desc')
+    expect(cards).to_have_count(1)
+    assert [params['page'] for params in calls] == [['1'], ['2']]
+    assert all(params['origin'] == ['all'] for params in calls)
+
+    # Reload must not retain media from a node that has gone offline.
+    page.unroute('**/api/downloads/library*', library)
+    ui.payloads['/api/downloads/library'] = {'movies': [local_movie], 'series': [local_episode]}
+    page.locator('#browse-search').fill('')
+    expect(cards).to_have_count(2)
+    page.locator('#refresh-button').click()
+    expect(cards).to_have_count(1)
+    expect(cards).to_contain_text('Local show')
+
+
+def test_downloaded_filter_retries_failed_library_pages_without_caching_partial_results(discovery_page):
+    page = discovery_page.page
+    calls = []
+    second_page_available = False
+
+    def library(route):
+        params = parse_qs(urlsplit(route.request.url).query)
+        number = int(params.get('page', ['1'])[0])
+        calls.append(number)
+        if number == 2 and not second_page_available:
+            return route.fulfill(status=503, json={})
+        route.fulfill(json={'page': number, 'pages': 2, 'series': [], 'movies': [{
+            'title': f'Movie {number}', 'tmdb_id': number,
+            'relative_path': f'federation:1:movie{number}'}]})
+
+    page.route('**/api/downloads/library*', library)
+    page.goto('https://streamvault.test/browse?view=downloads')
+    expect(page.locator('#browse-error')).to_be_visible()
+    expect(page.locator('#browse-grid .poster-card')).to_have_count(0)
+    second_page_available = True
+    page.locator('#retry-catalog').click()
+    expect(page.locator('#browse-grid .poster-card')).to_have_count(2)
+    expect(page.locator('#browse-error')).not_to_be_visible()
+    assert calls == [1, 2, 1, 2]
+
+
 def test_favorite_failure_and_removal_keep_returned_list_consistent(discovery_page):
     ui = discovery_page
     ui.payloads['/api/library/favorites'] = {'items': [{'tmdb_id': 7, 'title': 'Example', 'media_type': 'movie'}]}

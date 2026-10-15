@@ -6,7 +6,7 @@ const TEXT = {
         downloads: "Downloaded",
         catalog: "Catalog",
         savedLibrary: "Saved personal library for this user.",
-        downloadedLibrary: "Movies and episodes stored on this server.",
+        downloadedLibrary: "Movies and episodes available on this server and connected nodes.",
         resultsFor: (query) => `Results for "${query}".`,
         trendingCaption: "Discover your next movie or series.",
         untitled: "Untitled",
@@ -18,7 +18,7 @@ const TEXT = {
         downloads: "Descargado",
         catalog: "Catálogo",
         savedLibrary: "Biblioteca personal guardada por usuario.",
-        downloadedLibrary: "Películas y episodios guardados en este servidor.",
+        downloadedLibrary: "Películas y episodios disponibles en este servidor y los nodos conectados.",
         resultsFor: (query) => `Resultados para "${query}".`,
         trendingCaption: "Descubre tu próxima película o serie.",
         untitled: "Sin titulo",
@@ -177,9 +177,22 @@ function showLoading() {
 }
 
 async function loadDownloadedItems(filters, signal) {
-    const data = state.downloads || await requestJSON("/api/downloads/library", signal);
-    if (signal.aborted) throw new DOMException("Aborted", "AbortError");
-    state.downloads = data;
+    let data = state.downloads;
+    if (!data) {
+        data = { movies: [], series: [] };
+        let page = 1;
+        let pages = 1;
+        do {
+            const result = await requestJSON(`/api/downloads/library?origin=all&page=${page}&page_size=200`, signal);
+            if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+            data.movies.push(...(result.movies || []));
+            data.series.push(...(result.series || []));
+            pages = result.pages || 1;
+            page += 1;
+        } while (page <= pages);
+        // Publish only complete snapshots; failed or aborted pages must be retried.
+        state.downloads = data;
+    }
     const group = filters.mediaType === "tv" ? (data.series || []) : (data.movies || []);
     const filtered = filterItems(group, filters);
     const deduped = filters.mediaType === "tv" ? deduplicateSeries(filtered) : filtered;
