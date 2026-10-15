@@ -6,7 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ "Downloads" if lang == "en" else "Descargas" }} · StreamVault</title>
     {% include "_metadata.html" %}
-    <link rel="stylesheet" href="/assets/css/app.css?v=20261008-1">
+    <link rel="stylesheet" href="/assets/css/app.css?v=20261015-1">
     <link rel="stylesheet" href="/assets/css/ui-extras.css?v=20261008-1">
 </head>
 <body class="app-shell">
@@ -50,8 +50,8 @@
         <section class="downloads-section">
             <div class="downloads-section__header">
                 <div>
-                    <h2>{{ "On this server" if lang == "en" else "En este servidor" }}</h2>
-                    <p>{{ "Completed movies and episodes ready to play." if lang == "en" else "Películas y episodios terminados listos para reproducir." }}</p>
+                    <h2>{{ "Available library" if lang == "en" else "Biblioteca disponible" }}</h2>
+                    <p>{{ "Completed movies and episodes on this server and connected nodes." if lang == "en" else "Películas y episodios terminados en este servidor y en los nodos conectados." }}</p>
                 </div>
                 <span class="badge badge--neutral" id="library-count">0</span>
             </div>
@@ -67,6 +67,14 @@
                         <option value="all">{{ "All content" if lang == "en" else "Todo el contenido" }}</option>
                         <option value="movie">{{ "Movies" if lang == "en" else "Películas" }}</option>
                         <option value="series">{{ "Series" if lang == "en" else "Series" }}</option>
+                    </select>
+                </label>
+                <label class="library-filter">
+                    <span>{{ "Origin" if lang == "en" else "Origen" }}</span>
+                    <select id="library-origin" class="filter-select">
+                        <option value="all">{{ "All servers" if lang == "en" else "Todos los servidores" }}</option>
+                        <option value="local">{{ "This server" if lang == "en" else "Este servidor" }}</option>
+                        <option value="federated">{{ "Federated nodes" if lang == "en" else "Nodos federados" }}</option>
                     </select>
                 </label>
                 <label class="library-filter">
@@ -138,6 +146,6 @@
 
     <script>window.APP_LANG = "{{ lang }}"; window.IS_ADMIN = {{ 'true' if is_admin else 'false' }};</script>
     <script defer src="/assets/js/local-player.js?v=20260919-2"></script>
-    <script defer src="/assets/js/download-manager.js?v=20261003-1"></script>
+    <script defer src="/assets/js/download-manager.js?v=20261015-1"></script>
 </body>
 </html>

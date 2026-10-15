@@ -207,6 +207,26 @@ def test_detail_error_retry_and_metadata_request_count(discovery_page):
     assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
 
 
+def test_long_playback_labels_stay_inside_their_fields(discovery_page):
+    ui, page = discovery_page, discovery_page.page
+    episode_name = "LetYouDown_" * 30
+    source_name = "Torrentio_CompleteSeason_1080p_" * 20
+    ui.payloads['/api/tmdb/tv/7/season/1'] = {'episodes': [{'episode_number': 1, 'name': episode_name}]}
+    ui.payloads['/api/stream/resolve/7'] = [{'source': source_name, 'type': 'direct', 'url': '/fixture.mp4'}]
+    page.goto('https://streamvault.test/media/7?type=tv')
+    expect(page.locator('#episode-select')).to_contain_text(episode_name)
+    expect(page.locator('#source-select')).to_contain_text(source_name)
+    for selector in ['#season-select', '#episode-select', '#source-select']:
+        assert page.locator(selector).evaluate('''select => {
+            const box = select.getBoundingClientRect();
+            const field = select.closest('.field').getBoundingClientRect();
+            const panel = select.closest('.media-info-col').getBoundingClientRect();
+            return box.width > 0 && box.left >= field.left - 1 && box.right <= field.right + 1
+                && box.left >= panel.left && box.right <= panel.right;
+        }'''), f'{selector} overflows its field'
+    assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+
+
 def test_local_library_combines_search_and_type_and_restores_modal_focus(discovery_page):
     ui = discovery_page
     ui.payloads['/api/local/browse'] = {'items': [

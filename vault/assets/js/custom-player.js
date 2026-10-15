@@ -135,12 +135,13 @@
          [fsBtn, labels.fullscreen]].forEach(([control, text]) => label(control, text));
         ui.querySelectorAll("button").forEach(button => { button.type = "button"; });
         $(".sv-player__title").textContent = titleText;
+        $(".sv-player__title").title = titleText;
         const status = $(".sv-player__status");
-        let isDragging = false, destroyed = false, hideTimer = null;
+        let isDragging = false, destroyed = false, hideTimer = null, keyboardInteraction = false;
         function setStatus(kind, message) {
             status.textContent = message || labels[kind] || "";
             status.hidden = !status.textContent;
-            if (!status.hidden) showControls();
+            showControls();
         }
         video._svSetStatus = setStatus;
 
@@ -162,14 +163,15 @@
 
         function updatePlayState() {
             const paused = video.paused || video.ended;
-            iconPlay.hidden = !paused;
-            iconPause.hidden = paused;
+            // SVG elements do not reflect the HTMLElement.hidden property.
+            iconPlay.toggleAttribute("hidden", !paused);
+            iconPause.toggleAttribute("hidden", paused);
             label(playBtn, paused ? labels.play : labels.pause);
             playBtn.setAttribute("aria-pressed", String(!paused));
         }
 
         function paintSeek(pct) {
-            seek.style.background = `linear-gradient(to right, var(--primary) 0%, var(--primary) ${pct}%, rgba(255,255,255,.35) ${pct}%, rgba(255,255,255,.35) 100%)`;
+            seek.style.setProperty("--sv-progress", `${pct}%`);
         }
         function updateTimeAndProgress() {
             if (isDragging) return;
@@ -187,14 +189,15 @@
         function updateVolumeUI() {
             const muted = video.muted || video.volume === 0;
             volSlider.value = video.muted ? 0 : video.volume;
-            iconVol.hidden = muted;
-            iconMute.hidden = !muted;
+            iconVol.toggleAttribute("hidden", muted);
+            iconMute.toggleAttribute("hidden", !muted);
             label(muteBtn, muted ? labels.unmute : labels.mute);
             muteBtn.setAttribute("aria-pressed", String(muted));
             volSlider.setAttribute("aria-valuetext", `${Math.round(volSlider.value * 100)}%`);
         }
 
         ["play", "pause", "ended"].forEach(name => listen(video, name, updatePlayState));
+        listen(video, "play", showControls);
         ["timeupdate", "loadedmetadata", "durationchange", "seeked"].forEach(name => listen(video, name, updateTimeAndProgress));
         listen(video, "volumechange", updateVolumeUI);
         ["waiting", "seeking"].forEach(name => listen(video, name, () => setStatus("buffering")));
@@ -238,25 +241,29 @@
             isDragging = false;
             seekTo(seek.value / 100 * getEffectiveDuration());
         };
-        listen(seek, "pointercancel", () => { isDragging = false; updateTimeAndProgress(); });
+        listen(seek, "pointercancel", () => { isDragging = false; updateTimeAndProgress(); showControls(); });
         rewindBtn.onclick = () => seekTo(getEffectiveCurrentTime() - 10);
         forwardBtn.onclick = () => seekTo(getEffectiveCurrentTime() + 10);
         muteBtn.onclick = () => {
-            if (video.volume === 0) video.volume = 1;
-            video.muted = !video.muted;
+            if (video.muted || video.volume === 0) {
+                video.muted = false;
+                if (video.volume === 0) video.volume = 1;
+            } else video.muted = true;
         };
         volSlider.oninput = () => { video.muted = false; video.volume = Number(volSlider.value); };
         fsBtn.onclick = () => window.SVToggleFs?.();
         backBtn.onclick = () => window.SVDestroyPlayer?.();
 
-        function showControls() {
+        function showControls(event) {
             if (destroyed) return;
+            if (event?.type.startsWith("pointer") || event?.type === "click") keyboardInteraction = false;
+            if (event?.type === "focusin") keyboardInteraction = event.target.matches(":focus-visible");
             container.classList.add("sv-active");
             container.classList.remove("sv-hide-cursor");
             clearTimeout(hideTimer);
             hideTimer = setTimeout(() => {
                 if (!video.paused && !video.ended && status.hidden && !isDragging &&
-                    !ui.contains(document.activeElement) && !ui.querySelector(".sv-menu--open")) {
+                    !(keyboardInteraction && container.contains(document.activeElement)) && !ui.querySelector(".sv-menu--open")) {
                     container.classList.remove("sv-active");
                     container.classList.add("sv-hide-cursor");
                 }
@@ -309,6 +316,8 @@
         function handleKey(event) {
             const active = document.activeElement;
             if (destroyed || event.defaultPrevented || !container.contains(active)) return;
+            keyboardInteraction = true;
+            showControls();
             const key = event.key.toLowerCase();
             // Shared dialogs render outside the fullscreen container. Leave
             // fullscreen before their own search/help handlers receive the key.

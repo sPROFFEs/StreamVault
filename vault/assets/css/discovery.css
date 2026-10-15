@@ -52,6 +52,9 @@
 .detail-page .media-player-col { margin-left: clamp(20px, 4vw, 64px); align-self: start; background: transparent; overflow: visible; }
 .detail-page .media-player-col .player-box { flex: none; width: 100%; aspect-ratio: 16 / 9; min-height: 0; scroll-margin-top: calc(var(--nav-height) + 20px); }
 .detail-page .media-info-col { margin-right: clamp(20px, 4vw, 64px); overflow: visible; border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 24px; background: var(--surface); }
+.detail-page .media-info-col .field { min-width: 0; }
+.detail-page .detail-controls { grid-template-columns: minmax(0, 1fr); }
+.detail-page .media-info-col .filter-select { width: 100%; min-width: 0; max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .playback-heading h2 { font-family: var(--font-body); font-size: 20px; margin: 0; }
 .playback-heading .modal-eyebrow { font-size: 10px; letter-spacing: 2px; }
 .detail-page .media-title, .detail-page .media-desc { overflow-wrap: anywhere; }

@@ -23,6 +23,12 @@ To let node B's users watch node A's downloaded media:
    metadata addresses and redirecting nodes are not accepted.
 5. On B, open the matching movie/episode. A source labeled **Node · A** appears
    alongside local and external providers. Choose it and play normally.
+6. In **Downloads → Available library**, completed local and synchronized remote
+   files appear together. Use **Origin** to show this server, all federated nodes,
+   or a specific node. Each file identifies its server; remote entries use the
+   same authenticated playback/audio relay and never offer local delete/preview
+   actions. The storage/quota bar measures local disk only. Listing uses the local
+   metadata cache, so opening Downloads does not contact every node.
 
 Repeat in the opposite direction for reciprocal sharing. Disable a consumed peer
 to immediately remove its sources from selection. Revoke an issued credential to

@@ -327,6 +327,28 @@ async def sync_peer(peer_id):
         _syncing.discard(peer_id)
 
 
+def library_items():
+    """Browse synchronized, playable media without contacting any remote node."""
+    with database.SessionLocal() as db:
+        query = db.query(database.FederatedMedia).join(database.FederationPeer).filter(
+            database.FederationPeer.enabled.is_(True), database.FederationPeer.status == "online",
+            database.FederationPeer.last_seen_at >= time.time() - PLAYABLE_WINDOW)
+        items = []
+        for item in query.options(joinedload(database.FederatedMedia.peer)).order_by(database.FederatedMedia.id):
+            if item.media_type == "tv" and (item.season_number is None or item.episode_number is None):
+                continue
+            base = f"/api/federation/peers/{item.peer_id}/media/{item.remote_id}"
+            episode = f" S{item.season_number:02}E{item.episode_number:02}" if item.media_type == "tv" else ""
+            items.append({"relative_path": f"federation:{item.peer_id}:{item.remote_id}",
+                "name": item.title + episode, "title": item.title, "tmdb_id": item.tmdb_id,
+                "media_type": "series" if item.media_type == "tv" else "movie",
+                "season_number": item.season_number, "episode_number": item.episode_number,
+                "size_bytes": item.size_bytes, "modified_at": item.peer.last_synced_at or 0,
+                "quality": item.quality, "origin": "federation", "peer_id": item.peer_id,
+                "peer_name": item.peer.name, "metadata_url": base + "/metadata", "playback_url": base + "/playback"})
+        return items
+
+
 def match_sources(tmdb_id, media_type, season=None, episode=None, *, title=None, original_title=None, year=None):
     from providers.base import StreamResult
     with database.SessionLocal() as db:

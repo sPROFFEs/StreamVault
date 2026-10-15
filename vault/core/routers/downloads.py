@@ -463,6 +463,7 @@ async def list_downloaded_files(
     page_size: int = Query(50, ge=1, le=200),
     media_type: str = Query("all", pattern="^(all|movie|series)$"),
     sort: str = Query("recent", pattern="^(recent|title|size)$"),
+    origin: str = Query("local", pattern=r"^(local|all|federated|peer:[1-9][0-9]*)$", max_length=32),
 ):
     """List downloaded movies and series, with server-side search and pagination (#3, #4)."""
     downloads_dir = settings.DOWNLOADS_ROOT
@@ -475,7 +476,17 @@ async def list_downloaded_files(
     # Pagination is by logical library entry, not individual file. A season
     # must remain together; otherwise its episodes disappear onto arbitrary
     # pages before the UI gets a chance to group them.
-    matching_items = _filter_library_items(library["files"], q)
+    items = library["files"] if origin in {"local", "all"} else []
+    nodes = None
+    if origin != "local":
+        from services import federation_service
+        remote_items = await asyncio.to_thread(federation_service.library_items)
+        nodes = list({item["peer_id"]: {"id": item["peer_id"], "name": item["peer_name"]}
+                      for item in remote_items}.values())
+        if origin.startswith("peer:"):
+            remote_items = [item for item in remote_items if item["peer_id"] == int(origin[5:])]
+        items = [*items, *remote_items]
+    matching_items = _filter_library_items(items, q)
     if media_type != "all":
         matching_items = [item for item in matching_items if item["media_type"] == media_type]
     total = len(matching_items)
@@ -493,6 +504,7 @@ async def list_downloaded_files(
         "total": total,
         "used_bytes": used_bytes,
         "quota_bytes": quota_bytes,
+        "nodes": nodes,
     }
 
 

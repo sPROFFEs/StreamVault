@@ -72,6 +72,59 @@ def test_offset_seek_and_accessible_controls(player_page):
     assert page.evaluate("seeks") == [45]
 
 
+def test_play_pause_and_mute_icons_follow_media_state(player_page):
+    page = player_page
+    page.locator("#sv-play").click()
+    expect(page.locator("#sv-play")).to_have_attribute("aria-label", "Pause")
+    expect(page.locator("#sv-icon-play")).to_be_hidden()
+    expect(page.locator("#sv-icon-pause")).to_be_visible()
+    page.locator("#sv-play").click()
+    expect(page.locator("#sv-icon-play")).to_be_visible()
+    expect(page.locator("#sv-icon-pause")).to_be_hidden()
+    page.locator("#sv-mute").click()
+    expect(page.locator("#sv-icon-vol")).to_be_hidden()
+    expect(page.locator("#sv-icon-mute")).to_be_visible()
+    page.locator("#sv-mute").click()
+    expect(page.locator("#sv-icon-vol")).to_be_visible()
+    expect(page.locator("#sv-icon-mute")).to_be_hidden()
+    page.evaluate("video.volume = 0")
+    page.locator("#sv-mute").click()
+    assert page.evaluate("!video.muted && video.volume > 0")
+
+
+def test_timeline_paints_elapsed_and_remaining_track(player_page):
+    page = player_page
+    page.evaluate("video.currentTime = 35; video.dispatchEvent(new Event('timeupdate'))")
+    seek = page.locator("#sv-seek")
+    expect(seek).to_have_value("35")
+    expect(seek).to_have_css("background-image", re.compile(r"linear-gradient.*35%"))
+    assert seek.bounding_box()["height"] >= 28
+
+
+@pytest.mark.parametrize("resume_from", ["playing", "paused", "buffering"])
+def test_mouse_inactivity_hides_controls_and_keyboard_restores_them(player_page, resume_from):
+    page = player_page
+    page.clock.install()
+    if resume_from != "paused":
+        page.locator("#sv-play").click()
+    page.locator("#player-container").dispatch_event("pointermove", {"pointerType": "mouse"})
+    if resume_from == "buffering":
+        page.evaluate("video.dispatchEvent(new Event('waiting'))")
+    if resume_from != "playing":
+        page.clock.fast_forward(4000)
+        expect(page.locator(".sv-player")).to_have_css("opacity", "1")
+        page.evaluate("video.play(); video.dispatchEvent(new Event('playing'))")
+    page.clock.fast_forward(4000)
+    expect(page.locator(".sv-player")).to_have_css("opacity", "0")
+    expect(page.locator("#player-container")).to_have_css("cursor", "none")
+    page.keyboard.press("k")
+    expect(page.locator(".sv-player")).to_have_css("opacity", "1")
+    assert page.evaluate("video.paused")
+    page.locator("#sv-play").press("Space")
+    page.clock.fast_forward(4000)
+    expect(page.locator(".sv-player")).to_have_css("opacity", "1")
+
+
 def test_focus_remote_native_ranges_and_shortcut_ownership(player_page):
     page = player_page
     play = page.locator("#sv-play")

@@ -35,6 +35,40 @@ def login(client, admin=True):
                                        "password": "Baseline123!"}).status_code == 303
 
 
+def test_download_library_can_include_cached_nodes_without_remote_requests(regression_client, federated_library, monkeypatch):
+    import time
+    client = regression_client
+    login(client, admin=False)
+    with database.SessionLocal() as db:
+        peer = database.FederationPeer(name="Living room", base_url="https://private-node.test",
+            enabled=True, status="online", last_seen_at=time.time(), last_synced_at=time.time(),
+            token_ciphertext="must-not-leak")
+        db.add(peer)
+        db.flush()
+        peer_id = peer.id
+        db.add_all([database.FederatedMedia(peer_id=peer_id, remote_id=letter * 64, title="Remote show",
+            media_type="tv", season_number=2, episode_number=episode, size_bytes=1000)
+            for letter, episode in [("a", 1), ("b", 2)]])
+        db.commit()
+    monkeypatch.setattr(federation, "remote_json", lambda *args, **kwargs: pytest.fail("Browsing must use the local cache"))
+    local = client.get("/api/downloads/library").json()
+    result = client.get("/api/downloads/library?origin=all").json()
+    assert result["total"] == local["total"] + 2
+    assert result["used_bytes"] == local["used_bytes"]
+    assert "private-node.test" not in str(result) and "must-not-leak" not in str(result)
+    for origin in ["federated", f"peer:{peer_id}"]:
+        remote = client.get("/api/downloads/library", params={"origin": origin, "q": "Remote", "page_size": 1}).json()
+        assert remote["total"] == 2 and remote["pages"] == 1
+        assert {item["episode_number"] for item in remote["files"]} == {1, 2}
+        assert all(item["origin"] == "federation" and item["peer_name"] == "Living room" for item in remote["files"])
+        assert all(item["metadata_url"].startswith(f"/api/federation/peers/{peer_id}/media/") for item in remote["files"])
+    assert client.get("/api/downloads/library?origin=federated&media_type=movie").json()["files"] == []
+    with database.SessionLocal() as db:
+        db.get(database.FederationPeer, peer_id).enabled = False
+        db.commit()
+    assert client.get("/api/downloads/library?origin=federated").json()["files"] == []
+
+
 def grant(client):
     login(client)
     assert client.put("/admin/api/federation/config", json={"enabled": True, "node_name": "Fixture node"}).status_code == 200

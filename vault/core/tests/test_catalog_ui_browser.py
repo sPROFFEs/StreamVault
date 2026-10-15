@@ -36,6 +36,63 @@ def serve_asset(route):
     return route.fulfill(path=asset) if asset.is_file() else route.fulfill(status=404)
 
 
+def test_federated_downloads_filter_play_audio_and_never_offer_local_delete(ui_page):
+    page, _ = ui_page
+    html = render_template("downloads.html")
+    base = '/api/federation/peers/7/media/' + 'a' * 64
+    local = {"title": "Local movie", "name": "Local.mp4", "media_type": "movie", "relative_path": "Local.mp4", "size_bytes": 42, "modified_at": 1}
+    remote = {"title": "Remote show", "name": "Remote show S01E02", "media_type": "series",
+              "relative_path": "federation:7:" + 'a' * 64, "origin": "federation", "peer_id": 7,
+              "peer_name": "Node <Cinema>", "size_bytes": 9000, "modified_at": 2,
+              "season_number": 1, "episode_number": 2, "metadata_url": base + '/metadata', "playback_url": base + '/playback'}
+    calls = []
+    def respond(route):
+        url = urlsplit(route.request.url)
+        calls.append((url.path, parse_qs(url.query)))
+        if url.path == '/downloads':
+            return route.fulfill(content_type='text/html', body=html)
+        if url.path.startswith('/assets/'):
+            return serve_asset(route)
+        if url.path == '/api/downloads/library':
+            origin = parse_qs(url.query).get('origin', ['local'])[0]
+            files = [local] if origin == 'local' else [local, remote] if origin == 'all' else [remote]
+            return route.fulfill(json={"files": files, "movies": [f for f in files if f['media_type'] == 'movie'],
+                "series": [f for f in files if f['media_type'] == 'series'], "total": len(files), "page": 1, "pages": 1,
+                "used_bytes": 42, "quota_bytes": 1024, "nodes": [{"id": 7, "name": "Node <Cinema>"}]})
+        if url.path == base + '/metadata':
+            return route.fulfill(json={"duration_seconds": 100, "subtitles": [], "audio_tracks": [
+                {"stream_index": 1, "language": "eng", "codec": "aac"}, {"stream_index": 2, "language": "spa", "codec": "aac"}]})
+        if url.path == base + '/playback':
+            return route.fulfill(json={"mode": "file", "offset": 0, "url": '/remote.mp4', "duration_seconds": 100})
+        if url.path == '/api/downloads/notifications':
+            return route.fulfill(content_type='text/event-stream', body=': connected\n\n')
+        return route.fulfill(json={})
+    page.add_init_script('HTMLMediaElement.prototype.play = async () => {}; HTMLMediaElement.prototype.load = () => {};')
+    page.route('**/*', respond)
+    page.goto('https://streamvault.test/downloads')
+    expect(page.locator('#library-list')).to_contain_text('Remote show')
+    page.locator('[data-toggle-show]').click()
+    row = page.locator('[data-file-card]').filter(has_text='Node <Cinema>')
+    expect(row).to_contain_text('S01E02')
+    expect(row.locator('[data-delete]')).to_have_count(0)
+    row.locator('[data-play]').click()
+    expect(page.locator('#local-player')).to_have_attribute('src', '/remote.mp4')
+    with page.expect_response('**' + base + '/playback?*audio=2*'):
+        page.locator('#local-player-audio').select_option('2')
+    expect(page.locator('#local-player-audio')).to_have_value('2')
+    page.wait_for_function("document.querySelector('#local-player').src.endsWith('/remote.mp4')")
+    assert any(path == base + '/playback' and query.get('audio') == ['2'] for path, query in calls)
+    assert not any(path == '/api/downloads/files/match' for path, _ in calls)
+    page.locator('#local-player-close').click()
+    page.locator('#library-origin').select_option('local')
+    expect(page.locator('#library-list')).not_to_contain_text('Remote show')
+    expect(page.locator('#library-list [data-delete]')).to_have_count(1)
+    page.locator('#library-origin').select_option('peer:7')
+    expect(page.locator('#library-list')).to_contain_text('Remote show')
+    expect(page.locator('#library-list')).not_to_contain_text('Local movie')
+    assert 'origin=peer%3A7' in page.url
+
+
 def test_download_filters_search_url_reset_empty_and_expand(ui_page):
     page, _ = ui_page
     html = render_template("downloads.html")
@@ -72,7 +129,7 @@ def test_download_filters_search_url_reset_empty_and_expand(ui_page):
     expect(page.locator("#library-search")).to_have_value("Bear")
     expect(page.locator("#library-list")).to_contain_text("The Bear")
     expect(page.locator("#library-list")).not_to_contain_text("Example")
-    assert queries[0] == {"page": "2", "q": "Bear", "media_type": "series", "sort": "title"}
+    assert queries[0] == {"page": "2", "q": "Bear", "media_type": "series", "sort": "title", "origin": "all"}
     show = page.locator("[data-toggle-show]")
     show.click()
     expect(show).to_have_attribute("aria-expanded", "true")

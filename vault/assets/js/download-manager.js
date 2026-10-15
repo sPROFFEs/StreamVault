@@ -25,6 +25,8 @@ const T = {
         noResultsHint: "Try another title or clear the filters.",
         emptyLibrary: "Library is empty",
         emptyLibraryHint: "Completed downloads will be grouped here as movies and series.",
+        localOrigin: "This server",
+        nodeOrigin: "Node",
     },
     es: {
         noActive: "No hay descargas en curso.",
@@ -51,6 +53,8 @@ const T = {
         noResultsHint: "Prueba otro título o limpia los filtros.",
         emptyLibrary: "La biblioteca está vacía",
         emptyLibraryHint: "Las descargas terminadas aparecerán aquí agrupadas como películas y series.",
+        localOrigin: "Este servidor",
+        nodeOrigin: "Nodo",
     },
 }[LANG];
 
@@ -66,6 +70,7 @@ const state = {
     query: "",
     mediaType: "all",
     sort: "recent",
+    origin: "all",
     filterRevision: 0,
     searchTimer: null,
     openShows: new Set(),
@@ -88,6 +93,7 @@ const el = {
     librarySearch: document.getElementById("library-search"),
     libraryType: document.getElementById("library-type"),
     librarySort: document.getElementById("library-sort"),
+    libraryOrigin: document.getElementById("library-origin"),
     libraryReset: document.getElementById("library-reset"),
     librarySummary: document.getElementById("library-summary"),
     libraryEmptyTitle: document.getElementById("library-empty-title"),
@@ -119,18 +125,25 @@ async function boot() {
     state.query = params.get("q") || "";
     state.mediaType = ["movie", "series"].includes(params.get("type")) ? params.get("type") : "all";
     state.sort = ["title", "size"].includes(params.get("sort")) ? params.get("sort") : "recent";
+    state.origin = /^(local|federated|peer:[1-9][0-9]*)$/.test(params.get("origin")) ? params.get("origin") : "all";
     state.libraryPage = Math.max(1, parseInt(params.get("page"), 10) || 1);
     if (el.librarySearch) el.librarySearch.value = state.query;
     if (el.libraryType) el.libraryType.value = state.mediaType;
     if (el.librarySort) el.librarySort.value = state.sort;
+    if (el.libraryOrigin) {
+        if (state.origin.startsWith("peer:")) el.libraryOrigin.add(new Option(`${T.nodeOrigin} ${state.origin.slice(5)}`, state.origin));
+        el.libraryOrigin.value = state.origin;
+    }
     updateLibraryUrl();
     el.librarySearch?.addEventListener("input", () => changeLibraryFilters(true));
     el.libraryType?.addEventListener("change", () => changeLibraryFilters());
     el.librarySort?.addEventListener("change", () => changeLibraryFilters());
+    el.libraryOrigin?.addEventListener("change", () => changeLibraryFilters());
     el.libraryReset?.addEventListener("click", () => {
         el.librarySearch.value = "";
         el.libraryType.value = "all";
         el.librarySort.value = "recent";
+        if (el.libraryOrigin) el.libraryOrigin.value = "all";
         changeLibraryFilters();
     });
     el.refreshBtn.addEventListener("click", refresh);
@@ -325,6 +338,7 @@ function changeLibraryFilters(debounce = false) {
     state.query = el.librarySearch.value.trim();
     state.mediaType = el.libraryType.value;
     state.sort = el.librarySort.value;
+    state.origin = el.libraryOrigin?.value || "all";
     state.libraryPage = 1;
     state.filterRevision++;
     updateLibraryUrl();
@@ -344,10 +358,11 @@ function updateLibraryUrl() {
     if (state.query) params.set("q", state.query);
     if (state.mediaType !== "all") params.set("type", state.mediaType);
     if (state.sort !== "recent") params.set("sort", state.sort);
+    if (state.origin !== "all") params.set("origin", state.origin);
     if (state.libraryPage > 1) params.set("page", String(state.libraryPage));
     const query = params.toString();
     window.history.replaceState({}, "", `${window.location.pathname}${query ? `?${query}` : ""}`);
-    if (el.libraryReset) el.libraryReset.disabled = !state.query && state.mediaType === "all" && state.sort === "recent";
+    if (el.libraryReset) el.libraryReset.disabled = !state.query && state.mediaType === "all" && state.sort === "recent" && state.origin === "all";
 }
 
 async function loadFiles() {
@@ -361,6 +376,7 @@ async function loadFiles() {
     if (state.query) params.set("q", state.query);
     if (state.mediaType !== "all") params.set("media_type", state.mediaType);
     params.set("sort", state.sort);
+    params.set("origin", state.origin);
     el.libraryList.setAttribute("aria-busy", "true");
     if (el.librarySummary) el.librarySummary.textContent = T.searching;
     try {
@@ -373,6 +389,15 @@ async function loadFiles() {
         if (el.libraryNext) el.libraryNext.disabled = data.page >= data.pages;
         if (el.libraryPage) el.libraryPage.textContent = `${data.page} / ${data.pages}`;
         state.files = data.files || [];
+        if (el.libraryOrigin && Array.isArray(data.nodes)) {
+            for (const node of data.nodes) {
+                const value = `peer:${node.id}`;
+                const option = Array.from(el.libraryOrigin.options).find(item => item.value === value);
+                if (option) option.textContent = `${T.nodeOrigin} · ${node.name}`;
+                else el.libraryOrigin.add(new Option(`${T.nodeOrigin} · ${node.name}`, value));
+            }
+            el.libraryOrigin.value = state.origin;
+        }
         renderLibrary(data);
         state.filesNeedReload = false;
     } catch (e) {
@@ -400,7 +425,7 @@ function renderLibrary({ files, movies = [], series = [], used_bytes, quota_byte
 
     el.libraryCount.textContent = String(total ?? files.length);
     if (el.librarySummary) el.librarySummary.textContent = T.results(total ?? files.length);
-    const filtered = !!state.query || state.mediaType !== "all";
+    const filtered = !!state.query || state.mediaType !== "all" || state.origin !== "all";
     if (el.libraryEmptyTitle) el.libraryEmptyTitle.textContent = filtered ? T.noResults : T.emptyLibrary;
     if (el.libraryEmptyDescription) el.libraryEmptyDescription.textContent = filtered ? T.noResultsHint : T.emptyLibraryHint;
 
@@ -549,9 +574,10 @@ function buildFileRow(file) {
     const episode = file.media_type === "series"
         ? `S${String(file.season_number).padStart(2, "0")}E${String(file.episode_number).padStart(2, "0")}` : "";
     const ext = (file.name.split(".").pop() || "").toLowerCase();
-    const isVideo = ["mp4", "mkv", "avi", "mov", "ts", "webm", "m4v"].includes(ext);
-    const isImage = ["jpg", "jpeg", "png", "webp", "gif", "bmp"].includes(ext);
-    const isText = ["txt", "srt", "vtt", "nfo", "json", "ass", "ssa", "sub"].includes(ext);
+    const remote = file.origin === "federation";
+    const isVideo = remote || ["mp4", "mkv", "avi", "mov", "ts", "webm", "m4v"].includes(ext);
+    const isImage = !remote && ["jpg", "jpeg", "png", "webp", "gif", "bmp"].includes(ext);
+    const isText = !remote && ["txt", "srt", "vtt", "nfo", "json", "ass", "ssa", "sub"].includes(ext);
     const kindClass = isVideo ? "video" : isImage ? "image" : isText ? "subtitle" : "other";
     const kindLabel = isVideo ? "VIDEO" : isImage ? "IMAGE" : isText ? "TEXT" : "FILE";
 
@@ -563,7 +589,7 @@ function buildFileRow(file) {
     if (isImage || isText) {
         actions += `<button class="fm-row__btn" type="button" data-preview="${escHtml(file.relative_path)}" data-preview-name="${escHtml(name)}" title="Preview"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button>`;
     }
-    if (window.IS_ADMIN) {
+    if (window.IS_ADMIN && !remote) {
         actions += `<button class="fm-row__btn fm-row__btn--danger" type="button" data-delete="${escHtml(file.relative_path)}" data-name="${escHtml(name)}" title="${T.delete}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/></svg></button>`;
     }
 
@@ -572,7 +598,8 @@ function buildFileRow(file) {
         <span class="fm-row__kind fm-row__kind--${kindClass}">${kindLabel}</span>
         <div class="fm-row__info">
             <div class="fm-row__name" title="${escHtml(file.title || file.name)}">${escHtml(file.title || file.name)}</div>
-            <div class="fm-row__meta">${episode ? `${episode} · ` : ""}${escHtml(size)} · ${escHtml(date)}</div>
+            <div class="fm-row__meta">${episode ? `${episode} · ` : ""}${escHtml(size)} · ${remote ? escHtml(file.quality || "") : escHtml(date)}</div>
+            <span class="fm-row__origin">${escHtml(remote ? `${T.nodeOrigin} · ${file.peer_name}` : T.localOrigin)}</span>
         </div>
         <div class="fm-row__actions">${actions}</div>
     </div>`;
@@ -588,8 +615,21 @@ async function openLocalPlayer(file, selectedStreamIndex) {
         params.set("season", file.season_number);
         params.set("episode", file.episode_number);
     }
-    const response = await fetch(`/api/downloads/files/match?${params}`);
-    const source = response.ok ? (await response.json()).match : null;
+    let source;
+    try {
+        if (file.origin === "federation") {
+            const metadata = await fetchDownloadJson(file.metadata_url);
+            source = {...file, ...metadata, relative_path: undefined};
+        } else {
+            source = (await fetchDownloadJson(`/api/downloads/files/match?${params}`)).match;
+        }
+    } catch (error) {
+        if (attempt === state.playerAttempt) {
+            el.playerTitle.textContent = error.message;
+            el.playerOverlay.style.display = "flex";
+        }
+        return;
+    }
     if (attempt !== state.playerAttempt || !source) return;
     const audioTracks = source?.audio_tracks || [];
     const chosen = Number.isFinite(selectedStreamIndex) ? selectedStreamIndex : audioTracks[0]?.stream_index;
