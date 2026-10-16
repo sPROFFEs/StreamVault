@@ -42,6 +42,21 @@ final class ServerUrl {
         }
     }
 
+    static boolean isCloudflareAuth(String url) {
+        if (url == null) return false;
+        try {
+            URI uri = new URI(url);
+            String host = uri.getHost() == null ? "" : uri.getHost().toLowerCase(Locale.ROOT);
+            String path = uri.getPath() == null ? "" : uri.getPath().toLowerCase(Locale.ROOT);
+            return host.endsWith(".cloudflareaccess.com")
+                    || host.equals("cloudflareaccess.com")
+                    || host.equals("challenges.cloudflare.com")
+                    || (host.endsWith(".cloudflare.com") && path.startsWith("/cdn-cgi/"));
+        } catch (URISyntaxException exception) {
+            return false;
+        }
+    }
+
     private static int port(URI uri) {
         return uri.getPort() == -1 ? (uri.getScheme().equalsIgnoreCase("https") ? 443 : 80) : uri.getPort();
     }

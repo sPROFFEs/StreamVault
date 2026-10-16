@@ -86,14 +86,18 @@ def main():
     version = re.search(r"Current WebView package.*?\(.*?, (\d+)\.", provider_state)
     if version and int(version.group(1)) < 108:
         raise RuntimeError("Update the device WebView provider to Chromium 108 or newer before exercising the hosted UI.")
+    def open_settings(tree):
+        return (node_with_text(tree, "Server")
+                or next((node for node in tree.iter("node")
+                         if "Configure server" in node.get("content-desc", "")), None))
+
     run("install", "-r", str(project / "app/build/outputs/apk/debug/app-debug.apk"))
     run("shell", "pm", "clear", package)
     run("shell", "am", "start", "-W", "-n", package + "/com.streamvault.app.MainActivity")
     enter_server("http://127.0.0.1:9")
     wait_for(lambda tree: node_with_text(tree, "Try again"))
-    tap(wait_for(lambda tree: node_with_text(tree, "Server")))
+    tap(wait_for(open_settings))
     enter_server(args.server_url)
-    wait_for(lambda tree: node_with_text(tree, "Connected"))
 
     def has_application(tree):
         for node in tree.iter("node"):
@@ -146,7 +150,7 @@ def main():
             run("shell", "input", "keyevent", "KEYCODE_BACK")
             page.wait_for_url(catalog_url)
             authenticated["overlay_and_navigation_back"] = "passed"
-            tap(wait_for(lambda tree: node_with_text(tree, "Reload")))
+            page.reload()
             page.wait_for_load_state("load")
             assert page.url == catalog_url
             authenticated["reload_preserves_route"] = "passed"
@@ -179,18 +183,18 @@ def main():
                 port = "tcp:" + str(args.disconnect_port)
                 run("reverse", "--remove", port)
                 try:
-                    tap(wait_for(lambda tree: node_with_text(tree, "Reload")))
+                    page.reload()
                     wait_for(lambda tree: node_with_text(tree, "Try again"))
                 finally:
                     run("reverse", port, port)
                 tap(wait_for(lambda tree: node_with_text(tree, "Try again")))
-                wait_for(lambda tree: node_with_text(tree, "Connected"))
+                wait_for(has_application)
                 assert page.url == route
                 authenticated["offline_and_retry_preserves_route"] = "passed"
             browser.close()
             run("shell", "am", "force-stop", package)
             run("shell", "am", "start", "-W", "-n", package + "/com.streamvault.app.MainActivity")
-            wait_for(lambda tree: node_with_text(tree, "Connected"))
+            wait_for(has_application)
             browser, page = attach(playwright)
             assert "/login" not in page.url
             assert page.locator("#username").count() == 0

@@ -1,23 +1,27 @@
 <resources>
     <string name="app_name">StreamVault</string>
-    <string name="reload">Reload</string>
     <string name="confirm">Continue</string>
-    <string name="server">Server</string>
-    <string name="server_title">Connect to StreamVault</string>
-    <string name="server_help">Enter the HTTPS address of your StreamVault server. Sign in using your existing account after connecting. Changing servers clears sign-in and device web storage; offline copies are not transferred.</string>
-    <string name="server_help_debug">Enter your HTTPS server address. For local development use http://10.0.2.2:8000 on an emulator, or http://127.0.0.1:8000 with adb reverse.</string>
-    <string name="server_hint">https://watch.example.com</string>
-    <string name="connect">Connect</string>
     <string name="cancel">Cancel</string>
-    <string name="invalid_server">Enter an HTTPS server origin without a path, password, query or fragment. Debug HTTP is limited to localhost, 127.0.0.1 and 10.0.2.2.</string>
-    <string name="loading">Connecting to your server…</string>
-    <string name="connected">Connected</string>
-    <string name="setup_required">Choose a server to get started.</string>
-    <string name="connection_error">Unable to connect. Check your connection and server address, then try again.</string>
+    <string name="server_hint">https://watch.example.com</string>
     <string name="certificate_error">The server certificate could not be verified. Check its HTTPS configuration.</string>
-    <string name="retry">Try again</string>
     <string name="offline_library">On this device · Offline</string>
     <string name="external_error">No browser is available to open this link.</string>
     <string name="webview_outdated">Update Android System WebView or Chrome (version 108 or newer), then reopen StreamVault.</string>
     <string name="webview_missing">Install or enable Android System WebView, then reopen StreamVault.</string>
+
+    <!-- Setup / Configuration -->
+    <string name="setup_welcome_title">Welcome to StreamVault</string>
+    <string name="setup_welcome_subtitle">Connect to your server to start streaming</string>
+    <string name="setup_change_title">Server Settings</string>
+    <string name="setup_change_subtitle">Change the StreamVault server address</string>
+    <string name="setup_btn_connect">Connect</string>
+    <string name="setup_btn_cancel">Cancel</string>
+    <string name="setup_error_empty_url">Please enter a server address</string>
+    <string name="setup_error_invalid_url">Enter a valid HTTPS server origin (e.g. https://watch.example.com)</string>
+    <string name="setup_toast_saved">Server address saved</string>
+
+    <!-- Main View -->
+    <string name="main_btn_settings_desc">Configure server</string>
+    <string name="main_connection_error">Unable to connect to StreamVault</string>
+    <string name="main_retry">Retry</string>
 </resources>

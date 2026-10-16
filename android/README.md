@@ -19,18 +19,19 @@ Deploy the existing server following [the deployment guide](../vault/README.md):
 copy `vault/.env.example` to `vault/.env`, configure the secret, domain and data
 directory, then run `docker compose -f vault/docker-compose.yaml up -d --build`.
 Use its HTTPS hostname (for example the configured tunnel), with a valid system
-trusted certificate. Create the initial administrator on the server. The native
-Server button accepts an origin, for example `https://watch.example.com`; paths,
+trusted certificate. Create the initial administrator on the server. On first launch,
+SetupActivity prompts for the server address; paths,
 embedded credentials, queries and fragments are rejected. Accounts and passwords
-are entered only in the existing web login. Switching servers clears WebView
+are entered only in the existing web login. An unobtrusive settings button on
+login and error screens allows changing servers at any time; switching servers clears WebView
 cookies, cache and web storage; backup/transfer of app data is disabled.
 
 Debug additionally permits HTTP only for `10.0.2.2`, `127.0.0.1` and `localhost`.
 For an emulator, a backend listening on the host's port 8000 is available at
 `http://10.0.2.2:8000`. For USB devices run `adb reverse tcp:8000 tcp:8000` and
 enter `http://127.0.0.1:8000`. LAN IP addresses require HTTPS. Release rejects HTTP.
-Loading progress, a 20-second timeout, certificate/network/HTTP error feedback and
-Try again and Reload are native, so they also work when the server is unavailable.
+Loading progress, certificate/network error feedback, Cloudflare Access auth flows,
+and Try again are native, so they also work when the server is unavailable.
 They retain the current same-origin route, including catalog filters. A new default
 network retries a failed connection automatically; server restarts on an unchanged
 network can be recovered with Try again. Cookies are flushed after page loads and

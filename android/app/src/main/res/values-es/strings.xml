@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">StreamVault</string>
+    <string name="confirm">Continuar</string>
+    <string name="cancel">Cancelar</string>
+    <string name="server_hint">https://watch.example.com</string>
+    <string name="certificate_error">No se pudo verificar el certificado del servidor. Revisa su configuración HTTPS.</string>
+    <string name="offline_library">En este dispositivo · Sin conexión</string>
+    <string name="external_error">No hay un navegador disponible para abrir este enlace.</string>
+    <string name="webview_outdated">Actualiza Android System WebView o Chrome (versión 108 o superior) y vuelve a abrir StreamVault.</string>
+    <string name="webview_missing">Instala o activa Android System WebView y vuelve a abrir StreamVault.</string>
+
+    <!-- Setup / Configuration -->
+    <string name="setup_welcome_title">Bienvenido a StreamVault</string>
+    <string name="setup_welcome_subtitle">Conecta con tu servidor para empezar a reproducir</string>
+    <string name="setup_change_title">Cambiar servidor</string>
+    <string name="setup_change_subtitle">La app cargará la nueva dirección al guardar</string>
+    <string name="setup_btn_connect">Conectar</string>
+    <string name="setup_btn_cancel">Cancelar</string>
+    <string name="setup_error_empty_url">Introduce una dirección de servidor</string>
+    <string name="setup_error_invalid_url">Introduce un origen de servidor HTTPS válido (ej. https://watch.example.com)</string>
+    <string name="setup_toast_saved">Servidor guardado</string>
+
+    <!-- Main View -->
+    <string name="main_btn_settings_desc">Configurar servidor</string>
+    <string name="main_connection_error">No se ha podido conectar con StreamVault</string>
+    <string name="main_retry">Reintentar</string>
+</resources>

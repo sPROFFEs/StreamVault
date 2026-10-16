@@ -63,7 +63,7 @@ def test_github_release_attaches_verified_assets_and_supports_draft_preview(tmp_
     assert "github.event_name == 'push' || inputs.publish" in workflow
 
 
-@pytest.mark.parametrize("tag", ["1.0.0", "v1.0.1", "v1.0.0-beta", "v01.0.0"])
+@pytest.mark.parametrize("tag", ["1.0.0", "v9.9.9", "v1.0.0-beta", "v01.0.0"])
 def test_mismatched_release_tags_are_rejected(tag):
     with pytest.raises(ValueError):
         release_tools().validate_metadata(ROOT, tag)

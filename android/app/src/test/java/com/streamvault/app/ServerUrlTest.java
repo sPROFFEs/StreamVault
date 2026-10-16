@@ -45,6 +45,17 @@ public class ServerUrlTest {
         }
     }
 
+    @Test public void recognizesCloudflareAuthHosts() {
+        assertTrue(ServerUrl.isCloudflareAuth("https://myteam.cloudflareaccess.com/cdn-cgi/access/login"));
+        assertTrue(ServerUrl.isCloudflareAuth("https://cloudflareaccess.com/auth"));
+        assertTrue(ServerUrl.isCloudflareAuth("https://challenges.cloudflare.com/turnstile/v0/api.js"));
+        assertTrue(ServerUrl.isCloudflareAuth("https://auth.cloudflare.com/cdn-cgi/access/callback"));
+        assertFalse(ServerUrl.isCloudflareAuth("https://watch.example.com/login"));
+        assertFalse(ServerUrl.isCloudflareAuth("https://cloudflare.com.evil.test/"));
+        assertFalse(ServerUrl.isCloudflareAuth(null));
+        assertFalse(ServerUrl.isCloudflareAuth("not-a-valid-url"));
+    }
+
     private static void assertRejected(String url, boolean debug) {
         assertThrows(url, IllegalArgumentException.class, () -> ServerUrl.normalize(url, debug));
     }
