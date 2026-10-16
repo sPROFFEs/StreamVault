@@ -158,7 +158,7 @@ public final class MainActivity extends Activity {
                 String target = uri.toString();
                 String scheme = uri.getScheme();
                 boolean web = "https".equalsIgnoreCase(scheme) || "http".equalsIgnoreCase(scheme);
-                if (!request.isForMainFrame()) return !web;
+                if (!request.isForMainFrame()) return !ServerUrl.isAllowedSubframe(target);
                 if (ServerUrl.sameOrigin(server, target) || ServerUrl.isCloudflareAuth(target)) {
                     return false;
                 }

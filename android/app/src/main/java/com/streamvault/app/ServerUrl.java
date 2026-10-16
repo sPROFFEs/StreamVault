@@ -46,12 +46,31 @@ final class ServerUrl {
         if (url == null) return false;
         try {
             URI uri = new URI(url);
+            if (!"https".equalsIgnoreCase(uri.getScheme()) || uri.getRawUserInfo() != null
+                    || (uri.getPort() != -1 && uri.getPort() != 443)) return false;
             String host = uri.getHost() == null ? "" : uri.getHost().toLowerCase(Locale.ROOT);
             String path = uri.getPath() == null ? "" : uri.getPath().toLowerCase(Locale.ROOT);
             return host.endsWith(".cloudflareaccess.com")
                     || host.equals("cloudflareaccess.com")
                     || host.equals("challenges.cloudflare.com")
                     || (host.endsWith(".cloudflare.com") && path.startsWith("/cdn-cgi/"));
+        } catch (URISyntaxException exception) {
+            return false;
+        }
+    }
+
+    static boolean isAllowedSubframe(String url) {
+        if (url == null) return false;
+        try {
+            URI uri = new URI(url);
+            // Turnstile creates local challenge frames. These are allowed only
+            // as subframes, never as top-level app/external navigation.
+            if ("about".equalsIgnoreCase(uri.getScheme())) {
+                return "blank".equals(uri.getRawSchemeSpecificPart())
+                        || "srcdoc".equals(uri.getRawSchemeSpecificPart());
+            }
+            return uri.getHost() != null && uri.getRawUserInfo() == null
+                    && ("https".equalsIgnoreCase(uri.getScheme()) || "http".equalsIgnoreCase(uri.getScheme()));
         } catch (URISyntaxException exception) {
             return false;
         }

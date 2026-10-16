@@ -56,6 +56,35 @@ public class ServerUrlTest {
         assertFalse(ServerUrl.isCloudflareAuth("not-a-valid-url"));
     }
 
+    @Test public void challengeFramesAllowBlankAndSrcdocWithoutTopLevelNavigation() {
+        String origin = "https://watch.example.com/";
+        for (String url : new String[]{"about:blank", "about:srcdoc", "about:blank#challenge"}) {
+            assertTrue(url, ServerUrl.isAllowedSubframe(url));
+            assertFalse(url, ServerUrl.sameOrigin(origin, url));
+            assertFalse(url, ServerUrl.isCloudflareAuth(url));
+        }
+    }
+
+    @Test public void challengeFramesKeepOtherNonWebSchemesBlocked() {
+        assertTrue(ServerUrl.isAllowedSubframe("https://challenges.cloudflare.com/cdn-cgi/challenge-platform/"));
+        assertTrue(ServerUrl.isAllowedSubframe("http://provider.example/video"));
+        for (String url : new String[]{"file:///data/data/com.streamvault.app/", "content://private/data",
+                "javascript:alert(1)", "intent://external", "about:settings", "about:blank.evil", "data:text/html,script",
+                "https://", "https://user:password@provider.example/", "not a URL"}) {
+            assertFalse(url, ServerUrl.isAllowedSubframe(url));
+        }
+        assertFalse(ServerUrl.isAllowedSubframe(null));
+    }
+
+    @Test public void cloudflareAuthenticationRequiresHttpsWithoutCredentials() {
+        for (String url : new String[]{"http://myteam.cloudflareaccess.com/cdn-cgi/access/login",
+                "ftp://challenges.cloudflare.com/", "https://user:password@myteam.cloudflareaccess.com/",
+                "https://myteam.cloudflareaccess.com:8443/", "https://evilcloudflareaccess.com/",
+                "https://challenges.cloudflare.com.evil.test/"}) {
+            assertFalse(url, ServerUrl.isCloudflareAuth(url));
+        }
+    }
+
     private static void assertRejected(String url, boolean debug) {
         assertThrows(url, IllegalArgumentException.class, () -> ServerUrl.normalize(url, debug));
     }

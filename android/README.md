@@ -42,18 +42,23 @@ bundle a backend. With an updated server, explicit device downloads and a public
 offline-library shell are available through IndexedDB/service workers, including
 without Internet. See [offline use, limits and privacy](../docs/OFFLINE.md).
 
-Main-frame navigation remains on the selected origin. User-activated external
-HTTP(S) links open the browser. Web media iframes remain supported without a native
-bridge; mixed content, file/content access, third-party cookies and unsafe TLS
-overrides are disabled. User-activated `target="_blank"` links use the same policy.
+Main-frame navigation stays on the selected origin or HTTPS Cloudflare Access/
+challenge hosts so authentication and its return trip use the same WebView cookie
+store. Other user-activated HTTP(S) links open the browser. Web media iframes remain
+supported without a native bridge; `about:blank` and `about:srcdoc` are allowed only
+inside frames, as required by [Cloudflare's mobile integration](https://developers.cloudflare.com/turnstile/get-started/mobile-implementation/).
+File/content access and unsafe TLS overrides remain disabled. Cookies, including
+third-party cookies, DOM storage and a stable WebView User Agent are enabled for
+the Access verification flow. The wrapper currently uses Android's mixed-content
+compatibility mode; that is not a substitute for serving the app and login over HTTPS.
 Android Back dismisses the keyboard, then native fullscreen or the web shell's top
 overlay/CSS fullscreen, then page history, then the activity. Native fullscreen hides
 system bars and uses sensor landscape; exit restores the previous orientation and
 controls. Rotation keeps the WebView alive. API 30+ system/keyboard insets are
 consumed by the native root; earlier Android versions use window resize. Native
 alert/confirmation dialogs preserve the web updater's Continue/Cancel behavior.
-Providers requiring third-party cookies, browser OAuth redirects, file uploads or
-unsupported Android codecs need separate integration.
+OAuth identity-provider redirects outside the allowed Cloudflare hosts, file
+uploads or unsupported Android codecs need separate integration.
 Torrentio/server downloads stay on the server. **Save to device** makes a separate
 foreground copy in WebView's origin-private storage, without native bridges or
 storage permissions. Keep the screen open until completion. The connection-error
@@ -64,6 +69,14 @@ the hosted Docker Compose deployment; it does not install or sign a new APK.
 Install APK updates separately and reload after the server is healthy.
 See [WebView](https://developer.android.com/develop/ui/views/layout/webapps/webview)
 and [network policies](https://developer.android.com/privacy-and-security/security-config).
+
+If Access stays on **Verifying** in the APK but works in Chrome on the same
+device, install the rebuilt APK containing the frame-navigation fix and update
+Android System WebView/Chrome. Retest with a newly requested code. Passing unit
+tests does not prove a live Cloudflare challenge succeeds on every device: the
+final check must be performed in the app, without browser automation. Do not
+disable Access, bypass certificate checks or clear the app's data as a first
+step; clearing data also removes offline device downloads.
 
 ## Build and checks
 
