@@ -217,6 +217,10 @@ def test_protocol_roundtrip_resolver_playback_and_proxy_range(regression_client,
     assert issued["token"] not in str(source)
     metadata = client.get(source["metadata_url"]).json()
     assert metadata["audio_tracks"][0]["language"] == "eng"
+    prepared = metadata["prepared_playback"]
+    assert prepared["mode"] == "file" and prepared["start"] == 0 and prepared["audio"] == 1
+    assert prepared["url"].startswith("/api/federation/peers/")
+    assert issued["token"] not in str(prepared) and "publisher.test" not in str(prepared)
     playback = client.get(source["playback_url"], params={"start": 20, "audio": 1}).json()
     assert playback["mode"] == "file"
     assert playback["offset"] == 0
@@ -229,6 +233,45 @@ def test_protocol_roundtrip_resolver_playback_and_proxy_range(regression_client,
     assert "Authorization" not in response.headers
     assert client.patch(f"/admin/api/federation/peers/{peer_id}", json={"enabled": False}).status_code == 200
     assert client.get(playback["url"]).status_code == 503
+
+
+def test_federation_relay_flushes_the_first_fragment_without_waiting_for_64k(monkeypatch):
+    import httpx
+    from types import SimpleNamespace
+    from starlette.requests import Request
+    from routers import federation as routes
+
+    async def exercise():
+        gate = asyncio.Event()
+
+        class Fragments(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                yield b"mp4-header"
+                await gate.wait()
+                yield b"next-fragment"
+
+        client = httpx.AsyncClient()
+        upstream = httpx.Response(200, headers={"Content-Type": "video/mp4"}, stream=Fragments())
+
+        async def remote(*args, **kwargs):
+            return client, upstream
+
+        monkeypatch.setattr(federation, "remote_response", remote)
+        monkeypatch.setattr(routes, "_proxy_slots", asyncio.Semaphore(8))
+        request = Request({"type": "http", "method": "GET", "headers": []})
+        response = await routes._proxy(SimpleNamespace(id=1), "/media/fixture/stream", request)
+        try:
+            first = await asyncio.wait_for(anext(response.body_iterator), timeout=.5)
+            assert first == b"mp4-header"
+            assert response.headers["x-accel-buffering"] == "no"
+        finally:
+            gate.set()
+            await response.body_iterator.aclose()
+            await response.aclose()
+        assert client.is_closed and upstream.is_closed
+        assert routes._proxy_slots._value == 8
+
+    asyncio.run(exercise())
 
 
 def test_remote_connection_pins_dns_and_rejects_redirects(monkeypatch):

@@ -47,7 +47,8 @@ def test_cached_node_sources_do_not_wait_for_external_providers(discovery_page, 
     expect(page.locator("#source-select")).to_contain_text("External provider")
 
 
-def test_federated_source_metadata_audio_and_seek_use_same_origin(discovery_page):
+@pytest.mark.parametrize("prepared", [False, True], ids=["legacy", "prepared"])
+def test_federated_source_metadata_audio_and_seek_use_same_origin(discovery_page, prepared):
     ui, page = discovery_page, discovery_page.page
     base = "/api/federation/peers/1/media/" + "a" * 64
     ui.payloads["/api/stream/resolve/7"] = [{"source": "Node · Other server", "type": "federation", "quality": "1080p",
@@ -55,18 +56,27 @@ def test_federated_source_metadata_audio_and_seek_use_same_origin(discovery_page
     ui.payloads[base + "/metadata"] = {"duration_seconds": 100, "subtitles": [], "audio_tracks": [
         {"stream_index": 1, "language": "eng", "codec": "aac"}, {"stream_index": 2, "language": "spa", "codec": "aac"}]}
     ui.payloads[base + "/playback"] = {"mode": "stream", "offset": 30, "duration_seconds": 100, "url": base + "/stream?start=30"}
+    if prepared:
+        ui.payloads[base + "/metadata"]["prepared_playback"] = {
+            **ui.payloads[base + "/playback"], "audio": 1, "start": 0}
     # Do not decode a fabricated video: this tests descriptor/control wiring.
     page.add_init_script("HTMLMediaElement.prototype.play = async () => {}; HTMLMediaElement.prototype.load = () => {};")
     page.route("**" + base + "/stream*", lambda route: route.fulfill(status=204))
     page.goto("https://streamvault.test/media/7?type=movie")
     expect(page.locator("#source-select")).to_contain_text("Other server")
+    page.evaluate('() => { SVOfflineUI.download = (file, options) => { window.deviceFile = file; window.deviceAudio = options.audio; }; }')
+    page.locator('#device-download-button').click()
+    assert page.evaluate('deviceFile.playback_url') == base + '/playback'
     page.evaluate("playCurrentItem()")
     expect(page.locator("video")).to_have_attribute("src", base + "/stream?start=30")
     expect(page.locator("#audio-select")).to_contain_text("SPA")
-    assert any(path == base + "/playback" and "audio=1" in query and "path=" not in query for path, query in ui.calls)
+    initial_requests = [query for path, query in ui.calls if path == base + "/playback"]
+    assert initial_requests == [] if prepared else any("audio=1" in query and "path=" not in query for query in initial_requests)
     page.locator("#audio-select").select_option("2")
     page.wait_for_function("document.querySelector('video').dataset.playbackOffset === '30'")
     assert any(path == base + "/playback" and "audio=2" in query for path, query in ui.calls)
+    page.locator('#device-download-button').click()
+    assert page.evaluate('deviceAudio') == 2
     assert not any("hls.min.js" in path or "webtorrent" in path for path, _ in ui.calls)
 
 

@@ -34,9 +34,12 @@ Try again and Reload are native, so they also work when the server is unavailabl
 They retain the current same-origin route, including catalog filters. A new default
 network retries a failed connection automatically; server restarts on an unchanged
 network can be recovered with Try again. Cookies are flushed after page loads and
-when the app pauses. The server session expiry and logout still apply. The wrapper
-needs a reachable server and an up-to-date Android System WebView (Chromium 108 or newer); it does not
-provide an offline media library.
+when the app pauses. The server session expiry and logout still apply. Normal
+browsing needs a reachable server and an up-to-date Android System WebView
+(Chromium 108 or newer); the wrapper does not
+bundle a backend. With an updated server, explicit device downloads and a public
+offline-library shell are available through IndexedDB/service workers, including
+without Internet. See [offline use, limits and privacy](../docs/OFFLINE.md).
 
 Main-frame navigation remains on the selected origin. User-activated external
 HTTP(S) links open the browser. Web media iframes remain supported without a native
@@ -48,11 +51,14 @@ system bars and uses sensor landscape; exit restores the previous orientation an
 controls. Rotation keeps the WebView alive. API 30+ system/keyboard insets are
 consumed by the native root; earlier Android versions use window resize. Native
 alert/confirmation dialogs preserve the web updater's Continue/Cancel behavior.
-Providers requiring third-party cookies, browser OAuth redirects, file uploads,
-downloads to the device or unsupported Android codecs need separate integration.
-Downloads initiated in the existing UI stay on the server and play through the
-existing media APIs. No device download, upload or storage-permission flow is
-required by the current application. The administrator updater rebuilds/recreates
+Providers requiring third-party cookies, browser OAuth redirects, file uploads or
+unsupported Android codecs need separate integration.
+Torrentio/server downloads stay on the server. **Save to device** makes a separate
+foreground copy in WebView's origin-private storage, without native bridges or
+storage permissions. Keep the screen open until completion. The connection-error
+screen's **On this device · Offline** button opens previously saved content;
+the first offline setup must complete while connected. The administrator updater
+rebuilds/recreates
 the hosted Docker Compose deployment; it does not install or sign a new APK.
 Install APK updates separately and reload after the server is healthy.
 See [WebView](https://developer.android.com/develop/ui/views/layout/webapps/webview)

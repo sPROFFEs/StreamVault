@@ -179,6 +179,7 @@ async function boot() {
     el.playBtn.addEventListener("click", playCurrentItem);
     el.favoriteBtn.addEventListener("click", toggleFavorite);
     el.downloadBtn.addEventListener("click", openDownloadPicker);
+    document.getElementById("device-download-button")?.addEventListener("click", saveCurrentToDevice);
     el.downloadPickerClose?.addEventListener("click", closeDownloadPicker);
     el.downloadPicker?.addEventListener("click", (event) => {
         if (event.target === el.downloadPicker) closeDownloadPicker();
@@ -382,6 +383,7 @@ async function autoLoadStreams() {
     state.streamController = ctrl;
 
     state.streams = [];
+    updateDeviceDownloadButton();
     state.streamsLoading = true;
     el.sourceSelect.innerHTML = `<option>${T.searchingSources}</option>`;
     el.detailStatus.textContent = T.searchingSources;
@@ -417,6 +419,7 @@ async function autoLoadStreams() {
     if (immediateSources.length) {
         state.streams = immediateSources;
         el.sourceSelect.innerHTML = immediateSources.map((source, index) => `<option value="${index}">${escH(buildSourceLabel(source))}</option>`).join("");
+        updateDeviceDownloadButton();
         el.detailStatus.textContent = T.sourcesFound(immediateSources.length);
         if (state._playPending) {
             state._playPending = false;
@@ -447,6 +450,7 @@ async function autoLoadStreams() {
         el.sourceSelect.innerHTML = state.streams.map((s, i) => `<option value="${i}">${escH(buildSourceLabel(s))}</option>`).join("");
         const selectedIndex = state.streams.findIndex(source => source.url === selectedUrl);
         if (selectedIndex >= 0) el.sourceSelect.value = String(selectedIndex);
+        updateDeviceDownloadButton();
         maybeAutoActivateSubtitle();
         
         // If user clicked play while waiting, play the first available stream now!
@@ -536,6 +540,7 @@ async function playCurrentItem() {
 }
 
 function onSourceChange() {
+    updateDeviceDownloadButton();
     const src = state.streams[Number(el.sourceSelect.value || 0)];
     if (src) {
         state.failedSources.clear();
@@ -543,6 +548,23 @@ function onSourceChange() {
         destroyPlayer();
         loadSource(src);
     }
+}
+
+function updateDeviceDownloadButton() {
+    const button = document.getElementById("device-download-button");
+    if (button) button.disabled = !["local", "federation"].includes(state.streams[Number(el.sourceSelect.value || 0)]?.type);
+}
+
+function saveCurrentToDevice() {
+    const selected = state.streams[Number(el.sourceSelect.value || 0)];
+    if (!selected || !["local", "federation"].includes(selected.type)) return;
+    const active = state.activeLocalSource;
+    const isActive = active && (active.playback_url || active.relative_path) === (selected.playback_url || selected.relative_path);
+    const source = isActive ? active : selected;
+    window.SVOfflineUI.download({...source, title: state.item?.title || state.item?.name || "Video",
+        peer_name: source.peer_name || source.source, media_type: MTYPE,
+        ...(MTYPE === "tv" ? {season_number: Number(el.seasonSelect.value), episode_number: Number(el.episodeSelect.value)} : {}),
+    }, {audio: isActive && el.audioSelect.value ? Number(el.audioSelect.value) : undefined});
 }
 
 async function saveSourcePreference(source) {

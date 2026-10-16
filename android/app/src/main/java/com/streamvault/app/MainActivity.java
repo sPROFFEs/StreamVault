@@ -90,6 +90,9 @@ public final class MainActivity extends Activity {
         feedback = findViewById(R.id.feedback);
         findViewById(R.id.server_button).setOnClickListener(view -> chooseServer());
         findViewById(R.id.retry).setOnClickListener(view -> retry());
+        findViewById(R.id.offline_button).setOnClickListener(view -> {
+            if (!server.isEmpty()) webView.loadUrl(server + "/assets/offline.html");
+        });
         findViewById(R.id.reload_button).setOnClickListener(view -> retry());
         if (Build.VERSION.SDK_INT >= 30) {
             getWindow().setDecorFitsSystemWindows(false);

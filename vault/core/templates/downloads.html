@@ -8,6 +8,7 @@
     {% include "_metadata.html" %}
     <link rel="stylesheet" href="/assets/css/app.css?v=20261015-1">
     <link rel="stylesheet" href="/assets/css/ui-extras.css?v=20261008-1">
+    <link rel="stylesheet" href="/assets/css/offline.css?v=20261016-1">
 </head>
 <body class="app-shell">
     {% set active = 'downloads' %}
@@ -22,7 +23,10 @@
                 <h1>{{ "Downloads" if lang == "en" else "Descargas" }}</h1>
                 <p id="storage-label">{{ "Loading storage info…" if lang == "en" else "Cargando almacenamiento…" }}</p>
             </div>
-            <button id="refresh-btn" class="button button--ghost" type="button">{{ "Refresh" if lang == "en" else "Actualizar" }}</button>
+            <div class="offline-actions">
+                <a class="button button--ghost" href="/assets/offline.html">{{ "On this device · Offline" if lang == "en" else "En este dispositivo · Sin conexión" }}</a>
+                <button id="refresh-btn" class="button button--ghost" type="button">{{ "Refresh" if lang == "en" else "Actualizar" }}</button>
+            </div>
             <div class="downloads-storage">
                 <div class="progress-bar-track">
                     <div id="storage-bar" class="progress-bar-fill" style="width:0%"></div>
@@ -145,7 +149,9 @@
     </div>
 
     <script>window.APP_LANG = "{{ lang }}"; window.IS_ADMIN = {{ 'true' if is_admin else 'false' }};</script>
-    <script defer src="/assets/js/local-player.js?v=20260919-2"></script>
-    <script defer src="/assets/js/download-manager.js?v=20261015-1"></script>
+    <script defer src="/assets/js/offline-store.js?v=20261016-1"></script>
+    <script defer src="/assets/js/offline-ui.js?v=20261016-1"></script>
+    <script defer src="/assets/js/local-player.js?v=20261016-1"></script>
+    <script defer src="/assets/js/download-manager.js?v=20261016-1"></script>
 </body>
 </html>

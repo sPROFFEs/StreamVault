@@ -460,6 +460,12 @@ function renderLibrary({ files, movies = [], series = [], used_bytes, quota_byte
             if (file) openLocalPlayer(file);
             return;
         }
+        const deviceBtn = e.target.closest("[data-device-download]");
+        if (deviceBtn) {
+            const file = state.files.find(item => item.relative_path === deviceBtn.dataset.deviceDownload);
+            if (file) window.SVOfflineUI.download(file);
+            return;
+        }
         const delBtn = e.target.closest("[data-delete]");
         if (delBtn) {
             confirmDelete(delBtn.dataset.delete, delBtn.dataset.name);
@@ -585,6 +591,8 @@ function buildFileRow(file) {
     let actions = "";
     if (isVideo) {
         actions += `<button class="fm-row__btn fm-row__btn--play" type="button" data-play="${escHtml(file.relative_path)}" data-name="${escHtml(name)}" title="${T.play}"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button>`;
+        const deviceLabel = LANG === "es" ? "Guardar en dispositivo" : "Save to device";
+        actions += `<button class="fm-row__btn" type="button" data-device-download="${escHtml(file.relative_path)}" title="${deviceLabel}" aria-label="${deviceLabel}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12m0 0-4-4m4 4 4-4M4 19h16"/></svg></button>`;
     }
     if (isImage || isText) {
         actions += `<button class="fm-row__btn" type="button" data-preview="${escHtml(file.relative_path)}" data-preview-name="${escHtml(name)}" title="Preview"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button>`;

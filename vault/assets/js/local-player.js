@@ -29,9 +29,15 @@
         if (audio != null) params.set("audio", String(audio));
         let response, playback;
         try {
-            const endpoint = source.playback_url || "/api/downloads/files/playback";
-            response = await fetch(`${endpoint}?${params}`, {signal: video._playbackAbort.signal});
-            playback = await response.json();
+            const prepared = source.prepared_playback;
+            if (retry === 0 && prepared && start === prepared.start && (audio == null || audio === prepared.audio)) {
+                playback = prepared;
+                response = {ok: true};
+            } else {
+                const endpoint = source.playback_url || "/api/downloads/files/playback";
+                response = await fetch(`${endpoint}?${params}`, {signal: video._playbackAbort.signal});
+                playback = await response.json();
+            }
         } catch (error) {
             if (error.name === "AbortError" || video._playbackRequest !== request) return;
             video._svSetStatus?.("error", error.message);
@@ -51,9 +57,9 @@
             if (playback.mode === "file" && start > 0) video.currentTime = start;
             // Live conversions arrive in fragments. Starting at the first one
             // leaves no reserve for encoding or network jitter.
-            const deadline = Date.now() + 8000;
+            const deadline = Date.now() + 4000;
             const remaining = Number(playback.duration_seconds || 0) - start;
-            const target = remaining > 0 ? Math.min(5, Math.max(0, remaining - 0.25)) : 5;
+            const target = remaining > 0 ? Math.min(2, Math.max(0, remaining - 0.25)) : 2;
             const startBuffered = () => {
                 if (video._playbackRequest !== request) return;
                 let ahead = 0;

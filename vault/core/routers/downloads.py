@@ -835,6 +835,11 @@ async def remux_downloaded_media(
         )
         while chunk := await process.stdout.read(256 * 1024):
             yield chunk
+        await process.wait()
+        if process.returncode:
+            # Terminate the HTTP body as an error, rather than marking a
+            # truncated conversion as a complete device download.
+            raise RuntimeError("Video conversion failed before completion")
 
     return ClosingStreamingResponse(
         output(),

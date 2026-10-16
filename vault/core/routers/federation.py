@@ -204,11 +204,18 @@ async def _relative(media_id):
 
 
 @router.get("/api/federation/v1/media/{media_id}/metadata")
-async def media_metadata(media_id: str, grant: database.FederationGrant = Depends(media_grant)):
-    match = (await downloads.match_downloaded_media(title="", path=await _relative(media_id)))["match"]
-    return {"audio_tracks": match["audio_tracks"], "duration_seconds": match["duration_seconds"],
+async def media_metadata(media_id: str, prepare_playback: bool = False,
+                         grant: database.FederationGrant = Depends(media_grant)):
+    relative = await _relative(media_id)
+    match = (await downloads.match_downloaded_media(title="", path=relative))["match"]
+    metadata = {"audio_tracks": match["audio_tracks"], "duration_seconds": match["duration_seconds"],
             "subtitles": [{"language": item["language"], "label": item["label"], "index": index}
                           for index, item in enumerate(match["subtitles"])]}
+    if prepare_playback:
+        result = await downloads.prepare_local_playback(relative)
+        metadata["playback"] = {key: result[key] for key in ("mode", "offset", "duration_seconds")} | {
+            "transport": "remux" if "/remux?" in result["url"] else "native"}
+    return metadata
 
 
 @router.get("/api/federation/v1/media/{media_id}/playback")
@@ -301,7 +308,7 @@ async def _remote_json(peer, route, params=None):
 @router.get("/api/federation/peers/{peer_id}/media/{media_id}/metadata")
 async def proxy_metadata(peer_id: int, media_id: str, user: database.User = Depends(get_current_user)):
     peer = await asyncio.to_thread(_consumer_media, peer_id, media_id)
-    result = await _remote_json(peer, f"/media/{media_id}/metadata")
+    result = await _remote_json(peer, f"/media/{media_id}/metadata", {"prepare_playback": "true"})
     from pydantic import TypeAdapter
     class AudioTrack(BaseModel):
         stream_index: int = Field(ge=0, le=1000)
@@ -318,7 +325,13 @@ async def proxy_metadata(peer_id: int, media_id: str, user: database.User = Depe
                      for item in result.get("subtitles", [])[:50] if 0 <= int(item["index"]) < 50]
     except (ValueError, TypeError, KeyError) as exc:
         raise HTTPException(502, "Invalid remote media metadata") from exc
-    return {"audio_tracks": [track.model_dump() for track in tracks], "duration_seconds": duration, "subtitles": subtitles}
+    metadata = {"audio_tracks": [track.model_dump() for track in tracks], "duration_seconds": duration, "subtitles": subtitles}
+    # Older publishers ignore the optional flag. Their clients keep the normal
+    # playback request; modern peers avoid an extra browser + node round trip.
+    if "playback" in result:
+        metadata["prepared_playback"] = _playback_descriptor(result["playback"], peer_id, media_id, {"start": 0}) | {
+            "start": 0, "audio": tracks[0].stream_index if tracks else None}
+    return metadata
 
 
 @router.get("/api/federation/peers/{peer_id}/media/{media_id}/playback")
@@ -329,6 +342,10 @@ async def proxy_playback(peer_id: int, media_id: str, audio: int | None = None, 
     if audio is not None:
         params["audio"] = audio
     result = await _remote_json(peer, f"/media/{media_id}/playback", params)
+    return _playback_descriptor(result, peer_id, media_id, params)
+
+
+def _playback_descriptor(result, peer_id, media_id, params):
     timing = {}
     try:
         if result["mode"] not in {"file", "stream"} or result["transport"] not in {"native", "remux"}:
@@ -381,8 +398,10 @@ async def _proxy(peer, route, request, params=None, *, subtitle=False):
             raise ValueError("Invalid stream content type")
         forwarded = {key: response.headers[key] for key in ("content-length", "content-range", "accept-ranges", "etag", "last-modified")
                      if key in response.headers}
-        forwarded["Cache-Control"] = "private, no-store"
-        return ClosingStreamingResponse(response.aiter_raw(64 * 1024), status_code=response.status_code,
+        forwarded.update({"Cache-Control": "private, no-store", "X-Accel-Buffering": "no"})
+        # A fixed iterator chunk size coalesces small fMP4 fragments, delaying
+        # headers and audio/video frames on slow links. Keep upstream framing.
+        return ClosingStreamingResponse(response.aiter_raw(), status_code=response.status_code,
                                         media_type=content_type, headers=forwarded, cleanup=close)
     except HTTPException:
         await close()

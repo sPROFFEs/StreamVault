@@ -29,6 +29,10 @@ To let node B's users watch node A's downloaded media:
    same authenticated playback/audio relay and never offer local delete/preview
    actions. The storage/quota bar measures local disk only. Listing uses the local
    metadata cache, so opening Downloads does not contact every node.
+7. Use **Save to device** for an explicit offline copy of a local/node movie or
+   episode. This uses the authenticated relay, never exposes a node credential,
+   and does not consume the local server's download quota. See
+   [device downloads, limits and privacy](OFFLINE.md).
 
 Repeat in the opposite direction for reciprocal sharing. Disable a consumed peer
 to immediately remove its sources from selection. Revoke an issued credential to

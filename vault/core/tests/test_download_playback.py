@@ -289,7 +289,8 @@ def test_disconnect_before_first_body_chunk_releases_remux_slot(tmp_path, monkey
     asyncio.run(scenario())
 
 
-def test_live_playback_defers_cache_encoding_until_stream_closes(tmp_path, monkeypatch):
+@pytest.mark.parametrize("process_exit", [0, 1])
+def test_live_playback_defers_cache_encoding_until_stream_closes(tmp_path, monkeypatch, process_exit):
     async def scenario():
         media = tmp_path / "video.mkv"
         media.write_bytes(b"video")
@@ -300,12 +301,16 @@ def test_live_playback_defers_cache_encoding_until_stream_closes(tmp_path, monke
         monkeypatch.setattr(downloads, "_live_remux_slots", asyncio.Semaphore(1))
         schedule_cache = Mock()
         monkeypatch.setattr(downloads, "_ensure_background_remux", schedule_cache)
-        process = SimpleNamespace(returncode=0, stdout=SimpleNamespace(
-            read=AsyncMock(side_effect=[b"fragment", b""])), wait=AsyncMock(), communicate=AsyncMock())
+        process = SimpleNamespace(returncode=process_exit, stdout=SimpleNamespace(
+            read=AsyncMock(side_effect=[b"fragment", b""])), wait=AsyncMock(return_value=process_exit), communicate=AsyncMock())
         monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=process))
         response = await downloads.remux_downloaded_media("video.mkv", start=0)
         schedule_cache.assert_not_called()
-        assert b"".join([part async for part in response.body_iterator]) == b"fragment"
+        if process_exit:
+            with pytest.raises(RuntimeError, match="conversion failed"):
+                [part async for part in response.body_iterator]
+        else:
+            assert b"".join([part async for part in response.body_iterator]) == b"fragment"
         schedule_cache.assert_called_once()
     asyncio.run(scenario())
 

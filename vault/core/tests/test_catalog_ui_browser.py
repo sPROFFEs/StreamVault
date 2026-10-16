@@ -4,7 +4,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
-from playwright.sync_api import expect, sync_playwright
+from playwright.sync_api import expect
 from starlette.requests import Request
 
 from shared_templates import templates
@@ -15,15 +15,13 @@ ASSETS = Path(__file__).resolve().parents[2] / "assets"
 
 
 @pytest.fixture
-def ui_page():
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.launch()
-        page = browser.new_page(viewport={"width": 1366, "height": 900})
-        errors = []
-        page.on("pageerror", lambda error: errors.append(str(error)))
-        yield page, errors
-        browser.close()
-        assert not errors
+def ui_page(regression_browser):
+    page = regression_browser.new_page(viewport={"width": 1366, "height": 900})
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    yield page, errors
+    page.close()
+    assert not errors
 
 
 def render_template(name, query=""):
@@ -75,6 +73,9 @@ def test_federated_downloads_filter_play_audio_and_never_offer_local_delete(ui_p
     row = page.locator('[data-file-card]').filter(has_text='Node <Cinema>')
     expect(row).to_contain_text('S01E02')
     expect(row.locator('[data-delete]')).to_have_count(0)
+    page.evaluate('() => { SVOfflineUI.download = file => { window.deviceFile = file; }; }')
+    row.locator('[data-device-download]').click()
+    assert page.evaluate('deviceFile.peer_id') == 7
     row.locator('[data-play]').click()
     expect(page.locator('#local-player')).to_have_attribute('src', '/remote.mp4')
     with page.expect_response('**' + base + '/playback?*audio=2*'):
@@ -87,6 +88,8 @@ def test_federated_downloads_filter_play_audio_and_never_offer_local_delete(ui_p
     page.locator('#library-origin').select_option('local')
     expect(page.locator('#library-list')).not_to_contain_text('Remote show')
     expect(page.locator('#library-list [data-delete]')).to_have_count(1)
+    page.locator('#library-list [data-device-download]').click()
+    assert page.evaluate('deviceFile.relative_path') == 'Local.mp4'
     page.locator('#library-origin').select_option('peer:7')
     expect(page.locator('#library-list')).to_contain_text('Remote show')
     expect(page.locator('#library-list')).not_to_contain_text('Local movie')

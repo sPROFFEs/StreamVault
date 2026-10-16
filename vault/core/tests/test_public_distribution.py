@@ -93,6 +93,18 @@ def test_release_apk_disables_checkout_metadata_and_has_no_default_server():
     assert "gradleProperty('STREAMVAULT_SERVER_URL').getOrElse('')" in gradle
 
 
+def test_android_connection_error_offers_same_origin_device_library():
+    import xml.etree.ElementTree as ET
+    namespace = '{http://schemas.android.com/apk/res/android}'
+    layout = ET.parse(ROOT / 'android/app/src/main/res/layout/activity_main.xml')
+    buttons = {item.get(namespace + 'id') for item in layout.iter('Button')}
+    assert '@+id/offline_button' in buttons
+    activity = (ROOT / 'android/app/src/main/java/com/streamvault/app/MainActivity.java').read_text()
+    assert 'findViewById(R.id.offline_button).setOnClickListener' in activity
+    assert 'webView.loadUrl(server + "/assets/offline.html")' in activity
+    assert 'addJavascriptInterface' not in activity
+
+
 @pytest.mark.parametrize("private_entry", (
     "assets/.env", "assets/private.jks", "assets/database.db",
     "assets/signing.properties", "META-INF/version-control-info.textproto",

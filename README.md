@@ -37,6 +37,9 @@ the lightweight Android app connects to your server without a second backend.
 - **Private federation:** connect trusted StreamVault nodes and stream completed
   media without copying the entire library. Browse local and remote files together
   and filter by server.
+- **Offline on your device:** explicitly save a local/node movie or episode,
+  manage a device storage budget and watch without a server connection.
+  [Limits and privacy](docs/OFFLINE.md).
 - **Live TV:** IPTV playlists and channel browsing alongside your media library.
 - **Multi-user by design:** per-user preferences, English/Spanish UI, optional
   community profiles and separately controlled aggregate viewing metrics.
@@ -71,7 +74,9 @@ Keep your existing data directory and `SECRET_KEY` when upgrading.
 Get `streamvault-VERSION-android.apk` from [Releases](https://github.com/sPROFFEs/StreamVault/releases),
 verify it with the accompanying `SHA256SUMS`, and enter your server's HTTPS address
 on first launch. Android **8.0+** and an up-to-date Android System WebView are required.
-The APK is a WebView wrapper, not an offline server or a bundled media library.
+The APK is a WebView wrapper, not a bundled server or preloaded media library.
+After the first connected setup, **Save to device** makes selected videos available
+in its offline library; downloads must finish with the screen open.
 
 Stable version tags build and publish the signed APK, server archive and checksums
 after the web, Android and security checks pass. APK downloads appear once the
@@ -112,6 +117,7 @@ self-hosters discover it.
 - [Installation, devices and everyday use](docs/SETUP.md)
 - [Android builds and device checks](android/README.md)
 - [Federation and community privacy](docs/FEDERATION.md)
+- [Device downloads and offline viewing](docs/OFFLINE.md)
 - [Releases, signing, backups and updates](docs/RELEASES.md)
 - [Deployment services and configuration](vault/README.md)
 - [Regression and browser tests](vault/core/tests/README.md)

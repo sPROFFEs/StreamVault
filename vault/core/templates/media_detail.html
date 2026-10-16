@@ -9,6 +9,7 @@
     <link rel="stylesheet" href="/assets/css/app.css?v=20261015-1">
     <link rel="stylesheet" href="/assets/css/ui-extras.css?v=20261008-1">
     <link rel="stylesheet" href="/assets/css/discovery.css?v=20261015-1">
+    <link rel="stylesheet" href="/assets/css/offline.css?v=20261016-1">
 </head>
 <body class="app-shell detail-page">
     <div id="toast-container" class="toast-container"></div>
@@ -89,6 +90,9 @@
                     <span class="button-text">{{ "Download" if lang == "en" else "Descargar" }}</span>
                 </button>
                 {% endif %}
+                <button id="device-download-button" class="button button--ghost" type="button" disabled title="{{ 'Select a local or federated source' if lang == 'en' else 'Selecciona una fuente local o federada' }}">
+                    <span class="button-text">{{ "Save to device" if lang == "en" else "Guardar en dispositivo" }}</span>
+                </button>
                 <button id="fullscreen-button" class="button button--ghost" type="button">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon-svg"><path d="M3 7V3h4M21 7V3h-4M3 17v4h4M21 17v4h-4"/></svg>
                     <span class="button-text">{{ "Fullscreen" if lang == "en" else "Pantalla" }}</span>
@@ -171,8 +175,10 @@
         };
         window.CAN_DOWNLOAD  = {{ 'true' if _can_dl else 'false' }};
     </script>
-    <script defer src="/assets/js/local-player.js?v=20261014-1"></script>
+    <script defer src="/assets/js/offline-store.js?v=20261016-1"></script>
+    <script defer src="/assets/js/offline-ui.js?v=20261016-1"></script>
+    <script defer src="/assets/js/local-player.js?v=20261016-1"></script>
     <script defer src="/assets/js/custom-player.js?v=20261015-1"></script>
-    <script defer src="/assets/js/media_detail.js?v=20261014-1"></script>
+    <script defer src="/assets/js/media_detail.js?v=20261016-1"></script>
 </body>
 </html>

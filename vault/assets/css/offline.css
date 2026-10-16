@@ -1,0 +1,31 @@
+/* Self-contained: the device library must not depend on an authenticated page. */
+.offline-page { margin: 0; background: #141414; color: #f5f5f5; font: 16px/1.5 system-ui, sans-serif; color-scheme: dark; }
+.offline-page [hidden], .offline-dialog [hidden] { display: none !important; }
+.offline-page main, .offline-heading { max-width: 1100px; margin: auto; padding: 24px; }
+.offline-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.offline-brand { color: #ff3340; font-weight: 900; letter-spacing: .12em; text-decoration: none; }
+.offline-page a { color: #fff; }
+.offline-eyebrow { color: #bbb; letter-spacing: .18em; font-size: .8rem; }
+.offline-page h1 { font-size: clamp(2rem, 6vw, 3.5rem); margin: 12px 0; }
+.offline-settings, .offline-actions { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; }
+.offline-settings label { display: grid; gap: 6px; }
+.offline-page button, .offline-page input, .offline-dialog button, .offline-dialog a { min-height: 44px; border-radius: 6px; font: inherit; }
+.offline-page button, .offline-dialog button, .offline-dialog a { padding: 9px 16px; border: 1px solid #858585; background: #292929; color: white; cursor: pointer; text-decoration: none; }
+.offline-page button:disabled, .offline-dialog button:disabled { opacity: .5; cursor: wait; }
+.offline-page input { padding: 8px; width: 120px; border: 1px solid #858585; background: #202020; color: white; box-sizing: border-box; }
+.offline-page :focus-visible, .offline-dialog :focus-visible { outline: 3px solid white; outline-offset: 3px; }
+.offline-notice { max-width: 85ch; color: #bbb; font-size: .88rem; }
+.offline-item { background: #202020; border: 1px solid #444; border-radius: 8px; margin: 14px 0; padding: 18px; display: flex; gap: 18px; align-items: center; justify-content: space-between; }
+.offline-item > div { min-width: 0; }
+.offline-item strong { overflow-wrap: anywhere; }
+.offline-item p { color: #bbb; margin: 4px 0; }
+.offline-item .offline-actions { flex-shrink: 0; }
+#offline-video { display: block; width: 100%; max-height: 75vh; background: #000; }
+#offline-player-panel .offline-heading { padding-inline: 0; }
+.offline-dialog { color-scheme: dark; color: white; background: #202020; border: 1px solid #777; border-radius: 12px; width: min(520px, calc(100vw - 48px)); max-height: calc(100dvh - 48px); overflow: auto; padding: 24px; font: 16px/1.5 system-ui, sans-serif; }
+.offline-dialog::backdrop { background: #000b; }
+.offline-dialog h2, .offline-dialog p { overflow-wrap: anywhere; }
+.offline-dialog progress { width: 100%; accent-color: #e50914; margin: 16px 0; }
+.offline-dialog .offline-actions { justify-content: end; }
+.offline-dialog .offline-primary { background: #b81d24; border-color: #ff737b; }
+@media (max-width: 600px) { .offline-item { align-items: start; flex-direction: column; } .offline-item .offline-actions { width: 100%; } .offline-page main, .offline-heading { padding: 18px; } }

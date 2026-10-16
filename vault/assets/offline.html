@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#141414">
+    <title>StreamVault · Offline</title>
+    <link rel="icon" href="/assets/favicon.ico">
+    <link rel="stylesheet" href="/assets/css/offline.css?v=20261016-1">
+    <script defer src="/assets/js/offline-store.js?v=20261016-1"></script>
+    <script defer src="/assets/js/offline-ui.js?v=20261016-1"></script>
+</head>
+<body class="offline-page">
+    <header class="offline-heading"><a href="/portal" class="offline-brand">STREAMVAULT</a><a href="/downloads" data-offline-label="server">Server library</a></header>
+    <main>
+        <p class="offline-eyebrow" data-offline-label="device">THIS DEVICE</p>
+        <h1 id="offline-title" data-offline-label="title">Offline library</h1>
+        <p data-offline-label="intro">Your completed device downloads work without the server or Internet.</p>
+        <div class="offline-settings">
+            <label><span data-offline-label="limit">Device limit (GiB)</span><input id="offline-limit" type="number" min="0.25" max="100" step="0.25" value="5"></label>
+            <button id="offline-save-limit" type="button" data-offline-label="saveLimit">Save limit</button>
+            <p id="offline-storage" role="status"></p>
+        </div>
+        <p class="offline-notice" data-offline-label="privacy">Downloads stay in this browser/device profile, even after sign-out. Anyone using this profile can play them. Clearing site data, uninstalling the app or switching servers deletes them. The browser can reclaim space; keep a backup of important files.</p>
+        <p id="offline-status" role="status" aria-live="polite"></p>
+        <p id="offline-empty" data-offline-label="empty" hidden>No videos saved on this device yet. Open the server library and choose “Save to device”.</p>
+        <section id="offline-list" aria-label="Offline videos"></section>
+        <section id="offline-player-panel" hidden>
+            <div class="offline-heading"><h2 id="offline-player-title"></h2><button id="offline-close" type="button" data-offline-label="close">Close player</button></div>
+            <video id="offline-video" controls playsinline preload="auto"></video>
+        </section>
+    </main>
+</body>
+</html>

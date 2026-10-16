@@ -308,6 +308,20 @@ def test_fatal_hls_errors_offer_bounded_recovery_and_feedback(player_page):
     expect(page.get_by_role("status")).to_contain_text("unavailable")
 
 
+def test_streaming_playback_starts_with_two_seconds_of_reserve(player_page):
+    page = player_page
+    page.evaluate('''async () => {
+        video.load = () => {};
+        window.fetch = async () => ({ok: true, json: async () => ({
+            mode: 'stream', offset: 0, duration_seconds: 100, url: 'https://streamvault.test/fixture.mp4'
+        })});
+        Object.defineProperty(video, 'buffered', {get: () => ({length: 1, start: () => 0, end: () => 2})});
+        await SVLocalPlayback.open(video, {relative_path: 'fixture.mkv'});
+        video.dispatchEvent(new Event('loadedmetadata'));
+    }''')
+    assert page.evaluate('playCalls') == 1
+
+
 def test_async_local_seek_errors_and_stale_requests(player_page):
     page = player_page
     page.evaluate('''async () => {
