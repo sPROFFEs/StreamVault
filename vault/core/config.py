@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "unsafe-default-secret-key-change-me-in-production"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440  # 24 hours
+    REMEMBER_SESSION_DAYS: int = Field(30, ge=1, le=365)
     
     # External APIs
     TMDB_API_KEY: str = ""

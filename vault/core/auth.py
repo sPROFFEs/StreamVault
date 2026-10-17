@@ -1,4 +1,6 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+import hashlib
+import hmac
 from typing import Optional
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -38,16 +40,44 @@ def create_user_in_db(db: Session, username: str, password: str):
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     to_encode = data.copy()
-    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    expire = datetime.now(timezone.utc) + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 def get_username_from_token(token: str):
+    payload = get_token_payload(token)
+    return payload.get("sub") if payload else None
+
+def get_token_payload(token: str):
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        return payload.get("sub")
+        return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
     except JWTError:
         return None
+
+def session_expiry(remember: bool) -> timedelta:
+    return (timedelta(days=settings.REMEMBER_SESSION_DAYS) if remember
+            else timedelta(minutes=max(1, ACCESS_TOKEN_EXPIRE_MINUTES)))
+
+def session_data(user, remember: bool) -> dict:
+    # Bind new sessions to the current password without exposing its hash.
+    stamp = hmac.new(SECRET_KEY.encode(), user.hashed_password.encode(), hashlib.sha256).hexdigest()
+    return {"sub": user.username, "remember": remember, "auth": stamp}
+
+def set_session_cookie(response, token: str, lifetime: timedelta, *, secure: bool):
+    response.set_cookie("access_token", token, httponly=True, secure=secure,
+                        samesite="lax", max_age=int(lifetime.total_seconds()))
+    response.headers["Cache-Control"] = "private, no-store"
+
+def session_renewal(request: Request, user):
+    payload = getattr(request.state, "session_payload", None)
+    if not payload or not isinstance(payload.get("exp"), (int, float)):
+        return None
+    lifetime = session_expiry(payload.get("remember") is True)
+    remaining = payload["exp"] - datetime.now(timezone.utc).timestamp()
+    # Do not rotate on every progress/range request, and never revive an expired token.
+    if 0 < remaining <= min(3600, lifetime.total_seconds() / 4):
+        return create_access_token(session_data(user, payload.get("remember") is True), lifetime), lifetime
+    return None
 
 # --- ESTA ES LA FUNCIÓN QUE FALTABA Y QUE PIDE EL ROUTER DE RADIOS ---
 def get_current_user(request: Request, db: Session):
@@ -59,7 +89,8 @@ def get_current_user(request: Request, db: Session):
     if not token:
         raise HTTPException(status_code=401, detail="No session")
     
-    username = get_username_from_token(token)
+    payload = get_token_payload(token)
+    username = payload.get("sub") if payload else None
     if not username:
         raise HTTPException(status_code=401, detail="Invalid session")
     
@@ -68,6 +99,10 @@ def get_current_user(request: Request, db: Session):
         raise HTTPException(status_code=401, detail="User not found")
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Account disabled")
+    if "auth" in payload and (not isinstance(payload["auth"], str)
+            or not hmac.compare_digest(payload["auth"], session_data(user, False)["auth"])):
+        raise HTTPException(status_code=401, detail="Session revoked after password change")
+    request.state.session_payload = payload
         
     return user
 

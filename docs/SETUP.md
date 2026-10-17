@@ -89,6 +89,15 @@ appearance/language and user preferences stay with the account. Downloads initia
 in the interface are stored on the server. Settings manages account preferences;
 Administration is visible to administrators.
 
+**Remember me** keeps the login on a trusted device for 30 days by default
+(`REMEMBER_SESSION_DAYS`). Without it, the default remains 24 hours
+(`ACCESS_TOKEN_EXPIRE_MINUTES`). Valid sessions renew near expiry while there is
+authorized activity, so ordinary playback progress/range requests keep the app
+session alive. Expired sessions still require a login, disabled accounts remain
+blocked, and changing the password invalidates newly issued sessions. Always sign
+out on shared devices. Cloudflare Access has its own session policy, independent
+of this app; see [Android/Access diagnostics and session settings](../android/README.md#server-and-connection).
+
 Desktop supports mouse and keyboard with Tab/Enter/Escape and visible focus. Mobile
 uses the bottom navigation and touch controls; portrait layouts adapt without a
 separate site. TV layouts use larger spacing with arrow/D-pad navigation, Enter to

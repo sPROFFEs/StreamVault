@@ -59,15 +59,50 @@ final class ServerUrl {
         }
     }
 
+    static boolean isAccessPage(String origin, String url) {
+        if (isCloudflareAuth(url)) return true;
+        if (url == null || !sameOrigin(origin, url)) return false;
+        try {
+            return new URI(url).getPath().startsWith("/cdn-cgi/access/");
+        } catch (URISyntaxException exception) {
+            return false;
+        }
+    }
+
+    static boolean isAllowedMainFrame(String origin, String target, boolean authenticating, boolean userGesture) {
+        if (target == null) return false;
+        if (sameOrigin(origin, target) || isCloudflareAuth(target)) return true;
+        // Like a browser, let HTTPS redirects complete in the original cookie
+        // store. Access may use custom domains or an external identity provider.
+        // Outside authentication, explicit external links still open the browser.
+        return (authenticating || !userGesture) && isHttpsPage(target);
+    }
+
+    private static boolean isHttpsPage(String url) {
+        try {
+            URI uri = new URI(url);
+            return "https".equalsIgnoreCase(uri.getScheme()) && uri.getHost() != null
+                    && uri.getRawUserInfo() == null && uri.getPort() != 0 && uri.getPort() <= 65535;
+        } catch (URISyntaxException exception) {
+            return false;
+        }
+    }
+
     static boolean isAllowedSubframe(String url) {
         if (url == null) return false;
         try {
             URI uri = new URI(url);
-            // Turnstile creates local challenge frames. These are allowed only
-            // as subframes, never as top-level app/external navigation.
+            // Browser-owned challenge/player frames must not be treated as
+            // external app links. File/content access stays disabled in WebView.
             if ("about".equalsIgnoreCase(uri.getScheme())) {
                 return "blank".equals(uri.getRawSchemeSpecificPart())
                         || "srcdoc".equals(uri.getRawSchemeSpecificPart());
+            }
+            if ("data".equalsIgnoreCase(uri.getScheme())) return !uri.getRawSchemeSpecificPart().isEmpty();
+            if ("blob".equalsIgnoreCase(uri.getScheme())) {
+                String source = uri.getRawSchemeSpecificPart();
+                return source.startsWith("null/") || isHttpsPage(source)
+                        || (source.startsWith("http://") && isAllowedSubframe(source));
             }
             return uri.getHost() != null && uri.getRawUserInfo() == null
                     && ("https".equalsIgnoreCase(uri.getScheme()) || "http".equalsIgnoreCase(uri.getScheme()));

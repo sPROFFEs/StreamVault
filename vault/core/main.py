@@ -163,6 +163,7 @@ async def enforce_security_boundary(request: Request, call_next):
         return add_security_headers(JSONResponse({"detail": "Cross-origin request blocked"}, status_code=403), request)
 
     is_public = path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES)
+    renewal = None
     if not is_public:
         db = database.SessionLocal()
         try:
@@ -176,10 +177,15 @@ async def enforce_security_boundary(request: Request, call_next):
                 next_path = quote(path + (f"?{request.url.query}" if request.url.query else ""), safe="")
                 return add_security_headers(RedirectResponse(f"/login?next={next_path}", status_code=303), request)
             request.state.user = user
+            if path != "/logout":
+                renewal = auth.session_renewal(request, user)
         finally:
             db.close()
 
-    return add_security_headers(await call_next(request), request)
+    response = await call_next(request)
+    if renewal and response.status_code < 400:
+        auth.set_session_cookie(response, *renewal, secure=request_is_https(request))
+    return add_security_headers(response, request)
 
 # --- STARTUP / SHUTDOWN ---
 _startup_tasks: set[asyncio.Task] = set()
@@ -368,6 +374,7 @@ async def login_page(request: Request):
     return templates.TemplateResponse(request, "login.html", {
         "request": request, 
         **auth_forms.form_context(request),
+        "remember_days": settings.REMEMBER_SESSION_DAYS,
         "next": safe_redirect_target(request.query_params.get("next", ""), default="")
     })
 
@@ -377,6 +384,7 @@ async def login(
     username: str = Form(""),
     password: str = Form(""),
     next: str = Form(""), 
+    remember: bool = Form(False),
     db: Session = Depends(get_db)
 ):
     # 1. Brute force protection
@@ -396,19 +404,13 @@ async def login(
     
     # 3. Éxito
     security.clear_attempts(request)
-    access_token = auth.create_access_token(data={"sub": user.username})
+    lifetime = auth.session_expiry(remember)
+    access_token = auth.create_access_token(auth.session_data(user, remember), lifetime)
     
     redirect_url = safe_redirect_target(next, default="/portal")
 
     response = auth_forms.success(request, redirect_url)
-    response.set_cookie(
-        key="access_token", 
-        value=access_token, 
-        httponly=True, 
-        secure=request_is_https(request),
-        samesite='lax', 
-        max_age=86400
-    )
+    auth.set_session_cookie(response, access_token, lifetime, secure=request_is_https(request))
     return response
 
 @app.get("/portal")

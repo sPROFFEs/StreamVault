@@ -24,4 +24,9 @@
     <string name="main_btn_settings_desc">Configure server</string>
     <string name="main_connection_error">Unable to connect to StreamVault</string>
     <string name="main_retry">Retry</string>
+    <string name="connection_diagnostics">Connection diagnostics</string>
+    <string name="copy_diagnostics">Copy diagnostics</string>
+    <string name="open_browser">Open in browser</string>
+    <string name="diagnostics_privacy">Contains domains and browser versions, not sign-in codes, cookies, passwords or full URLs. Nothing is sent automatically. Browser sessions and device downloads are separate from this app.</string>
+    <string name="auth_redirect_blocked">An external automatic redirect was blocked. Open Settings → Connection diagnostics to inspect it or continue in your browser.</string>
 </resources>

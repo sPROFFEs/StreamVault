@@ -66,6 +66,20 @@ def test_username_next_key_and_remote_header_access(baseline_page):
     expect(page.get_by_role("link", name="English", exact=True)).to_be_focused()
 
 
+def test_remember_me_is_accessible_and_persists_the_selected_lifetime(baseline_page):
+    page = open_login(baseline_page)
+    remember = page.get_by_role('checkbox', name='Remember me for 30 days on this device')
+    expect(remember).not_to_be_checked()
+    remember.check()
+    fill_login(page)
+    page.get_by_role('button', name='Sign in', exact=True).click()
+    expect(page).to_have_url(f'{baseline_page.base_url}/browse?type=tv')
+    cookie = next(item for item in page.context.cookies() if item['name'] == 'access_token')
+    import time
+    assert 29 * 86400 < cookie['expires'] - time.time() <= 30 * 86400
+    assert cookie['httpOnly']
+
+
 def test_validation_invalid_credentials_retry_reload_and_logout(baseline_page):
     page = open_login(baseline_page)
     submit = page.get_by_role("button", name="Sign in", exact=True)

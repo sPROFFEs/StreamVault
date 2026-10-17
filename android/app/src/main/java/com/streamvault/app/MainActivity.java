@@ -5,6 +5,8 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.SharedPreferences;
 import android.content.pm.ActivityInfo;
 import android.content.pm.PackageInfo;
@@ -21,6 +23,7 @@ import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.webkit.CookieManager;
+import android.webkit.ConsoleMessage;
 import android.webkit.JsResult;
 import android.webkit.SslErrorHandler;
 import android.webkit.WebChromeClient;
@@ -53,6 +56,7 @@ public final class MainActivity extends Activity {
     private boolean backPending;
     private String lastUrl;
     private boolean discardHistory;
+    private boolean authenticating = true;
     private int previousOrientation;
     private int previousSystemUi;
     private ConnectivityManager connectivity;
@@ -64,6 +68,7 @@ public final class MainActivity extends Activity {
     private View fullscreen;
     private WebChromeClient.CustomViewCallback fullscreenCallback;
     private final Handler handler = new Handler(Looper.getMainLooper());
+    private final ConnectionDiagnostics diagnostics = new ConnectionDiagnostics();
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -103,9 +108,7 @@ public final class MainActivity extends Activity {
         findViewById(R.id.offline_button).setOnClickListener(view -> {
             if (!server.isEmpty()) webView.loadUrl(server + "/assets/offline.html");
         });
-        btnSettings.setOnClickListener(view -> {
-            startActivity(new Intent(this, SetupActivity.class).putExtra(SetupActivity.EXTRA_FIRST_RUN, false));
-        });
+        btnSettings.setOnClickListener(view -> showSettingsMenu());
 
         if (Build.VERSION.SDK_INT >= 30) {
             getWindow().setDecorFitsSystemWindows(false);
@@ -145,7 +148,7 @@ public final class MainActivity extends Activity {
         settings.setSupportZoom(false);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
         settings.setMediaPlaybackRequiresUserGesture(false);
-        settings.setUserAgentString(settings.getUserAgentString() + " StreamVaultAndroid/" + BuildConfig.VERSION_NAME);
+        // Keep the provider's native, consistent User Agent during Access checks.
 
         CookieManager cookieManager = CookieManager.getInstance();
         cookieManager.setAcceptCookie(true);
@@ -158,18 +161,28 @@ public final class MainActivity extends Activity {
                 String target = uri.toString();
                 String scheme = uri.getScheme();
                 boolean web = "https".equalsIgnoreCase(scheme) || "http".equalsIgnoreCase(scheme);
-                if (!request.isForMainFrame()) return !ServerUrl.isAllowedSubframe(target);
-                if (ServerUrl.sameOrigin(server, target) || ServerUrl.isCloudflareAuth(target)) {
+                if (!request.isForMainFrame()) {
+                    boolean allowed = ServerUrl.isAllowedSubframe(target);
+                    if (!allowed) diagnostics.add("frame blocked", target, 0);
+                    return !allowed;
+                }
+                if (ServerUrl.isAllowedMainFrame(server, target, authenticating, request.hasGesture())) {
+                    diagnostics.add("navigation allowed", target, 0);
                     return false;
                 }
                 if (web && request.hasGesture() && uri.getUserInfo() == null) {
                     openExternal(uri);
+                } else {
+                    diagnostics.add("navigation blocked", target, 0);
+                    showError(server, getString(R.string.auth_redirect_blocked));
                 }
                 return true;
             }
 
             @Override
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
+                diagnostics.add("load started", url, 0);
+                if (ServerUrl.isAccessPage(server, url)) authenticating = true;
                 if (ServerUrl.sameOrigin(server, url)) lastUrl = url;
                 failedUrl = null;
                 connectionErrorView.setVisibility(View.GONE);
@@ -185,6 +198,11 @@ public final class MainActivity extends Activity {
 
             @Override
             public void onPageFinished(WebView view, String url) {
+                diagnostics.add("load finished", url, 0);
+                // A redirecting origin can finish after its next page has
+                // started. Only the final app document ends authentication.
+                if (ServerUrl.sameOrigin(server, url) && !ServerUrl.isAccessPage(server, url)
+                        && url.equals(view.getUrl())) authenticating = false;
                 if (discardHistory && ServerUrl.sameOrigin(server, url)) {
                     view.clearHistory();
                     discardHistory = false;
@@ -199,6 +217,10 @@ public final class MainActivity extends Activity {
 
             @Override
             public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
+                if (request.isForMainFrame() || ServerUrl.isCloudflareAuth(request.getUrl().toString())
+                        || ServerUrl.sameOrigin(server, request.getUrl().toString())) {
+                    diagnostics.add("network error", request.getUrl().toString(), error.getErrorCode());
+                }
                 if (request.isForMainFrame()) {
                     showError(request.getUrl().toString(), error.getDescription().toString());
                 }
@@ -207,6 +229,10 @@ public final class MainActivity extends Activity {
             @Override
             public void onReceivedHttpError(WebView view, WebResourceRequest request, WebResourceResponse response) {
                 int status = response.getStatusCode();
+                if (request.isForMainFrame() || ServerUrl.isCloudflareAuth(request.getUrl().toString())
+                        || ((status == 401 || status == 403) && ServerUrl.sameOrigin(server, request.getUrl().toString()))) {
+                    diagnostics.add("http error", request.getUrl().toString(), status);
+                }
                 // 401 and 403 are authentication/challenge responses (e.g. Cloudflare Access).
                 // Let the WebView render the challenge/login page instead of showing an error.
                 if (request.isForMainFrame() && status != 401 && status != 403) {
@@ -217,11 +243,22 @@ public final class MainActivity extends Activity {
             @Override
             public void onReceivedSslError(WebView view, SslErrorHandler sslHandler, SslError error) {
                 sslHandler.cancel();
+                diagnostics.add("tls error", view.getUrl(), error.getPrimaryError());
                 showError(view.getUrl() != null ? view.getUrl() : server, getString(R.string.certificate_error));
             }
         });
 
         webView.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public boolean onConsoleMessage(ConsoleMessage message) {
+                if (message.messageLevel() == ConsoleMessage.MessageLevel.ERROR
+                        || message.messageLevel() == ConsoleMessage.MessageLevel.WARNING) {
+                    // Only a fixed category and origin enter the report, never raw text.
+                    diagnostics.browserError(message.sourceId(), message.message());
+                }
+                return super.onConsoleMessage(message);
+            }
+
             @Override
             public boolean onJsConfirm(WebView view, String url, String text, JsResult result) {
                 new AlertDialog.Builder(MainActivity.this)
@@ -295,11 +332,38 @@ public final class MainActivity extends Activity {
         }
         Uri uri = Uri.parse(url);
         String path = uri.getPath() != null ? uri.getPath() : "";
-        if (path.startsWith("/login") || path.startsWith("/setup") || ServerUrl.isCloudflareAuth(url)) {
+        if (authenticating || path.equals("/") || path.startsWith("/cdn-cgi/") || path.startsWith("/login")
+                || path.startsWith("/setup") || ServerUrl.isCloudflareAuth(url)) {
             btnSettings.setVisibility(View.VISIBLE);
         } else {
             btnSettings.setVisibility(View.GONE);
         }
+    }
+
+    private void showSettingsMenu() {
+        new AlertDialog.Builder(this).setItems(new String[]{getString(R.string.main_btn_settings_desc),
+                getString(R.string.connection_diagnostics), getString(R.string.open_browser)}, (dialog, item) -> {
+            if (item == 0) startActivity(new Intent(this, SetupActivity.class)
+                    .putExtra(SetupActivity.EXTRA_FIRST_RUN, false));
+            else if (item == 1) showDiagnostics();
+            else openExternal(Uri.parse(server));
+        }).show();
+    }
+
+    private void showDiagnostics() {
+        PackageInfo provider = WebView.getCurrentWebViewPackage();
+        String report = "StreamVault " + BuildConfig.VERSION_NAME + " (" + BuildConfig.VERSION_CODE + ")\n"
+                + "Android " + Build.VERSION.RELEASE + "\nWebView "
+                + (provider == null ? "unavailable" : provider.packageName + " " + provider.versionName)
+                + "\nUser Agent: default\n" + diagnostics.report();
+        new AlertDialog.Builder(this).setTitle(R.string.connection_diagnostics)
+                .setMessage(getString(R.string.diagnostics_privacy) + "\n\n" + report)
+                .setPositiveButton(R.string.copy_diagnostics, (dialog, which) -> {
+                    ClipboardManager clipboard = getSystemService(ClipboardManager.class);
+                    if (clipboard != null) clipboard.setPrimaryClip(ClipData.newPlainText("StreamVault diagnostics", report));
+                }).setNegativeButton(R.string.cancel, null)
+                .setNeutralButton(R.string.open_browser, (dialog, which) -> openExternal(Uri.parse(server)))
+                .show();
     }
 
     private void connect() {
@@ -337,7 +401,7 @@ public final class MainActivity extends Activity {
     }
 
     private void showError(String url, String detail) {
-        if (!ServerUrl.sameOrigin(server, url) && !ServerUrl.isCloudflareAuth(url)) return;
+        if (!ServerUrl.isAllowedMainFrame(server, url, authenticating, false)) return;
         failedUrl = url;
         hideFullscreen();
         progress.setVisibility(View.GONE);

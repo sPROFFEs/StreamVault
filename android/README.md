@@ -42,13 +42,16 @@ bundle a backend. With an updated server, explicit device downloads and a public
 offline-library shell are available through IndexedDB/service workers, including
 without Internet. See [offline use, limits and privacy](../docs/OFFLINE.md).
 
-Main-frame navigation stays on the selected origin or HTTPS Cloudflare Access/
-challenge hosts so authentication and its return trip use the same WebView cookie
-store. Other user-activated HTTP(S) links open the browser. Web media iframes remain
-supported without a native bridge; `about:blank` and `about:srcdoc` are allowed only
-inside frames, as required by [Cloudflare's mobile integration](https://developers.cloudflare.com/turnstile/get-started/mobile-implementation/).
+HTTPS redirects are handled by the same WebView, including Access custom domains
+and external identity providers, rather than requiring every redirect host to match
+a Cloudflare hostname allowlist. During an Access flow, user-activated HTTPS steps
+also stay in that cookie store; returning to an ordinary app page ends this mode.
+Other user-activated external HTTP(S) links open the browser. Web media iframes remain
+supported without a native bridge; browser-owned `about:blank`, `about:srcdoc`,
+`data:` and web/opaque-origin `blob:` frames are allowed only inside frames, never
+as top-level navigation. See [Cloudflare's mobile integration](https://developers.cloudflare.com/turnstile/get-started/mobile-implementation/).
 File/content access and unsafe TLS overrides remain disabled. Cookies, including
-third-party cookies, DOM storage and a stable WebView User Agent are enabled for
+third-party cookies, DOM storage and the default WebView User Agent are enabled for
 the Access verification flow. The wrapper currently uses Android's mixed-content
 compatibility mode; that is not a substitute for serving the app and login over HTTPS.
 Android Back dismisses the keyboard, then native fullscreen or the web shell's top
@@ -57,8 +60,7 @@ system bars and uses sensor landscape; exit restores the previous orientation an
 controls. Rotation keeps the WebView alive. API 30+ system/keyboard insets are
 consumed by the native root; earlier Android versions use window resize. Native
 alert/confirmation dialogs preserve the web updater's Continue/Cancel behavior.
-OAuth identity-provider redirects outside the allowed Cloudflare hosts, file
-uploads or unsupported Android codecs need separate integration.
+File uploads and unsupported Android codecs need separate integration.
 Torrentio/server downloads stay on the server. **Save to device** makes a separate
 foreground copy in WebView's origin-private storage, without native bridges or
 storage permissions. Keep the screen open until completion. The connection-error
@@ -77,6 +79,32 @@ tests does not prove a live Cloudflare challenge succeeds on every device: the
 final check must be performed in the app, without browser automation. Do not
 disable Access, bypass certificate checks or clear the app's data as a first
 step; clearing data also removes offline device downloads.
+
+On a stalled login, tap the settings gear, select **Connection diagnostics**, and
+use **Copy diagnostics**. The memory-only report keeps the latest 32 navigation/
+network events with domains, known route categories and HTTP/network error codes,
+plus fixed browser-error categories (for example, CORS/challenge/script errors),
+plus the APK/Android/WebView versions. It does not capture full paths, URL queries,
+fragments, response bodies, console messages, codes, cookies or passwords, and is
+never uploaded automatically. Blocked non-web or insecure authentication redirects
+show an error instead of failing silently. The
+same menu offers **Open in browser** as a fallback; browser cookies and offline
+downloads are separate and are not transferred back to WebView.
+
+The hosted login offers opt-in **Remember me** (30 days by default, configured
+with `REMEMBER_SESSION_DAYS`). Valid sessions renew near expiry during authorized
+activity, including playback progress and range requests, rather than writing a
+new cookie on every request. Expired/disabled sessions are not revived. New
+sessions are invalidated when the account password changes. Keep `SECRET_KEY`
+stable across server updates to preserve valid sessions.
+
+Cloudflare Access has independent global, application and policy expirations.
+The app cannot extend or bypass them. In Zero Trust, review **Access controls →
+Access settings → Global session duration** and the application's/policy's
+**Session Duration**; for personal trusted devices you can choose matching longer
+durations (up to one month), subject to your security policy. A still-valid global
+session can reissue an application token; an expired global session requires a
+fresh login. See [Cloudflare session management](https://developers.cloudflare.com/cloudflare-one/access-controls/access-settings/session-management/).
 
 ## Build and checks
 

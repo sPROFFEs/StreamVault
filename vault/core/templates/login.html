@@ -8,7 +8,7 @@
     <title>{{ "Create administrator" if setup and lang == "en" else "Crear administrador" if setup else "Sign in" if lang == "en" else "Iniciar sesión" }} · StreamVault</title>
     {% include "_metadata.html" %}
     <link rel="stylesheet" href="/assets/css/app.css?v=20261008-1">
-    <link rel="stylesheet" href="/assets/css/auth.css?v=20261014-2">
+    <link rel="stylesheet" href="/assets/css/auth.css?v=20261017-1">
     <script defer src="/assets/js/auth.js?v=20261014-2"></script>
     <script defer src="/assets/js/shell.js?v=20261010-1"></script>
 </head>
@@ -54,6 +54,9 @@
                 </div>
                 <input type="hidden" name="next" value="{{ next }}">
                 <button class="button button--primary" type="submit" data-pending="{{ 'Creating account…' if setup and lang == 'en' else 'Creando cuenta…' if setup else 'Signing in…' if lang == 'en' else 'Entrando…' }}">{{ "Create account" if setup and lang == "en" else "Crear cuenta" if setup else "Sign in" if lang == "en" else "Entrar" }}</button>
+                {% if not setup %}
+                <label class="auth-remember"><input type="checkbox" name="remember" value="true"><span>{{ 'Remember me for' if lang == 'en' else 'Recordarme durante' }} {{ remember_days|default(30) }} {{ 'days on this device' if lang == 'en' else 'días en este dispositivo' }}</span></label>
+                {% endif %}
                 <p id="auth-status" class="auth-hint" role="status" aria-live="polite" aria-atomic="true"></p>
             </form>
             <p class="auth-security">{{ "Private access · Sign out on shared devices" if lang == "en" else "Acceso privado · Cierra sesión en dispositivos compartidos" }}</p>

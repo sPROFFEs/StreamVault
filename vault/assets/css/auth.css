@@ -88,6 +88,8 @@
 .auth-card .message { line-height: 1.5; border-radius: 4px; }
 .auth-card .auth-security { font-size: 13px !important; line-height: 1.5; color: #777777; margin-top: 24px; text-align: center; }
 .auth-page [hidden] { display: none !important; }
+.auth-remember { display: flex; align-items: center; gap: 12px; min-height: 44px; color: #bbb; font-size: 14px; cursor: pointer; }
+.auth-remember input { width: 20px; height: 20px; flex-shrink: 0; accent-color: #e50914; }
 #auth-status:empty { display: none; }
 @media (max-width: 640px) {
     .auth-page { gap: 24px; }

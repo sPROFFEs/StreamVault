@@ -69,11 +69,54 @@ public class ServerUrlTest {
         assertTrue(ServerUrl.isAllowedSubframe("https://challenges.cloudflare.com/cdn-cgi/challenge-platform/"));
         assertTrue(ServerUrl.isAllowedSubframe("http://provider.example/video"));
         for (String url : new String[]{"file:///data/data/com.streamvault.app/", "content://private/data",
-                "javascript:alert(1)", "intent://external", "about:settings", "about:blank.evil", "data:text/html,script",
+                "javascript:alert(1)", "intent://external", "about:settings", "about:blank.evil",
                 "https://", "https://user:password@provider.example/", "not a URL"}) {
             assertFalse(url, ServerUrl.isAllowedSubframe(url));
         }
         assertFalse(ServerUrl.isAllowedSubframe(null));
+    }
+
+    @Test public void browserOwnedChallengeFramesStayInsideWebView() {
+        for (String url : new String[]{"data:text/html,%3Cp%3Everifying%3C/p%3E",
+                "blob:https://challenges.cloudflare.com/73d60ed4", "blob:null/73d60ed4"}) {
+            assertTrue(url, ServerUrl.isAllowedSubframe(url));
+            assertFalse(url, ServerUrl.isAllowedMainFrame("https://watch.example.com/", url, true, false));
+        }
+        assertFalse(ServerUrl.isAllowedSubframe("blob:file:///private/challenge"));
+        assertFalse(ServerUrl.isAllowedSubframe("blob:content://private/challenge"));
+    }
+
+    @Test public void accessRedirectChainDoesNotDependOnCloudflareHostnameAllowlist() {
+        String origin = "https://watch.example.com/";
+        for (String target : new String[]{origin, "https://team.cloudflareaccess.com/cdn-cgi/access/login",
+                "https://identity.example.org/sign-in", "https://identity.example.org/verify",
+                "https://custom-access.example.net/callback", origin + "cdn-cgi/access/authorized", origin + "portal"}) {
+            assertTrue(target, ServerUrl.isAllowedMainFrame(origin, target, true, false));
+            assertTrue(target, ServerUrl.isAllowedMainFrame(origin, target, true, true));
+        }
+        // Outside authentication, user-activated external links still open the browser.
+        assertFalse(ServerUrl.isAllowedMainFrame(origin, "https://external.example.org/", false, true));
+        assertTrue(ServerUrl.isAllowedMainFrame(origin, "https://identity.example.org/redirect", false, false));
+        assertTrue(ServerUrl.isAllowedMainFrame(origin, origin + "media/1", false, true));
+    }
+
+    @Test public void authenticationDoesNotPermitUnsafeTopLevelNavigation() {
+        String origin = "https://watch.example.com/";
+        for (String target : new String[]{"http://identity.example.org/", "https://user:secret@identity.example.org/",
+                "file:///private", "content://private", "javascript:alert(1)", "intent://login",
+                "about:blank", "https://identity.example.org:99999/", "bad URL"}) {
+            assertFalse(target, ServerUrl.isAllowedMainFrame(origin, target, true, false));
+        }
+        assertFalse(ServerUrl.isAllowedMainFrame(origin, null, true, false));
+    }
+
+    @Test public void accessFlowIncludesTheReturnCallbackButNotRegularAppPages() {
+        String origin = "https://watch.example.com/";
+        assertTrue(ServerUrl.isAccessPage(origin, "https://team.cloudflareaccess.com/cdn-cgi/access/login"));
+        assertTrue(ServerUrl.isAccessPage(origin, origin + "cdn-cgi/access/authorized?token=example"));
+        assertFalse(ServerUrl.isAccessPage(origin, origin + "portal"));
+        assertFalse(ServerUrl.isAccessPage(origin, origin + "login"));
+        assertFalse(ServerUrl.isAccessPage(origin, null));
     }
 
     @Test public void cloudflareAuthenticationRequiresHttpsWithoutCredentials() {

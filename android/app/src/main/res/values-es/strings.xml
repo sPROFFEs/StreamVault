@@ -25,4 +25,9 @@
     <string name="main_btn_settings_desc">Configurar servidor</string>
     <string name="main_connection_error">No se ha podido conectar con StreamVault</string>
     <string name="main_retry">Reintentar</string>
+    <string name="connection_diagnostics">Diagnóstico de conexión</string>
+    <string name="copy_diagnostics">Copiar diagnóstico</string>
+    <string name="open_browser">Abrir en navegador</string>
+    <string name="diagnostics_privacy">Incluye dominios y versiones del navegador, no códigos de acceso, cookies, contraseñas ni URLs completas. No se envía nada automáticamente. Las sesiones y descargas del navegador son independientes de esta app.</string>
+    <string name="auth_redirect_blocked">Se ha bloqueado una redirección automática externa. Abre Configuración → Diagnóstico de conexión para revisarla o continúa en el navegador.</string>
 </resources>
