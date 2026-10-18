@@ -124,7 +124,7 @@ def add_security_headers(response, request: Request):
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; "
         "form-action 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
-        "style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; "
+        "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; "
         "font-src 'self'; media-src 'self' blob: http: https:; "
         "connect-src 'self' blob: http: https: ws: wss:; frame-src http: https:; worker-src 'self' blob:"
     )

@@ -6,28 +6,78 @@
     <meta name="theme-color" content="#141414">
     <title>StreamVault · Offline</title>
     <link rel="icon" href="/assets/favicon.ico">
-    <link rel="stylesheet" href="/assets/css/offline.css?v=20261016-1">
-    <script defer src="/assets/js/offline-store.js?v=20261016-1"></script>
-    <script defer src="/assets/js/offline-ui.js?v=20261016-1"></script>
+    <link rel="stylesheet" href="/assets/css/app.css?v=20261015-1">
+    <link rel="stylesheet" href="/assets/css/ui-extras.css?v=20261008-1">
+    <link rel="stylesheet" href="/assets/css/offline.css?v=20261018-1">
+    <script defer src="/assets/js/offline-store.js?v=20261018-1"></script>
+    <script defer src="/assets/js/custom-player.js?v=20261015-1"></script>
+    <script defer src="/assets/js/shell.js?v=20261010-1"></script>
+    <script defer src="/assets/js/offline-ui.js?v=20261018-1"></script>
 </head>
 <body class="offline-page">
-    <header class="offline-heading"><a href="/portal" class="offline-brand">STREAMVAULT</a><a href="/downloads" data-offline-label="server">Server library</a></header>
-    <main>
+    <header class="offline-heading"><a href="/portal" class="offline-brand">STREAMVAULT</a><span class="offline-device-badge" data-offline-label="device">THIS DEVICE</span><a href="/downloads" data-offline-label="server">Server library</a></header>
+    <main class="offline-main">
+        <div id="offline-library">
+        <section class="offline-intro">
         <p class="offline-eyebrow" data-offline-label="device">THIS DEVICE</p>
         <h1 id="offline-title" data-offline-label="title">Offline library</h1>
         <p data-offline-label="intro">Your completed device downloads work without the server or Internet.</p>
-        <div class="offline-settings">
+        </section>
+        <div class="offline-toolbar">
+            <label class="offline-search"><span data-offline-label="search">Search downloads</span><input id="offline-search" type="search" autocomplete="off"></label>
+            <label><span data-offline-label="type">Type</span><select id="offline-type"><option value="all" data-offline-label="all">All</option><option value="movie" data-offline-label="movies">Movies</option><option value="series" data-offline-label="series">Series</option></select></label>
+            <p id="offline-count" role="status"></p>
+            <button id="offline-refresh-metadata" class="button button--ghost" type="button" data-offline-label="refreshMetadata">Refresh details online</button>
+        </div>
+        <details class="offline-settings-panel"><summary data-offline-label="storageSettings">Storage and privacy</summary><div class="offline-settings">
             <label><span data-offline-label="limit">Device limit (GiB)</span><input id="offline-limit" type="number" min="0.25" max="100" step="0.25" value="5"></label>
             <button id="offline-save-limit" type="button" data-offline-label="saveLimit">Save limit</button>
             <p id="offline-storage" role="status"></p>
         </div>
         <p class="offline-notice" data-offline-label="privacy">Downloads stay in this browser/device profile, even after sign-out. Anyone using this profile can play them. Clearing site data, uninstalling the app or switching servers deletes them. The browser can reclaim space; keep a backup of important files.</p>
-        <p id="offline-status" role="status" aria-live="polite"></p>
+        </details>
         <p id="offline-empty" data-offline-label="empty" hidden>No videos saved on this device yet. Open the server library and choose “Save to device”.</p>
-        <section id="offline-list" aria-label="Offline videos"></section>
-        <section id="offline-player-panel" hidden>
-            <div class="offline-heading"><h2 id="offline-player-title"></h2><button id="offline-close" type="button" data-offline-label="close">Close player</button></div>
-            <video id="offline-video" controls playsinline preload="auto"></video>
+        <section id="offline-list" aria-label="Offline videos" class="offline-grid"></section>
+        </div>
+        <p id="offline-status" role="status" aria-live="polite"></p>
+        <section id="offline-player-panel" hidden aria-labelledby="offline-player-title">
+            <button id="offline-close" class="button button--ghost" type="button" data-offline-label="back">Back to library</button>
+            <div class="offline-feature">
+                <div id="offline-backdrop" class="offline-feature__backdrop" aria-hidden="true"></div>
+                <div id="offline-poster" class="offline-detail-poster"></div>
+                <div class="offline-feature__summary">
+                    <p class="offline-eyebrow" data-offline-label="device">THIS DEVICE</p>
+                    <h1 id="offline-player-title"></h1>
+                    <p id="offline-player-meta" class="offline-meta"></p>
+                    <p id="offline-player-description"></p>
+                    <div class="offline-actions"><button id="offline-detail-play" class="button button--primary" type="button" data-offline-label="play">Play</button><button id="offline-detail-delete" type="button" data-offline-label="remove">Delete</button></div>
+                </div>
+            </div>
+            <div class="offline-playback-layout">
+                <div id="offline-player" class="player-box">
+                    <div id="offline-placeholder" class="player-placeholder">
+                        <div class="player-placeholder__gradient"></div>
+                        <div class="player-placeholder__content"><button id="offline-placeholder-play" class="player-placeholder__play" type="button" aria-label="Play"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg></button></div>
+                    </div>
+                    <video id="offline-video" controls playsinline preload="metadata" hidden></video>
+                </div>
+                <section class="offline-controls" aria-labelledby="offline-options-title">
+                    <h2 id="offline-options-title" data-offline-label="options">Playback options</h2>
+                    <div id="offline-series-controls" class="offline-series-controls" hidden>
+                        <label><span data-offline-label="season">Season</span><select id="offline-season-select"></select></label>
+                        <label><span data-offline-label="episode">Episode</span><select id="offline-episode-select"></select></label>
+                    </div>
+                    <label><span data-offline-label="source">Source</span><select id="source-select"></select></label>
+                    <p id="offline-audio-label" class="offline-meta"></p>
+                    <div id="audio-wrapper" hidden><label>Audio<select id="audio-select"></select></label></div>
+                    <label><span data-offline-label="subtitles">Subtitles</span><select id="offline-subtitle-select"></select></label>
+                    <div id="subtitle-list" hidden></div>
+                    <label><span data-offline-label="subtitleSize">Subtitle size</span><input id="offline-subtitle-size" type="range" min="50" max="200" step="10" value="100"><output id="offline-subtitle-size-value">100%</output></label>
+                    <label><span data-offline-label="subtitleOffset">Subtitle offset (seconds)</span><input id="offline-subtitle-offset" type="number" min="-120" max="120" step="0.5" value="0"></label>
+                    <label><span data-offline-label="speed">Playback speed</span><select id="offline-speed"><option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option></select></label>
+                    <p class="offline-notice" data-offline-label="available">Only tracks saved on this device are available offline.</p>
+                </section>
+            </div>
         </section>
     </main>
 </body>

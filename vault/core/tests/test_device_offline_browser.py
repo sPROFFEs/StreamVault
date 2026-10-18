@@ -3,6 +3,8 @@ import hashlib
 import os
 import shutil
 import subprocess
+import re
+from pathlib import Path
 
 import pytest
 from playwright.sync_api import expect
@@ -163,19 +165,272 @@ def test_real_video_and_included_subtitles_play_without_a_network(offline_page, 
     page.route('**/api/downloads/files/subtitle?*', lambda route: route.fulfill(
         body='WEBVTT\n\n00:00.000 --> 00:02.000\nOffline caption\n', content_type='text/vtt'))
     entry = page.evaluate('''() => SVOffline.save({title: 'Offline playback fixture', relative_path: 'Fixture.mp4', audio_tracks: [],
-        subtitles: [{url: '/api/downloads/files/subtitle?path=Fixture.vtt', language: 'en', label: 'English'}]})''')
-    assert len(entry['subtitles']) == 1
+        overview: 'A complete offline cinema experience.', year: '2026', media_type: 'movie',
+        subtitles: [{url: '/api/downloads/files/subtitle?path=Fixture.vtt', language: 'en', label: 'English'},
+                    {url: '/api/downloads/files/subtitle?path=Fixture.es.vtt', language: 'es', label: 'Español'}]})''')
+    assert len(entry['subtitles']) == 2
     context.set_offline(True)
     page.goto(origin + '/portal')
     expect(page.locator('#offline-list')).to_contain_text('Offline playback fixture')
     page.evaluate('() => { document.querySelector("#offline-video").muted = true; }')
     page.get_by_role('button', name='Play', exact=True).evaluate('button => button.click()')
+    expect(page.locator('#offline-player-description')).to_contain_text('complete offline cinema')
+    expect(page.locator('#sv-play')).to_be_visible()
     page.wait_for_function('() => document.querySelector("#offline-video").currentTime > .1', polling=100)
-    page.evaluate('() => { const video = document.querySelector("#offline-video"); video.pause(); video.currentTime = .5; video.textTracks[0].mode = "showing"; }')
+    page.evaluate('''() => {
+        document.querySelector('#offline-player').requestFullscreen = async () => {
+            window.offlineFullscreenRequested = true;
+            throw new Error('Native fullscreen unavailable; retain CSS fallback');
+        };
+    }''')
+    page.locator('#sv-fullscreen').click()
+    assert page.evaluate('!!window.offlineFullscreenRequested')
+    assert page.evaluate('SVShell.nativeBack()')
+    expect(page.locator('#offline-player-panel')).to_be_visible()
+    assert not page.locator('#offline-player').evaluate('el => el.classList.contains("player-box--pseudo-fs")')
+    page.evaluate('() => { const video = document.querySelector("#offline-video"); video.pause(); video.currentTime = .5; }')
     page.wait_for_function('() => !document.querySelector("#offline-video").seeking', polling=100)
     assert page.evaluate('() => document.querySelector("#offline-video").error') is None
     assert page.evaluate('() => document.querySelector("#offline-video").currentTime') >= .5
     page.wait_for_function('() => document.querySelector("#offline-video").textTracks[0].cues?.length === 1', polling=100)
+    page.locator('#sv-sub-btn').click()
+    page.locator('#sv-sub-menu').get_by_role('button', name='Español', exact=True).click()
+    assert page.evaluate('() => document.querySelector("#offline-video").textTracks[1].mode') == 'showing'
+    page.locator('#offline-subtitle-size').fill('150')
+    page.locator('#offline-subtitle-offset').fill('0.5')
+    page.locator('#offline-subtitle-offset').dispatch_event('change')
+    assert page.evaluate('document.querySelector("#offline-video").textTracks[1].cues[0].startTime') == .5
+    page.wait_for_function('''async () => {
+        const [entry] = await SVOffline.list();
+        return entry.playback?.subtitle_language === 'es' && entry.playback?.subtitle_size === 150;
+    }''')
+    page.locator('#sv-back').click()
+    expect(page.locator('#offline-player-panel')).to_be_hidden()
+    page.reload()
+    page.get_by_role('button', name='Continue', exact=True).evaluate('button => button.click()')
+    expect(page.locator('#offline-subtitle-select')).to_have_value('1')
+    expect(page.locator('#offline-subtitle-size')).to_have_value('150')
+    assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+
+
+def test_offline_library_search_groups_series_and_preserves_existing_downloads(offline_page):
+    page, context, origin = offline_page
+    page.route('**/api/downloads/files/playback?*', lambda route: route.fulfill(json={
+        'url': '/api/downloads/files/stream?path=Fixture.mp4', 'mode': 'file'}))
+    page.route('**/api/downloads/files/stream?*', lambda route: route.fulfill(body=b'media', content_type='video/mp4'))
+    page.evaluate('''async () => {
+        for (const episode of [1, 2]) await SVOffline.save({title: 'Example series',
+            relative_path: `Example.S01E0${episode}.mp4`, media_type: 'series',
+            season_number: 1, episode_number: episode, audio_tracks: [], subtitles: []});
+        await SVOffline.save({title: 'Other movie', relative_path: 'Other.mp4', audio_tracks: [], subtitles: []});
+    }''')
+    context.set_offline(True)
+    page.goto(origin + '/assets/offline.html')
+    expect(page.locator('#offline-list .offline-item')).to_have_count(2)
+    page.get_by_role('searchbox', name='Search downloads').fill('Example')
+    expect(page.locator('#offline-list .offline-item')).to_have_count(1)
+    page.get_by_role('button', name='Details · Example series').click()
+    expect(page.locator('#offline-episode-select option')).to_have_count(2)
+    page.locator('#offline-episode-select').select_option('2')
+    expect(page.locator('#offline-player-meta')).to_contain_text('S01E02')
+    # Opening a detail screen must not start playback or contact a provider.
+    assert not page.locator('#offline-video').get_attribute('src')
+    page.locator('#offline-close').click()
+    expect(page.get_by_role('searchbox')).to_have_value('Example')
+
+
+def test_individual_episode_can_be_removed_without_deleting_the_series(offline_page):
+    page, _, _ = offline_page
+    page.route('**/api/downloads/files/playback?*', lambda route: route.fulfill(json={
+        'url': '/api/downloads/files/stream?path=Fixture.mp4', 'mode': 'file'}))
+    page.route('**/api/downloads/files/stream?*', lambda route: route.fulfill(body=b'media', content_type='video/mp4'))
+    page.evaluate('''async () => {
+        for (const episode of [1, 2]) await SVOffline.save({title: 'Keep the series', overview: 'A series',
+            relative_path: `Series.S01E0${episode}.mp4`, media_type: 'series',
+            season_number: 1, episode_number: episode, audio_tracks: [], subtitles: []});
+        await SVOfflineUI.refresh();
+    }''')
+    page.get_by_role('button', name='Details · Keep the series').click()
+    page.locator('#offline-episode-select').select_option('2')
+    page.locator('#offline-detail-delete').click()
+    page.get_by_role('dialog').get_by_role('button', name='Delete', exact=True).click()
+    expect(page.locator('#offline-player-panel')).to_be_hidden()
+    page.wait_for_function('async () => (await SVOffline.list()).length === 1')
+    assert page.evaluate('async () => (await SVOffline.list())[0].episode_number') == 1
+
+
+def test_saved_artwork_and_metadata_are_local_bounded_and_credential_free(offline_page):
+    page, context, origin = offline_page
+    artwork = Path(__file__).resolve().parents[2] / 'assets/icon.png'
+    page.route('**/api/downloads/files/playback?*', lambda route: route.fulfill(json={
+        'url': '/api/downloads/files/stream?path=Fixture.mp4', 'mode': 'file'}))
+    page.route('**/api/downloads/files/stream?*', lambda route: route.fulfill(body=b'media', content_type='video/mp4'))
+    context.add_cookies([{'name': 'private_session', 'value': 'must-not-be-copied', 'url': origin}])
+    result = page.evaluate('''async () => {
+        const nativeFetch = window.fetch;
+        const credentials = [];
+        window.fetch = (url, options) => {
+            if (String(url).includes('/assets/icon.png')) credentials.push(options.credentials);
+            return nativeFetch(url, options);
+        };
+        const file = {title: 'Artwork fixture', overview: 'Saved synopsis', year: '2026', tmdb_id: 7,
+            poster_path: '/assets/icon.png', backdrop_path: '/assets/icon.png',
+            relative_path: 'Fixture.mp4', audio_tracks: [], subtitles: []};
+        const entry = await SVOffline.save(file);
+        window.fetch = nativeFetch;
+        return {poster: entry.poster.size, backdrop: entry.backdrop.size, used: entry.storage_bytes,
+            synopsis: entry.overview, keys: Object.keys(entry), credentials};
+    }''')
+    assert result['poster'] == result['backdrop'] == artwork.stat().st_size
+    assert result['used'] == 5 + 2 * artwork.stat().st_size
+    assert 'relative_path' not in result['keys'] and '_poster' not in result['keys']
+    assert result['credentials'] == ['omit', 'omit']
+    context.set_offline(True)
+    page.goto(origin + '/assets/offline.html')
+    expect(page.locator('.offline-cover img')).to_have_attribute('src', re.compile('^blob:'))
+    page.wait_for_function('() => document.querySelector(".offline-cover img").naturalWidth > 0')
+    page.get_by_role('button', name='Details · Artwork fixture').click()
+    expect(page.locator('#offline-player-description')).to_have_text('Saved synopsis')
+    assert 'blob:' in page.locator('#offline-backdrop').evaluate('el => el.style.backgroundImage')
+    if directory := os.getenv('STREAMVAULT_UI_SCREENSHOTS'):
+        width = page.viewport_size['width']
+        page.screenshot(path=str(Path(directory) / f'offline-detail-{width}.png'), full_page=True)
+        page.locator('#offline-close').click()
+        page.screenshot(path=str(Path(directory) / f'offline-library-{width}.png'), full_page=True)
+
+
+def test_oversized_or_untrusted_artwork_does_not_break_the_download(offline_page):
+    page, _, _ = offline_page
+    page.route('**/api/downloads/files/playback?*', lambda route: route.fulfill(json={
+        'url': '/api/downloads/files/stream?path=Fixture.mp4', 'mode': 'file'}))
+    page.route('**/api/downloads/files/stream?*', lambda route: route.fulfill(body=b'media', content_type='video/mp4'))
+    result = page.evaluate('''async () => {
+        const nativeFetch = window.fetch, calls = [];
+        window.fetch = (url, options) => {
+            calls.push(String(url));
+            if (String(url).startsWith('https://image.tmdb.org/')) return Promise.resolve(
+                new Response(new Uint8Array(2 * 1024 * 1024), {headers: {'Content-Type': 'image/png'}}));
+            return nativeFetch(url, options);
+        };
+        const entry = await SVOffline.save({title: 'Bounded artwork', overview: 'A saved movie',
+            poster_path: 'https://untrusted.example/image.png?token=do-not-forward', backdrop_path: '/large.png',
+            relative_path: 'Fixture.mp4', audio_tracks: [], subtitles: []});
+        window.fetch = nativeFetch;
+        return {poster: entry.poster, backdrop: entry.backdrop, used: entry.storage_bytes, status: entry.status, calls};
+    }''')
+    assert result['status'] == 'complete' and result['used'] == 5
+    assert result['poster'] is None and result['backdrop'] is None
+    assert not any('untrusted.example' in call for call in result['calls'])
+
+
+def test_device_playback_preferences_do_not_resurrect_deleted_entries(offline_page):
+    page, _, _ = offline_page
+    page.route('**/api/downloads/files/playback?*', lambda route: route.fulfill(json={
+        'url': '/api/downloads/files/stream?path=Fixture.mp4', 'mode': 'file'}))
+    page.route('**/api/downloads/files/stream?*', lambda route: route.fulfill(body=b'media', content_type='video/mp4'))
+    result = page.evaluate('''async () => {
+        const entry = await SVOffline.save({title: 'Preferences', relative_path: 'Fixture.mp4', audio_tracks: [], subtitles: []});
+        await SVOffline.updatePlayback(entry.id, {progress_seconds: 42, subtitle_language: 'es', subtitle_size: 150,
+            subtitle_offset: .5, rate: 1.25, password: 'must-not-be-stored'});
+        const saved = (await SVOffline.list())[0].playback;
+        await SVOffline.remove(entry.id);
+        await SVOffline.updatePlayback(entry.id, {progress_seconds: 99});
+        return {saved, entries: await SVOffline.list()};
+    }''')
+    assert result['saved'] == dict(progress_seconds=42, subtitle_language='es', subtitle_size=150,
+                                 subtitle_offset=.5, rate=1.25)
+    assert result['entries'] == []
+
+
+@pytest.mark.parametrize('existing', [False, True], ids=['new-copy', 'existing-copy'])
+def test_active_provider_subtitle_is_saved_through_the_authenticated_proxy(offline_page, existing):
+    page, context, origin = offline_page
+    page.route('**/api/downloads/files/playback?*', lambda route: route.fulfill(json={
+        'url': '/api/downloads/files/stream?path=Fixture.mp4', 'mode': 'file'}))
+    page.route('**/api/downloads/files/stream?*', lambda route: route.fulfill(body=b'media', content_type='video/mp4'))
+    page.route('**/api/subtitles/fetch?*', lambda route: route.fulfill(
+        body='WEBVTT\n\n00:00.000 --> 00:02.000\nSaved provider caption\n', content_type='text/vtt'))
+    entry = page.evaluate('''async existing => {
+        const file = {title: 'Provider subtitles', overview: 'Offline copy',
+            relative_path: 'Fixture.mp4', audio_tracks: [{stream_index: 1, language: 'eng'}], subtitles: []};
+        if (existing) {
+            const old = await SVOffline.save(file);
+            // Pre-update clients used a null key for the default audio and
+            // did not record its language/index. Preserve that copy as-is.
+            const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify([file.relative_path, null])));
+            old.source_key = [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('');
+            delete old.audio_index; delete old.audio_label;
+            const db = await SVOffline.database();
+            await new Promise((resolve, reject) => {
+                const tx = db.transaction('entries', 'readwrite');
+                tx.objectStore('entries').put(old); tx.oncomplete = resolve; tx.onerror = reject;
+            });
+        }
+        const entry = await SVOffline.save(file, {
+            subtitles: [{url: '/api/subtitles/fetch?provider=opensubtitles&file_id=1', language: 'es', label: 'Español'}]
+        });
+        return {entry, count: (await SVOffline.list()).length};
+    }''', existing)
+    assert entry['count'] == 1
+    entry = entry['entry']
+    assert len(entry['subtitles']) == 1
+    assert entry['subtitles'][0]['language'] == 'es'
+    assert 'Saved provider caption' in entry['subtitles'][0]['text']
+    assert 'file_id' not in str(entry) and 'opensubtitles' not in str(entry)
+
+
+def test_device_download_audio_choice_and_offline_audio_variants(offline_page):
+    page, context, origin = offline_page
+    page.route('**/api/downloads/files/playback?*', lambda route: route.fulfill(json={
+        'url': '/api/downloads/files/stream?path=Fixture.mp4', 'mode': 'file'}))
+    page.route('**/api/downloads/files/stream?*', lambda route: route.fulfill(body=b'media', content_type='video/mp4'))
+    file = {'title': 'Two languages', 'overview': 'Audio variants', 'relative_path': 'Fixture.mp4',
+            'audio_tracks': [{'stream_index': 1, 'language': 'eng'}, {'stream_index': 2, 'language': 'spa'}], 'subtitles': []}
+    page.evaluate('file => SVOfflineUI.download(file)', file)
+    page.get_by_role('dialog').get_by_label('Audio to save').select_option('2')
+    page.get_by_role('dialog').get_by_role('button', name='Download', exact=True).click()
+    expect(page.get_by_role('dialog')).to_contain_text('Download complete')
+    page.get_by_role('dialog').get_by_role('button', name='Close player', exact=True).click()
+    spanish = page.evaluate('() => SVOffline.list()')[0]
+    assert spanish['audio_index'] == 2 and spanish['audio_label'] == 'spa'
+    english = page.evaluate('file => SVOffline.save(file, {audio: 1})', file)
+    context.set_offline(True)
+    page.goto(origin + '/assets/offline.html')
+    expect(page.locator('#offline-list .offline-item')).to_have_count(1)
+    page.get_by_role('button', name='Details · Two languages').click()
+    expect(page.locator('#audio-select option')).to_have_count(2)
+    page.locator('#audio-select').select_option(english['id'])
+    expect(page.locator('#offline-audio-label')).to_contain_text('ENG')
+    page.locator('#audio-select').select_option(spanish['id'])
+    expect(page.locator('#offline-audio-label')).to_contain_text('SPA')
+
+
+def test_old_device_copies_can_refresh_artwork_without_redownloading_video(offline_page):
+    page, _, _ = offline_page
+    page.route('**/api/downloads/files/playback?*', lambda route: route.fulfill(json={
+        'url': '/api/downloads/files/stream?path=Fixture.mp4', 'mode': 'file'}))
+    page.route('**/api/downloads/files/stream?*', lambda route: route.fulfill(body=b'media', content_type='video/mp4'))
+    result = page.evaluate('''async () => {
+        const entry = await SVOffline.save({title: 'Legacy artwork', overview: 'Old synopsis',
+            relative_path: 'Fixture.mp4', audio_tracks: [], subtitles: []});
+        const nativeFetch = window.fetch;
+        const calls = [];
+        window.fetch = (url, options) => {
+            calls.push(String(url));
+            if (String(url).includes('/api/tmdb/search/movie')) return Promise.resolve(new Response(JSON.stringify([
+                {id: 7, title: 'Legacy artwork', overview: 'Updated synopsis', poster_path: '/assets/icon.png'}
+            ]), {headers: {'Content-Type': 'application/json'}}));
+            return nativeFetch(url, options);
+        };
+        await SVOffline.refreshPresentation(entry.id);
+        window.fetch = nativeFetch;
+        const saved = (await SVOffline.list())[0];
+        return {calls, id: saved.id, sameId: saved.id === entry.id, poster: saved.poster.size,
+            overview: saved.overview, bytes: await (await fetch(SVOffline.mediaUrl(saved.id))).text()};
+    }''')
+    assert result['sameId'] and result['bytes'] == 'media'
+    assert result['poster'] > 0 and result['overview'] == 'Updated synopsis'
+    assert not any('/files/playback' in call or '/files/stream' in call for call in result['calls'])
 
 
 def test_offline_shell_avoids_session_cache_and_recovers_from_server_errors(offline_page):

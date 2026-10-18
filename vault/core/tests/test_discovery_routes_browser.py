@@ -156,6 +156,20 @@ def test_decoder_failure_is_retryable(discovery_page):
     assert ui.page.evaluate('retriedDecoder')
 
 
+@pytest.mark.parametrize('missing', ['Notification', 'EventSource', 'notification-permission'])
+def test_detail_loads_without_optional_webview_notification_apis(discovery_page, missing):
+    ui, page = discovery_page, discovery_page.page
+    if missing == 'notification-permission':
+        page.add_init_script("Notification.requestPermission = () => { throw new Error('Unavailable in WebView'); };")
+    else:
+        page.add_init_script(f'delete window.{missing};')
+    ui.payloads['/api/stream/resolve/7'] = [{'source': 'Local fixture', 'type': 'direct', 'url': '/fixture.mp4'}]
+    page.goto('https://streamvault.test/media/7?type=movie')
+    expect(page.locator('#detail-title')).to_have_text('Example')
+    expect(page.locator('#source-select')).to_contain_text('Local fixture')
+    expect(page.locator('#detail-error')).to_be_hidden()
+
+
 def test_large_catalog_return_focus_and_dpad(discovery_page):
     ui = discovery_page
     ui.payloads['/api/tmdb/discover/movie'] = [

@@ -1,16 +1,25 @@
 // Only public static assets are cached. Device media is explicitly saved in IDB.
-importScripts("/assets/js/offline-store.js?v=20261016-1");
-const CACHE_NAME = "streamvault-shell-v2";
+importScripts("/assets/js/offline-store.js?v=20261018-1");
+const CACHE_NAME = "streamvault-shell-v3";
 const APP_SHELL = [
   "/assets/icon.png",
   "/assets/favicon.ico",
   "/assets/site.webmanifest",
   "/assets/css/app.css",
   "/assets/css/ui-extras.css",
+  "/assets/css/app.css?v=20261015-1",
+  "/assets/css/ui-extras.css?v=20261008-1",
+  "/assets/js/custom-player.js?v=20261015-1",
+  "/assets/js/shell.js?v=20261010-1",
+  "/assets/fonts/bebas-neue-regular.woff2",
+  "/assets/fonts/dm-sans-300.woff2",
+  "/assets/fonts/dm-sans-regular.woff2",
+  "/assets/fonts/dm-sans-500.woff2",
+  "/assets/fonts/dm-sans-600.woff2",
   "/assets/offline.html",
-  "/assets/css/offline.css?v=20261016-1",
-  "/assets/js/offline-store.js?v=20261016-1",
-  "/assets/js/offline-ui.js?v=20261016-1",
+  "/assets/css/offline.css?v=20261018-1",
+  "/assets/js/offline-store.js?v=20261018-1",
+  "/assets/js/offline-ui.js?v=20261018-1",
 ];
 
 self.addEventListener("install", (event) => {

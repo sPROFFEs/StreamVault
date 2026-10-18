@@ -563,8 +563,14 @@ function saveCurrentToDevice() {
     const source = isActive ? active : selected;
     window.SVOfflineUI.download({...source, title: state.item?.title || state.item?.name || "Video",
         peer_name: source.peer_name || source.source, media_type: MTYPE,
+        tmdb_id: TMDB_ID, overview: state.item?.overview, year: state.item?.release_date?.slice(0, 4) || state.item?.first_air_date?.slice(0, 4),
+        poster_path: state.item?.poster_path || state.item?.poster_url, backdrop_path: state.item?.backdrop_path,
+        genres: (state.item?.genres || []).map(genre => genre.name),
         ...(MTYPE === "tv" ? {season_number: Number(el.seasonSelect.value), episode_number: Number(el.episodeSelect.value)} : {}),
-    }, {audio: isActive && el.audioSelect.value ? Number(el.audioSelect.value) : undefined});
+    }, {audio: isActive && el.audioSelect.value ? Number(el.audioSelect.value) : undefined,
+        subtitles: state.remoteSubtitles.filter(track => track.play_url && track.play_url === state.activeSubtitleKey)
+            .map(track => ({url: track.play_url, language: track.language, label: `${track.language || T.noLang} · ${track.provider || "Subtitles"}`})),
+    });
 }
 
 async function saveSourcePreference(source) {
@@ -1853,20 +1859,30 @@ function findActiveCue(cues, seconds) {
 /* ------------------------------------------------------------------ */
 function connectNotificationSse() {
     if (window.location.hostname.endsWith(".trycloudflare.com")) return;
-    const es = new EventSource("/api/downloads/notifications");
+    // WebView need not implement Notifications. Optional background services
+    // must never prevent the detail page from booting.
+    let es;
+    try {
+        if (typeof window.EventSource !== "function") return;
+        es = new window.EventSource("/api/downloads/notifications");
+    } catch (_) { return; }
+    const notifications = window.Notification;
+    window.addEventListener("pagehide", () => es.close(), {once: true});
     es.onmessage = (evt) => {
         try {
             const ev = JSON.parse(evt.data);
             if (ev.type === "download_complete") {
                 showToast(T.notifyTitle, T.notifyBody(ev.title || ""), "ok");
-                if (Notification?.permission === "granted")
-                    new Notification(T.notifyTitle, { body: T.notifyBody(ev.title || "") });
+                if (notifications?.permission === "granted")
+                    new notifications(T.notifyTitle, { body: T.notifyBody(ev.title || "") });
             }
         } catch (_) {}
     };
     // EventSource reconnects itself; creating another one here leaks connections.
-    if (Notification?.permission === "default")
-        Notification.requestPermission().catch(() => {});
+    try {
+        if (notifications?.permission === "default")
+            Promise.resolve(notifications.requestPermission()).catch(() => {});
+    } catch (_) {}
 }
 
 /* ------------------------------------------------------------------ */
