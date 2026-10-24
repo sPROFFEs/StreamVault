@@ -61,6 +61,10 @@
 .offline-dialog progress { width: 100%; accent-color: #e50914; margin: 16px 0; }
 .offline-dialog .offline-actions { justify-content: end; }
 .offline-dialog .offline-primary { background: #b81d24; border-color: #ff737b; }
+.offline-languages { border: 1px solid #747474; border-radius: 6px; padding: 12px; margin: 16px 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px; }
+.offline-languages legend { font-size: .85rem; padding-inline: 6px; }
+.offline-languages label { display: flex; align-items: center; gap: 8px; min-height: 44px; cursor: pointer; }
+.offline-languages input { width: 20px; height: 20px; accent-color: #e50914; }
 @media (max-width: 900px) { .offline-playback-layout { grid-template-columns: minmax(0, 1fr); } .offline-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); } .offline-controls > h2, .offline-controls > p, .offline-series-controls { grid-column: 1 / -1; } }
 @media (max-width: 600px) { .offline-heading { gap: 12px; padding: 18px; } .offline-device-badge { display: none; } .offline-main { padding: 20px 16px; } .offline-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px 12px; } .offline-feature { padding: 20px; gap: 18px; flex-wrap: wrap; } .offline-detail-poster { width: 110px; flex-basis: 110px; } .offline-feature__summary { flex: 1 1 190px; } .offline-feature h1 { font-size: 2.1rem; } .offline-controls { padding: 18px; gap: 18px 12px; } .offline-item .offline-actions { display: grid; grid-template-columns: 1fr; width: 100%; } }
 @media (min-width: 1800px) { .offline-main, .offline-heading { max-width: 1800px; } .offline-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); } }

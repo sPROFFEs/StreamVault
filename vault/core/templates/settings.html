@@ -19,6 +19,7 @@
         <header class="settings-hero">
             <h1>{{ "Settings" if lang == "en" else "Ajustes" }}</h1>
             <p>{{ "Your account, appearance and viewing preferences." if lang == "en" else "Tu cuenta, apariencia y preferencias de reproducción." }}</p>
+            <a class="button button--ghost" href="/about">{{ 'About & updates' if lang == 'en' else 'Acerca de y actualizaciones' }}</a>
         </header>
         <div class="settings-layout">
             <nav class="settings-nav" id="settings-nav" aria-label="{{ 'Settings sections' if lang == 'en' else 'Secciones de ajustes' }}">

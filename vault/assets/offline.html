@@ -8,11 +8,11 @@
     <link rel="icon" href="/assets/favicon.ico">
     <link rel="stylesheet" href="/assets/css/app.css?v=20261015-1">
     <link rel="stylesheet" href="/assets/css/ui-extras.css?v=20261008-1">
-    <link rel="stylesheet" href="/assets/css/offline.css?v=20261018-1">
-    <script defer src="/assets/js/offline-store.js?v=20261018-1"></script>
+    <link rel="stylesheet" href="/assets/css/offline.css?v=20261024-1">
+    <script defer src="/assets/js/offline-store.js?v=20261024-1"></script>
     <script defer src="/assets/js/custom-player.js?v=20261015-1"></script>
     <script defer src="/assets/js/shell.js?v=20261010-1"></script>
-    <script defer src="/assets/js/offline-ui.js?v=20261018-1"></script>
+    <script defer src="/assets/js/offline-ui.js?v=20261024-1"></script>
 </head>
 <body class="offline-page">
     <header class="offline-heading"><a href="/portal" class="offline-brand">STREAMVAULT</a><span class="offline-device-badge" data-offline-label="device">THIS DEVICE</span><a href="/downloads" data-offline-label="server">Server library</a></header>
@@ -71,6 +71,7 @@
                     <p id="offline-audio-label" class="offline-meta"></p>
                     <div id="audio-wrapper" hidden><label>Audio<select id="audio-select"></select></label></div>
                     <label><span data-offline-label="subtitles">Subtitles</span><select id="offline-subtitle-select"></select></label>
+                    <button id="offline-refresh-subtitles" type="button" data-offline-label="refreshSubtitles">Download subtitles online</button>
                     <div id="subtitle-list" hidden></div>
                     <label><span data-offline-label="subtitleSize">Subtitle size</span><input id="offline-subtitle-size" type="range" min="50" max="200" step="10" value="100"><output id="offline-subtitle-size-value">100%</output></label>
                     <label><span data-offline-label="subtitleOffset">Subtitle offset (seconds)</span><input id="offline-subtitle-offset" type="number" min="-120" max="120" step="0.5" value="0"></label>

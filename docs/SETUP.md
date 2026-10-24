@@ -102,7 +102,7 @@ Desktop supports mouse and keyboard with Tab/Enter/Escape and visible focus. Mob
 uses the bottom navigation and touch controls; portrait layouts adapt without a
 separate site. TV layouts use larger spacing with arrow/D-pad navigation, Enter to
 activate, and Back/Escape to dismiss overlays or exit fullscreen before navigating.
-The TV browser must support the hosted web features. The Android wrapper currently
+The TV browser must support the hosted web features. The Android client currently
 has no dedicated Android TV launcher/Leanback integration; installing its APK on
 every television model is not guaranteed. Use a supported TV browser and verify
 your actual remote/device, including its available video codecs.
@@ -126,7 +126,10 @@ the same signing key and a higher version code. A different key requires a separ
 installation or uninstalling first, which clears client state. Debug APKs use a
 separate application ID and may coexist. Administrator Update changes the hosted
 server; it does not install Android updates. See the [Android guide](../android/README.md)
-for emulator/USB debugging, native limitations and device smoke checks.
+for emulator/USB debugging, native limitations and device smoke checks. In the
+installed client, **More → About & updates** also checks the official GitHub APK
+and offers a verified download and Android installation confirmation. Update in
+place; do not uninstall or clear app data if you want to retain device videos.
 
 ## Build and test
 

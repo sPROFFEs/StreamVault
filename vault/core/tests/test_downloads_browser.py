@@ -7,6 +7,7 @@ from playwright.sync_api import sync_playwright, expect
 from starlette.requests import Request
 
 from shared_templates import templates
+from regression_fixtures import CHROMIUM_ARGS
 
 
 @pytest.mark.skipif(os.getenv("STREAMVAULT_BROWSER_TESTS") != "1", reason="Opt-in browser check")
@@ -47,7 +48,7 @@ def test_downloads_page_loads_and_recovers(compatibility):
         return route.fulfill(json={})
 
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch()
+        browser = playwright.chromium.launch(args=CHROMIUM_ARGS)
         try:
             page = browser.new_page()
             page.on("pageerror", lambda error: errors.append(str(error)))

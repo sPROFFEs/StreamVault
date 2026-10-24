@@ -157,8 +157,12 @@
         const items = []; let bytes = 0;
         for (const track of [...new Map(tracks.map(item => [item.url, item])).values()].slice(0, 10)) {
             let reader, response;
+            const controller = new AbortController(), abort = () => controller.abort();
+            signal?.addEventListener("abort", abort, {once: true});
+            const timer = setTimeout(abort, 12000);
             try {
-                response = await fetch(checkedUrl(track.url), {signal, credentials: "same-origin", redirect: "error"});
+                if (signal?.aborted) throw new DOMException("Cancelled", "AbortError");
+                response = await fetch(checkedUrl(track.url), {signal: controller.signal, credentials: "same-origin", redirect: "error", cache: "no-store"});
                 if (!response.ok || !response.headers.get("Content-Type")?.startsWith("text/vtt") || !response.body) continue;
                 reader = response.body.getReader();
                 const parts = []; let size = 0;
@@ -169,16 +173,124 @@
                     if (size > 1024 * 1024 || bytes + size > budget) throw new Error("Subtitle too large");
                     parts.push(part.value);
                 }
-                items.push({language: String(track.language || "und").slice(0, 32),
-                    label: String(track.label || "Subtitles").slice(0, 255), text: await new Blob(parts).text()});
+                const text = await new Blob(parts).text();
+                if (!text.trimStart().startsWith("WEBVTT") || !text.includes("-->")) continue;
+                items.push({language: subtitleLanguage(track.language) || "und",
+                    label: String(track.label || "Subtitles").slice(0, 255), text});
                 bytes += size;
             } catch (error) { if (signal?.aborted) throw error; }
             finally {
+                clearTimeout(timer); signal?.removeEventListener("abort", abort);
                 if (reader) await reader.cancel().catch(() => {});
                 else await response?.body?.cancel().catch(() => {});
             }
         }
         return {items, bytes};
+    }
+
+    function subtitleLanguage(value) {
+        const code = String(value || "").trim().toLowerCase().split(/[-_]/)[0];
+        return ({eng: "en", english: "en", spa: "es", spanish: "es", español: "es", fra: "fr", fre: "fr",
+            french: "fr", deu: "de", ger: "de", german: "de", por: "pt", portuguese: "pt", ita: "it", italian: "it"})[code]
+            || (/^[a-z]{2}$/.test(code) ? code : "");
+    }
+
+    function subtitleLanguages(values) {
+        if (!Array.isArray(values)) {
+            try { values = JSON.parse(localStorage.getItem("sv_offline_subtitle_languages")); } catch (_) {}
+        }
+        if (!Array.isArray(values)) values = [globalThis.APP_LANG || globalThis.document?.documentElement.lang || navigator.language, "en"];
+        return [...new Set(values.map(subtitleLanguage).filter(Boolean))].slice(0, 3);
+    }
+
+    const subtitleBytes = items => new Blob(items.map(item => item.text)).size;
+    const subtitleKey = item => `${subtitleLanguage(item.language) || item.language}:${item.label}`;
+
+    async function collectSubtitles(file, tracks, languages, previous, signal, budget) {
+        if (signal?.aborted) throw new DOMException("Cancelled", "AbortError");
+        const controller = new AbortController(), abort = () => controller.abort();
+        signal?.addEventListener("abort", abort, {once: true});
+        // A failed provider cannot leave a completed video waiting indefinitely.
+        const timer = setTimeout(abort, 30000);
+        let items = [...previous];
+        const add = copies => {
+            for (const track of copies) {
+                const index = items.findIndex(item => subtitleKey(track) === subtitleKey(item));
+                const merged = index < 0 ? [...items, track] : items.map((item, at) => at === index ? track : item);
+                if (merged.length > 10) continue;
+                if (subtitleBytes(merged) <= budget) items = merged;
+            }
+        };
+        try {
+            for (const track of [...new Map(tracks.map(item => [item.url, item])).values()].slice(0, 10)) {
+                if (controller.signal.aborted) break;
+                const replaced = items.filter(item => subtitleKey(item) === subtitleKey(track));
+                const available = Math.max(0, budget - subtitleBytes(items) + subtitleBytes(replaced));
+                if (!available) continue;
+                const copies = await subtitleCopies([track], controller.signal, available);
+                // Commit each successful caption to the result immediately so
+                // one later timeout cannot discard earlier downloads.
+                add(copies.items);
+            }
+            const wanted = subtitleLanguages(languages).filter(lang => !items.some(item => subtitleLanguage(item.language) === lang));
+            const series = ["tv", "series"].includes(file.media_type) || !!file.episode;
+            if (!/^\d{1,12}$/.test(String(file.tmdb_id || "")) || series && !(file.season_number > 0 && file.episode_number > 0)) return items;
+            const results = await Promise.all(wanted.map(async language => {
+                const params = new URLSearchParams({tmdb_id: file.tmdb_id, media_type: series ? "tv" : "movie", language});
+                if (series) { params.set("season", file.season_number); params.set("episode", file.episode_number); }
+                try {
+                    const response = await fetch(`/api/subtitles/search?${params}`, {signal: controller.signal,
+                        credentials: "same-origin", redirect: "error", cache: "no-store"});
+                    const data = response.ok ? await response.json() : {};
+                    return [language, (Array.isArray(data.items) ? data.items : []).filter(item =>
+                        subtitleLanguage(item.language) === language && typeof item.play_url === "string")];
+                } catch (_) { return [language, []]; }
+            }));
+            for (const [language, candidates] of results) {
+                if (items.length >= 10 || controller.signal.aborted) break;
+                // Try another release/provider if the first caption is broken.
+                for (const track of candidates.slice(0, 3)) {
+                    const copies = await subtitleCopies([{url: track.play_url, language,
+                        label: `${language.toUpperCase()} · ${track.provider || "Subtitles"}`}], controller.signal,
+                    Math.max(0, budget - subtitleBytes(items)));
+                    if (copies.items.length) { add(copies.items); break; }
+                }
+            }
+        } catch (error) { if (signal?.aborted) throw error; }
+        finally { clearTimeout(timer); signal?.removeEventListener("abort", abort); }
+        if (signal?.aborted) throw new DOMException("Cancelled", "AbortError");
+        return items;
+    }
+
+    async function storeSubtitles(entry, tracks, languages, signal, used) {
+        const previous = entry.subtitles || [];
+        const budget = Math.max(0, Math.min(limitBytes() - used, await quota()) + subtitleBytes(previous));
+        const subtitles = await collectSubtitles(entry, tracks, languages, previous, signal, budget);
+        if (signal?.aborted) throw new DOMException("Cancelled", "AbortError");
+        const storage_bytes = (entry.storage_bytes || entry.size_bytes) - subtitleBytes(previous) + subtitleBytes(subtitles);
+        let updated = entry;
+        await write(["entries"], tx => {
+            const table = tx.objectStore("entries"), request = table.get(entry.id);
+            request.onsuccess = () => {
+                if (request.result?.status === "complete") {
+                    updated = {...request.result, tmdb_id: entry.tmdb_id, subtitles, storage_bytes}; table.put(updated);
+                }
+            };
+        });
+        return updated;
+    }
+
+    async function refreshSubtitles(id, {languages, signal} = {}) {
+        const run = async lock => {
+            if (navigator.locks && !lock) throw new Error("A device download is running");
+            const entries = await list(), entry = entries.find(item => item.id === id && item.status === "complete");
+            if (!entry) return null;
+            const metadata = await presentation(entry, signal);
+            // Only public film/episode identity is needed; no old server URL or token is retained.
+            return storeSubtitles({...entry, tmdb_id: metadata.tmdb_id}, [], languages, signal,
+                entries.reduce((sum, item) => sum + (item.storage_bytes || item.size_bytes), 0));
+        };
+        return navigator.locks ? navigator.locks.request("sv-offline-download", {ifAvailable: true}, run) : run(true);
     }
 
     async function presentation(file, signal, force = false) {
@@ -289,7 +401,7 @@
         return navigator.locks ? navigator.locks.request("sv-offline-download", {ifAvailable: true}, run) : run(true);
     }
 
-    async function save(file, {audio, subtitles = [], signal, onProgress = () => {}} = {}) {
+    async function save(file, {audio, subtitles = [], languages, signal, onProgress = () => {}} = {}) {
         if (busy) throw new Error("Another device download is running");
         busy = true;
         const run = async lock => {
@@ -311,27 +423,8 @@
             }
             const used = entries.reduce((sum, entry) => sum + (entry.storage_bytes || entry.size_bytes), 0);
             if (existing) {
-                // Add a newly selected subtitle to an existing copy without
-                // downloading the multi-gigabyte video again.
-                if (!subtitles.length) return existing;
-                const previous = existing.subtitles || [];
-                const key = item => `${item.language}:${item.label}`;
-                const replaced = previous.filter(item => subtitles.some(track => key(track) === key(item)));
-                const released = new Blob(replaced.map(item => item.text)).size;
-                const available = Math.max(0, Math.min(limitBytes() - used, await quota()) + released);
-                const copies = await subtitleCopies(subtitles, signal, available);
-                if (!copies.items.length) return existing;
-                const merged = [...copies.items, ...previous.filter(item =>
-                    !copies.items.some(track => key(track) === key(item)))].slice(0, 10);
-                const storage = (existing.storage_bytes || existing.size_bytes)
-                    - new Blob(previous.map(item => item.text)).size + new Blob(merged.map(item => item.text)).size;
-                await write(["entries"], tx => {
-                    const table = tx.objectStore("entries"), request = table.get(existing.id);
-                    request.onsuccess = () => {
-                        if (request.result?.status === "complete") table.put({...request.result, subtitles: merged, storage_bytes: storage});
-                    };
-                });
-                return {...existing, subtitles: merged, storage_bytes: storage};
+                const metadata = await presentation(file, signal);
+                return storeSubtitles({...existing, tmdb_id: metadata.tmdb_id || existing.tmdb_id}, [...subtitles, ...(source.subtitles || [])], languages, signal, used);
             }
             const budget = Math.min(limitBytes() - used, await quota());
             if (budget <= 0) throw new Error("Device storage limit reached; remove an offline video first");
@@ -389,13 +482,13 @@
                 }
                 if (!loaded || (total && total !== loaded)) throw new Error("Download interrupted; no complete video was saved");
                 if (filled) await flush();
-                // Included tracks and an explicitly selected provider subtitle
-                // go through our authenticated proxy. Keep VTT bytes, not URLs.
-                const copies = await subtitleCopies([...subtitles, ...(source.subtitles || [])], signal, budget - loaded);
-                entry.subtitles = copies.items; loaded += copies.bytes;
                 const metadata = await presentation(file, signal);
                 const {_poster, _backdrop, ...fields} = metadata;
                 Object.assign(entry, fields);
+                // Include file tracks and search missing preferred languages.
+                // Store VTT bytes in the entry, never provider URLs/credentials.
+                entry.subtitles = await collectSubtitles(entry, [...subtitles, ...(source.subtitles || [])], languages, [], signal, budget - loaded);
+                loaded += subtitleBytes(entry.subtitles);
                 entry.poster = await artwork(_poster, signal, budget - loaded, "w342");
                 loaded += entry.poster?.size || 0;
                 entry.backdrop = await artwork(_backdrop, signal, budget - loaded, "w780");
@@ -449,5 +542,5 @@
         return new Response(body, {status: range ? 206 : 200, headers});
     }
 
-    globalThis.SVOffline = {database, list, remove, save, serve, mediaUrl, limitBytes, setLimitGiB, ensureWorker, updatePlayback, prepare, refreshPresentation};
+    globalThis.SVOffline = {database, list, remove, save, serve, mediaUrl, limitBytes, setLimitGiB, ensureWorker, updatePlayback, prepare, refreshPresentation, refreshSubtitles, subtitleLanguages};
 })();

@@ -4,11 +4,13 @@ For GitHub APK distribution, shared version metadata, signing secrets and signed
 release automation, see [maintainer releases](../docs/RELEASES.md). Installation
 and desktop/mobile/TV use are covered in [setup](../docs/SETUP.md).
 
-The application remains FastAPI + Jinja + SQLite on a server. Its templates need
-authenticated routes and APIs, so packaging HTML alone would not work. This small
-Java WebView client opens a configurable server origin and preserves the existing
-login cookies and frontend. No Node build, Capacitor bridge, bundled Python,
-storage permission or runtime library is added. Application ID is
+The application remains FastAPI + Jinja + SQLite on a server. Android now installs
+the canonical EN/ES catalog, movie/episode, download, IPTV, anime, YouTube, About
+and offline screens, JavaScript, styles, fonts and icons inside the APK, following
+the packaged-hybrid approach used by Aoede. It still renders with Android System
+WebView; this is not an ExoPlayer/Compose rewrite. A small Python/Jinja compiler
+runs at build time, not on the device. No Node build, Capacitor runtime, bundled
+Python server or broad storage permission is added. Application ID is
 `com.streamvault.app` (`com.streamvault.app.debug` in debug), minimum Android 8.0
 (API 26), compile/target API 35. Java 17, AGP 8.9.2 and Gradle 8.11.1 are pinned.
 See [AGP compatibility](https://developer.android.com/build/releases/agp-8-9-0-release-notes).
@@ -30,6 +32,15 @@ Debug additionally permits HTTP only for `10.0.2.2`, `127.0.0.1` and `localhost`
 For an emulator, a backend listening on the host's port 8000 is available at
 `http://10.0.2.2:8000`. For USB devices run `adb reverse tcp:8000 tcp:8000` and
 enter `http://127.0.0.1:8000`. LAN IP addresses require HTTPS. Release rejects HTTP.
+Installed screens obtain minimal account/role/language context from authenticated
+`/api/mobile/bootstrap` (protocol 1), then load their packaged templates at the
+exact configured origin, including its scheme and port. APIs, video streams,
+federation, login, setup, settings and administration still use the real server
+and its normal cookies. No authentication HTML, token or user database is bundled.
+401/403/Access redirects return to the real login; offline/server failures offer
+the device library instead of impersonating a valid server session. Older servers
+can use **Server interface** until updated; no account migration is needed.
+
 Loading progress, certificate/network error feedback, Cloudflare Access auth flows,
 and Try again are native, so they also work when the server is unavailable.
 They retain the current same-origin route, including catalog filters. A new default
@@ -37,7 +48,7 @@ network retries a failed connection automatically; server restarts on an unchang
 network can be recovered with Try again. Cookies are flushed after page loads and
 when the app pauses. The server session expiry and logout still apply. Normal
 browsing needs a reachable server and an up-to-date Android System WebView
-(Chromium 108 or newer); the wrapper does not
+(Chromium 108 or newer); the client does not
 bundle a backend. With an updated server, explicit device downloads and a public
 offline-library shell are available through IndexedDB/service workers, including
 without Internet. See [offline use, limits and privacy](../docs/OFFLINE.md).
@@ -47,12 +58,12 @@ and external identity providers, rather than requiring every redirect host to ma
 a Cloudflare hostname allowlist. During an Access flow, user-activated HTTPS steps
 also stay in that cookie store; returning to an ordinary app page ends this mode.
 Other user-activated external HTTP(S) links open the browser. Web media iframes remain
-supported without a native bridge; browser-owned `about:blank`, `about:srcdoc`,
+supported; browser-owned `about:blank`, `about:srcdoc`,
 `data:` and web/opaque-origin `blob:` frames are allowed only inside frames, never
 as top-level navigation. See [Cloudflare's mobile integration](https://developers.cloudflare.com/turnstile/get-started/mobile-implementation/).
 File/content access and unsafe TLS overrides remain disabled. Cookies, including
 third-party cookies, DOM storage and the default WebView User Agent are enabled for
-the Access verification flow. The wrapper currently uses Android's mixed-content
+the Access verification flow. The client currently uses Android's mixed-content
 compatibility mode; that is not a substitute for serving the app and login over HTTPS.
 Android Back dismisses the keyboard, then native fullscreen or the web shell's top
 overlay/CSS fullscreen, then page history, then the activity. Native fullscreen hides
@@ -62,15 +73,42 @@ consumed by the native root; earlier Android versions use window resize. Native
 alert/confirmation dialogs preserve the web updater's Continue/Cancel behavior.
 File uploads and unsupported Android codecs need separate integration.
 Torrentio/server downloads stay on the server. **Save to device** makes a separate
-foreground copy in WebView's origin-private storage, without native bridges or
+foreground copy in WebView's origin-private storage, without broad storage
 storage permissions. Keep the screen open until completion. The connection-error
 screen's **On this device · Offline** button opens previously saved content;
 the first offline setup must complete while connected. The administrator updater
 rebuilds/recreates
 the hosted Docker Compose deployment; it does not install or sign a new APK.
-Install APK updates separately and reload after the server is healthy.
+Installed frontend changes require an APK update; server-only updates do not
+replace the bundled UI. Browser users continue receiving the hosted frontend.
 See [WebView](https://developer.android.com/develop/ui/views/layout/webapps/webview)
 and [network policies](https://developer.android.com/privacy-and-security/security-config).
+
+## About and Android updates
+
+Open **More → About & updates**, **Settings → About & updates**, or the native
+connection-screen settings menu. The screen shows the server and installed APK
+versions, release notes and the official APK download. The native client also
+checks the official GitHub release at startup/resume, at most once per five
+minutes, independently of the configured server. A dismissible notice links to
+About; notices are hidden while video is playing/fullscreen.
+The installed public About screen also opens without a backend session, so an
+unreachable server cannot prevent checking/downloading its Android update. It
+does not display cached account information. The native offline library includes
+the same About shortcut and playback keep-screen-on integration.
+
+Installation is explicit: confirm the download, allow installation from this app
+in Android settings if requested, then confirm Android's installer. Before that,
+the client verifies the official asset URL, bounded file size, release-manifest
+SHA-256, package ID, newer version code, version name and the installed signing
+certificate. Only `apk-updates/` in private cache is exposed through a scoped
+FileProvider. No server/Access cookies are sent to GitHub. Debug APKs cannot install
+the differently signed/named release package as an in-place update.
+
+The WebMessage listener accepts only the exact configured origin's main frame.
+It supports fixed update actions and playback keep-screen-on state, not arbitrary
+URLs, files, scripts or commands. Iframes and identity-provider origins cannot
+invoke it. Existing server-switch data-clearing behavior is unchanged.
 
 If Access stays on **Verifying** in the APK but works in Chrome on the same
 device, install the rebuilt APK containing the frame-navigation fix and update
@@ -114,6 +152,7 @@ Accept the SDK licenses, then:
 
 ```sh
 sdkmanager 'platforms;android-35' 'build-tools;35.0.0' 'platform-tools'
+python3.11 -m pip install --require-hashes -r android/requirements.lock
 cd android
 ./gradlew testDebugUnitTest lintDebug assembleDebug
 # Optional preconfigured origin; leave empty for on-device setup.
@@ -123,7 +162,9 @@ cd android
 
 Debug APK: `app/build/outputs/apk/debug/app-debug.apk`. Test and lint reports:
 `app/build/reports/tests/testDebugUnitTest/`, `app/build/reports/lint-results-debug.html`.
-The wrapper distribution has a pinned SHA-256 checksum. Debug uses Android's local
+Gradle runs `build_frontend.py` before building; generated files stay under ignored
+`app/build/generated/frontend/`. The Gradle wrapper distribution has a pinned
+SHA-256 checksum. Debug uses Android's local
 debug signing key under `~/.android/`; it is never committed.
 
 For the device smoke check, start the server and boot an emulator/device, then

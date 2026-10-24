@@ -16,6 +16,7 @@ from playwright.sync_api import sync_playwright
 import uvicorn
 
 from routers import downloads
+from regression_fixtures import CHROMIUM_ARGS
 
 
 @pytest.mark.skipif(os.getenv("STREAMVAULT_BROWSER_TESTS") != "1", reason="Opt-in browser check")
@@ -56,7 +57,7 @@ def test_browser_plays_seeks_and_resumes_uncached_and_cached_video(tmp_path, mon
             time.sleep(.05)
         assert server.started
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch()
+            browser = playwright.chromium.launch(args=CHROMIUM_ARGS)
             try:
                 page = browser.new_page()
                 remux_attempts = []
@@ -87,7 +88,7 @@ def test_browser_plays_seeks_and_resumes_uncached_and_cached_video(tmp_path, mon
 
         asyncio.run(downloads._build_remux_cache(source, "0:1", cached))
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch()
+            browser = playwright.chromium.launch(args=CHROMIUM_ARGS)
             try:
                 assert cached.is_file()
                 page = browser.new_page()

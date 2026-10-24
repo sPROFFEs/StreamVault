@@ -1,6 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">StreamVault</string>
+    <string name="about_updates">Acerca de y actualizaciones</string>
+    <string name="update_title">Actualización Android</string>
+    <string name="update_confirm">¿Descargar StreamVault %1$s (%2$d MiB)? Android pedirá confirmación antes de instalar. Se conservan tus descargas.</string>
+    <string name="update_download">Descargar</string>
+    <string name="update_downloading">Descargando y verificando el APK oficial…</string>
+    <string name="update_check_failed">No se ha podido comprobar GitHub. Inténtalo más tarde.</string>
+    <string name="update_download_failed">No se pudo verificar o instalar el APK. Revisa la conexión y usa la versión oficial firmada, no una compilación de depuración.</string>
+    <string name="update_ready">APK verificado. Confirma la instalación en Android.</string>
+    <string name="update_permission">Permite a StreamVault instalar esta actualización en los ajustes de Android y vuelve a la app. Android seguirá pidiendo confirmación antes de instalar.</string>
     <string name="confirm">Continuar</string>
     <string name="cancel">Cancelar</string>
     <string name="server_hint">https://watch.example.com</string>

@@ -9,6 +9,9 @@
    choose which audio language to save. Additional languages require separately
    saved copies and consume additional video storage; they are not downloaded
    silently.
+   Choose up to three subtitle languages in the same dialog. By default it
+   searches your selected/UI language and English; included file tracks are
+   retained as well. Language choices are remembered on this device.
 2. Confirm the device download. Keep that tab/app screen open until completion;
    this is separate from downloading Torrentio content onto the server.
 3. Open **On this device · Offline** from Downloads or the mobile More menu.
@@ -29,6 +32,8 @@ New downloads save bounded poster/backdrop images and public metadata alongside
 the video. Existing copies remain playable without a migration or redownload.
 While connected and signed in, **Refresh details online** can retrieve missing
 artwork/synopses for those older copies without downloading the video again.
+Open a saved title and choose **Download subtitles online** to add missing
+languages while connected and signed in, without redownloading its video.
 
 Bookmark **`https://YOUR-SERVER/assets/offline.html`** to open device downloads
 directly, including after closing and reopening the browser without Internet or
@@ -40,14 +45,21 @@ you save a separate copy to the device.
 
 Only completed local/node files are supported, not embedded/external streaming
 pages. Files use the normal authenticated playback preparation, including a
-compatible conversion if required. The selected audio and up to ten included VTT
-subtitle tracks (at most 1 MiB each) are saved. When saving from the movie/episode
-page, an active provider subtitle is also copied through the server's authenticated
-subtitle proxy, within that ten-track limit. Selecting it and saving an existing
-copy adds the subtitle without downloading the video again. Provider links and
-credentials are not stored. Other online provider results are not downloaded
-automatically. Offline can select only audio/subtitles already saved; it cannot
-fetch new languages or convert incompatible codecs without a server.
+compatible conversion if required. The selected audio and up to ten VTT subtitle
+tracks (at most 1 MiB each) are saved. Included tracks and the currently selected
+provider subtitle are copied first. Missing selected languages are then searched
+through the server's configured subtitle providers, using the film ID and exact
+season/episode for series. Up to three candidate releases per language are tried
+if a provider fails. Subtitles may need timing adjustment for a different release.
+Search/transfer time is bounded; unavailable subtitles do not invalidate the video,
+and the completion message reports how many tracks were actually saved.
+
+VTT bytes live inside the video record, not in a shared subtitle cache. Deleting
+a device copy removes its subtitles, artwork, settings and video blocks in one
+IndexedDB transaction; active subtitle Blob URLs are revoked when its player
+closes. Deleting one episode does not delete other episodes. Provider links and
+credentials are not stored. Offline can select only saved audio/subtitles; it
+cannot discover new languages or convert incompatible codecs without a server.
 
 ## Space and reliability
 
@@ -76,7 +88,13 @@ Copies belong to this browser/device profile and server origin, not a server
 session. They intentionally remain playable after sign-out or session expiry.
 Anyone using that device profile can view them. Delete copies on shared devices.
 Clearing site data or uninstalling the app can remove them; switching servers in
-the Android wrapper clears web storage rather than transferring the library.
+the Android client clears web storage rather than transferring the library.
+
+The installed Android client includes the public offline screen and static player
+assets in its APK. Its native connection-error shortcut uses that installed screen,
+even before a new service-worker shell has replaced an older cached screen. The
+existing IndexedDB library and byte-range worker are preserved when upgrading the
+APK in place. Do not uninstall or clear app data to update it.
 
 No login HTML, admin pages, API responses, session cookies or federation bearer
 credentials are cached in the application shell. Peer connection URLs/tokens and local

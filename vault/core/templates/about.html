@@ -1,0 +1,44 @@
+<!doctype html>
+{% set lang = request.cookies.get('lang', 'en') %}
+<html lang="{{ lang }}">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ 'About & updates' if lang == 'en' else 'Acerca de y actualizaciones' }} · StreamVault</title>
+    {% include "_metadata.html" %}
+    <link rel="stylesheet" href="/assets/css/app.css?v=20261015-1">
+    <script defer src="/assets/js/about.js?v=20261024-1"></script>
+</head>
+<body class="app-shell">
+    {% if request.state.user %}
+        {% include "_header.html" %}
+    {% else %}
+        <header class="top-nav"><a class="top-nav__brand" href="/portal">STREAMVAULT</a><a href="/assets/offline.html">{{ 'On this device · Offline' if lang == 'en' else 'En este dispositivo · Sin conexión' }}</a></header>
+    {% endif %}
+    <main id="main-content" class="main" style="max-width:900px;margin-inline:auto">
+        <p class="muted">STREAMVAULT</p>
+        <h1>{{ 'About & updates' if lang == 'en' else 'Acerca de y actualizaciones' }}</h1>
+        <p>{{ 'Your private cinema, online and offline.' if lang == 'en' else 'Tu cine privado, con y sin conexión.' }}</p>
+        <section class="card" style="padding:24px;margin-block:24px">
+            <h2>{{ 'Installed versions' if lang == 'en' else 'Versiones instaladas' }}</h2>
+            <p>{{ 'Server' if lang == 'en' else 'Servidor' }}: <strong id="about-server">—</strong></p>
+            <p>Android: <strong id="about-client">{{ 'Web browser' if lang == 'en' else 'Navegador web' }}</strong></p>
+            <p id="about-status" role="status" aria-live="polite"></p>
+            <button id="about-check" class="button" type="button">{{ 'Check for updates' if lang == 'en' else 'Buscar actualizaciones' }}</button>
+        </section>
+        <section id="about-release" class="card" style="padding:24px;margin-block:24px" hidden>
+            <h2 id="about-release-title"></h2>
+            <p id="about-apk-status" role="status"></p>
+            <p id="about-notes" style="white-space:pre-wrap;overflow-wrap:anywhere"></p>
+            <div class="button-row" style="display:flex;gap:12px;flex-wrap:wrap">
+                <a id="about-apk" class="button button--primary" hidden>{{ 'Download Android APK' if lang == 'en' else 'Descargar APK Android' }}</a>
+                <button id="about-install" class="button button--primary" type="button" hidden>{{ 'Download & install update' if lang == 'en' else 'Descargar e instalar actualización' }}</button>
+                <a id="about-release-link" class="button button--ghost" href="https://github.com/sPROFFEs/StreamVault/releases" target="_blank" rel="noopener noreferrer">{{ 'Release notes' if lang == 'en' else 'Notas de la versión' }}</a>
+            </div>
+            <p class="muted">{{ 'Android asks for confirmation before installation. Updates preserve your device downloads; do not uninstall the app.' if lang == 'en' else 'Android pedirá confirmación antes de instalar. Las actualizaciones conservan tus descargas; no desinstales la app.' }}</p>
+        </section>
+        <p><a href="/assets/offline.html">{{ 'On this device · Offline' if lang == 'en' else 'En este dispositivo · Sin conexión' }}</a></p>
+        <p><a href="https://github.com/sPROFFEs/StreamVault" target="_blank" rel="noopener noreferrer">GitHub · {{ 'Source code & support' if lang == 'en' else 'Código fuente y soporte' }}</a></p>
+    </main>
+</body>
+</html>

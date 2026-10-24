@@ -1,5 +1,14 @@
 <resources>
     <string name="app_name">StreamVault</string>
+    <string name="about_updates">About &amp; updates</string>
+    <string name="update_title">Android update</string>
+    <string name="update_confirm">Download StreamVault %1$s (%2$d MiB)? Android will ask before installation. Your device downloads are preserved.</string>
+    <string name="update_download">Download</string>
+    <string name="update_downloading">Downloading and verifying the official APK…</string>
+    <string name="update_check_failed">Could not check GitHub for Android updates. Try again later.</string>
+    <string name="update_download_failed">Could not verify or install the APK. Check your connection and install the official signed release, not a debug build.</string>
+    <string name="update_ready">APK verified. Confirm installation in Android.</string>
+    <string name="update_permission">Allow StreamVault to install this update in Android settings, then return. Android will still ask you to confirm installation.</string>
     <string name="confirm">Continue</string>
     <string name="cancel">Cancel</string>
     <string name="server_hint">https://watch.example.com</string>

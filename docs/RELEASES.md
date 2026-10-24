@@ -145,7 +145,10 @@ repository. Generating new keys on every workflow run would prevent APK updates.
 ## Local clean-checkout builds
 
 Use the commands in the [setup guide](SETUP.md#build-and-test). Python uses pip
-and checked-in hash locks; there is no npm project or static frontend build.
+and checked-in hash locks; there is no npm project. Android compiles its installed
+frontend from the canonical templates using Python/Jinja at build time. The
+Android and signed-release jobs install `android/requirements.lock` with hash
+verification before Gradle runs the compiler. Generated assets stay in `app/build/`.
 Docker builds run without starting production services. Android release builds
 are unsigned until all four `STREAMVAULT_*` signing environment variables described
 in [the Android guide](../android/README.md#release-signing-and-assets) are set.
@@ -265,7 +268,10 @@ updates. Check for updates, review the remote/branch, then confirm Install updat
 **Published stable releases** only checks published matching version tags, not
 every pushed commit. Updates are never installed automatically. The hosted login
 also updates inside the Android WebView: reload it after deployment; a native
-wrapper APK change is not required for a frontend-only correction.
+APK change is not required for a hosted-browser-only correction. The installed
+Android frontend is versioned with its APK and needs an APK update for bundled
+HTML/JS/CSS changes; its About screen checks the official release manifest and
+offers a signature-verified, user-confirmed installation.
 
 See [updater implementation](../vault/core/services/updater_service.py),
 [release tooling](../vault/scripts/release.py) and

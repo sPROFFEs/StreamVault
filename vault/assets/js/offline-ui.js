@@ -12,7 +12,9 @@
         empty: "Aún no hay vídeos guardados aquí. Abre la biblioteca del servidor y elige «Guardar en dispositivo».",
         save: "Guardar en dispositivo", start: "Descargar", cancel: "Cancelar", remove: "Eliminar", play: "Reproducir",
         preparing: "Preparando vídeo…", done: "Descarga completada. Ya puedes verla sin conexión.",
-        hint: "Se guardará una copia en este dispositivo, no en el servidor. Mantén esta pantalla abierta hasta terminar. Se guardan el audio seleccionado y los subtítulos incluidos disponibles; una conversión puede tardar.",
+        hint: "Se guardará una copia en este dispositivo, no en el servidor. Mantén esta pantalla abierta hasta terminar. Se guardan el audio y los subtítulos incluidos; también se buscarán los idiomas elegidos. Una conversión puede tardar.",
+        subtitleDownload: "Buscar y guardar subtítulos (hasta 3 idiomas)", refreshSubtitles: "Descargar subtítulos online",
+        subtitlesSaved: n => n ? `${n} pistas de subtítulos guardadas en el dispositivo.` : "No se han podido guardar subtítulos. Puedes volver a buscarlos desde la ficha cuando estés conectado.",
         partial: "Incompleta · eliminar y descargar de nuevo", saved: "Límite guardado.", unsupported: "El dispositivo no pudo reproducir este vídeo. Comprueba sus códecs.",
         deleting: "¿Eliminar esta copia del dispositivo? El archivo del servidor no se borrará.", cancelled: "Descarga cancelada.",
         deleteGroup: n => `Se eliminarán las ${n} copias/episodios de este título en el dispositivo. Los archivos del servidor no se borrarán.`,
@@ -32,7 +34,9 @@
         empty: "No videos saved here yet. Open the server library and choose “Save to device”.",
         save: "Save to device", start: "Download", cancel: "Cancel", remove: "Delete", play: "Play",
         preparing: "Preparing video…", done: "Download complete. Ready to watch offline.",
-        hint: "A copy will be saved on this device, not the server. Keep this screen open until it finishes. The selected audio and available included subtitles are saved; conversion may take time.",
+        hint: "A copy will be saved on this device, not the server. Keep this screen open until it finishes. Audio and included subtitles are saved; selected languages will also be searched. Conversion may take time.",
+        subtitleDownload: "Find and save subtitles (up to 3 languages)", refreshSubtitles: "Download subtitles online",
+        subtitlesSaved: n => n ? `${n} subtitle tracks saved on this device.` : "No subtitles could be saved. You can search again from the details screen while connected.",
         partial: "Incomplete · delete and download again", saved: "Limit saved.", unsupported: "This device could not play the video. Check its codec support.",
         deleting: "Delete this device copy? The server file will not be deleted.", cancelled: "Download cancelled.",
         deleteGroup: n => `All ${n} device copies/episodes of this title will be deleted. Server files will not be deleted.`,
@@ -69,6 +73,25 @@
         return el;
     }
 
+    function languagePicker(values) {
+        const fieldset = node('fieldset', '', 'offline-languages');
+        fieldset.append(node('legend', text.subtitleDownload));
+        const selected = SVOffline.subtitleLanguages(values);
+        const names = {en: 'English', es: 'Español', fr: 'Français', de: 'Deutsch', it: 'Italiano', pt: 'Português'};
+        for (const code of new Set([...selected, ...Object.keys(names)])) {
+            const label = node('label'), input = document.createElement('input');
+            input.type = 'checkbox'; input.value = code; input.checked = selected.includes(code);
+            label.append(input, node('span', names[code] || code.toUpperCase())); fieldset.append(label);
+        }
+        const inputs = [...fieldset.querySelectorAll('input')];
+        const update = () => {
+            const full = inputs.filter(input => input.checked).length >= 3;
+            inputs.forEach(input => { input.disabled = full && !input.checked; });
+        };
+        fieldset.addEventListener('change', update); update();
+        return {element: fieldset, values: () => inputs.filter(input => input.checked).map(input => input.value)};
+    }
+
     function download(file, options = {}) {
         if (document.querySelector(".offline-dialog")) return;
         try { if (window.APP_LANG) localStorage.setItem("sv_offline_lang", window.APP_LANG); } catch (_) {}
@@ -82,30 +105,32 @@
         const controller = new AbortController();
         const audioLabel = node('label', text.audioDownload), audioChoice = document.createElement('select');
         audioLabel.append(audioChoice); audioLabel.hidden = true;
+        const languages = languagePicker(options.languages);
         const cancel = button(text.cancel, () => { controller.abort(); panel.close(); });
         panel.addEventListener("cancel", () => controller.abort());
         const start = button(text.start, async () => {
-            start.disabled = true; audioChoice.disabled = true; progress.hidden = false; status.textContent = text.preparing;
+            start.disabled = true; audioChoice.disabled = true; languages.element.disabled = true; progress.hidden = false; status.textContent = text.preparing;
             window.addEventListener("beforeunload", warn);
             try {
-                await SVOffline.save(file, {...options, audio: audioChoice.options.length ? Number(audioChoice.value) : options.audio,
+                try { localStorage.setItem('sv_offline_subtitle_languages', JSON.stringify(languages.values())); } catch (_) {}
+                const entry = await SVOffline.save(file, {...options, languages: languages.values(), audio: audioChoice.options.length ? Number(audioChoice.value) : options.audio,
                     signal: controller.signal, onProgress: ({loaded, total}) => {
                     status.textContent = `${bytes(loaded)}${total ? ` / ${bytes(total)}` : ""}`;
                     if (total) { progress.max = total; progress.value = loaded; }
                 }});
-                status.textContent = text.done;
+                status.textContent = `${text.done} ${text.subtitlesSaved(entry.subtitles?.length || 0)}`;
                 cancel.textContent = text.close;
                 start.remove(); progress.hidden = true;
                 const library = node("a", text.title);
                 library.href = "/assets/offline.html"; actions.prepend(library);
             } catch (error) {
                 status.textContent = error.name === "AbortError" ? text.cancelled : error.message;
-                start.disabled = false; audioChoice.disabled = false; progress.hidden = true;
+                start.disabled = false; audioChoice.disabled = false; languages.element.disabled = false; progress.hidden = true;
             } finally { window.removeEventListener("beforeunload", warn); }
         });
         function warn(event) { event.preventDefault(); event.returnValue = ""; }
         start.classList.add("offline-primary");
-        actions.append(cancel, start); panel.append(audioLabel, status, progress, actions);
+        actions.append(cancel, start); panel.append(audioLabel, languages.element, status, progress, actions);
         start.disabled = true;
         SVOffline.prepare(file, controller.signal).then(prepared => {
             if (controller.signal.aborted) return;
@@ -204,13 +229,7 @@
         const video = $('offline-video');
         mediaEvents = new AbortController();
         video.hidden = false; $('offline-placeholder').hidden = true;
-        for (const subtitle of current.subtitles || []) {
-            const track = document.createElement('track');
-            track.kind = 'subtitles'; track.label = subtitle.label; track.srclang = subtitle.language;
-            track.src = URL.createObjectURL(new Blob([subtitle.text], {type: 'text/vtt'}));
-            trackUrls.push(track.src); track.addEventListener('load', applySubtitles); video.append(track);
-            track.track.mode = 'hidden';
-        }
+        attachSubtitles();
         video.src = SVOffline.mediaUrl(current.id);
         const resume = Number(startAt ?? current.playback?.progress_seconds ?? 0);
         video.playbackRate = Number($('offline-speed').value);
@@ -222,6 +241,17 @@
         applySubtitles(); lastSaved = Date.now();
         video.play().catch(error => { $('offline-status').textContent = error.name === 'NotAllowedError' ? text.play : text.unsupported; });
         $('offline-player').scrollIntoView({block: 'center', behavior: 'smooth'});
+    }
+    function attachSubtitles() {
+        const video = $('offline-video');
+        video.querySelectorAll('track').forEach(track => track.remove()); revoke(trackUrls);
+        for (const subtitle of current.subtitles || []) {
+            const track = document.createElement('track');
+            track.kind = 'subtitles'; track.label = subtitle.label; track.srclang = subtitle.language;
+            track.src = URL.createObjectURL(new Blob([subtitle.text], {type: 'text/vtt'}));
+            trackUrls.push(track.src); track.addEventListener('load', applySubtitles); video.append(track);
+            track.track.mode = 'hidden';
+        }
     }
     function showDetail(entry, autoplay = false, startAt) {
         stopVideo(); revoke(detailUrls); current = entry;
@@ -254,6 +284,15 @@
         copies.forEach(item => option($('audio-select'), item.id, [item.audio_label?.toUpperCase() || text.audioSaved, item.origin].join(' · ')));
         $('audio-select').value = entry.id;
         $('offline-audio-label').textContent = `Audio · ${entry.audio_label?.toUpperCase() || text.audioSaved}`;
+        subtitleOptions(entry);
+        $('offline-subtitle-size').value = entry.playback?.subtitle_size || 100;
+        $('offline-subtitle-offset').value = entry.playback?.subtitle_offset || 0;
+        $('offline-speed').value = entry.playback?.rate || 1;
+        $('offline-detail-play').textContent = entry.playback?.progress_seconds > 0 ? text.continue : text.play;
+        if (autoplay) playEntry(startAt);
+        else $('offline-detail-play').focus({preventScroll: true});
+    }
+    function subtitleOptions(entry) {
         $('offline-subtitle-select').replaceChildren(); $('subtitle-list').replaceChildren();
         option($('offline-subtitle-select'), 'off', text.off);
         (entry.subtitles || []).forEach((subtitle, index) => {
@@ -264,12 +303,6 @@
         const preference = entry.playback?.subtitle_language || 'off';
         const index = (entry.subtitles || []).findIndex(subtitle => subtitle.language === preference);
         $('offline-subtitle-select').value = index < 0 ? 'off' : String(index);
-        $('offline-subtitle-size').value = entry.playback?.subtitle_size || 100;
-        $('offline-subtitle-offset').value = entry.playback?.subtitle_offset || 0;
-        $('offline-speed').value = entry.playback?.rate || 1;
-        $('offline-detail-play').textContent = entry.playback?.progress_seconds > 0 ? text.continue : text.play;
-        if (autoplay) playEntry(startAt);
-        else $('offline-detail-play').focus({preventScroll: true});
     }
     function renderLibrary() {
         revoke(coverUrls); $('offline-list').replaceChildren();
@@ -354,6 +387,33 @@
         });
         $('offline-detail-play').addEventListener('click', () => playEntry());
         $('offline-detail-delete').addEventListener('click', () => { if (current) confirmRemoval([current]); });
+        $('offline-refresh-subtitles').addEventListener('click', () => {
+            if (!navigator.onLine) { $('offline-status').textContent = text.needsOnline; return; }
+            const entryId = current.id, controller = new AbortController();
+            const panel = dialog(text.refreshSubtitles, text.available), languages = languagePicker();
+            const status = node('p'), actions = node('div', '', 'offline-actions');
+            status.setAttribute('role', 'status');
+            const cancel = button(text.cancel, () => { controller.abort(); panel.close(); });
+            panel.addEventListener('cancel', () => controller.abort());
+            const start = button(text.start, async () => {
+                start.disabled = true; languages.element.disabled = true;
+                status.textContent = text.preparing;
+                try {
+                    try { localStorage.setItem('sv_offline_subtitle_languages', JSON.stringify(languages.values())); } catch (_) {}
+                    const entry = await SVOffline.refreshSubtitles(entryId, {languages: languages.values(), signal: controller.signal});
+                    if (controller.signal.aborted) return;
+                    status.textContent = text.subtitlesSaved(entry?.subtitles?.length || 0);
+                    await refresh();
+                    if (current?.id === entryId && entry) {
+                        if ($('offline-video').hasAttribute('src')) {
+                            current = entry; subtitleOptions(entry); attachSubtitles(); applySubtitles();
+                        } else showDetail(entry);
+                    }
+                    cancel.textContent = text.close; start.remove();
+                } catch (error) { status.textContent = error.message; start.disabled = false; languages.element.disabled = false; }
+            });
+            actions.append(cancel, start); panel.append(languages.element, status, actions);
+        });
         $('offline-placeholder-play').setAttribute('aria-label', text.play);
         $('offline-placeholder-play').addEventListener('click', () => playEntry());
         ['offline-subtitle-select', 'offline-subtitle-size', 'offline-subtitle-offset'].forEach(id => {

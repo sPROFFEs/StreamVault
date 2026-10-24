@@ -8,6 +8,7 @@ from playwright.sync_api import expect, sync_playwright
 from starlette.requests import Request
 
 from shared_templates import templates
+from regression_fixtures import CHROMIUM_ARGS
 
 
 @pytest.mark.skipif(os.getenv("STREAMVAULT_BROWSER_TESTS") != "1", reason="Opt-in browser check")
@@ -66,7 +67,7 @@ def test_iptv_broken_logos_filters_and_same_origin_playback(playback):
         return route.fulfill(json={})
 
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch()
+        browser = playwright.chromium.launch(args=CHROMIUM_ARGS)
         try:
             page = browser.new_page()
             page.route("**/*", route_request)

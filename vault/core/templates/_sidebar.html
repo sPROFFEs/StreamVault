@@ -117,6 +117,7 @@
                 {% if _dl_count is defined and _dl_count is number and _dl_count > 0 %}<span class="mobile-more-sheet__badge">{{ _dl_count }}</span>{% endif %}
             </a>
             <a class="mobile-more-sheet__item" href="/assets/offline.html">{{ 'On this device · Offline' if lang == 'en' else 'En este dispositivo · Sin conexión' }}</a>
+            <a class="mobile-more-sheet__item" href="/about">{{ 'About & updates' if lang == 'en' else 'Acerca de y actualizaciones' }}</a>
             {% if _is_admin %}
             <a class="mobile-more-sheet__item {{ 'active' if _active == 'admin' else '' }}" href="/admin" {{ current('admin') }}>
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8 4v6c0 5-4 9-8 10-4-1-8-5-8-10V6l8-4z"/></svg>

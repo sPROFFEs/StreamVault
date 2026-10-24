@@ -287,6 +287,7 @@ from routers import (
     sniffer,
     federation,
     profiles,
+    client,
 )
 app.include_router(admin.router)
 app.include_router(youtube.router)
@@ -306,6 +307,7 @@ app.include_router(block_stats.router)
 app.include_router(sniffer.router)
 app.include_router(federation.router)
 app.include_router(profiles.router)
+app.include_router(client.router)
 
 # --- PYDANTIC MODELS ---
 class UserCreate(BaseModel):

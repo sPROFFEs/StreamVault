@@ -1,6 +1,7 @@
 """Offline browser fixtures shared by isolated feature tests."""
 from pathlib import Path
 import socket
+import sys
 import threading
 import time
 from types import SimpleNamespace
@@ -11,6 +12,11 @@ from playwright.sync_api import sync_playwright
 from starlette.requests import Request
 
 from shared_templates import templates
+
+
+# Disabling GPU alone can still stall GL initialization on headless Linux,
+# preventing requestAnimationFrame and Playwright's normal click checks.
+CHROMIUM_ARGS = ['--disable-dev-shm-usage', '--use-gl=disabled' if sys.platform == 'linux' else '--disable-gpu']
 
 
 @pytest.fixture
@@ -46,7 +52,7 @@ def regression_browser():
     with sync_playwright() as playwright:
         # GPU-backed frames can stall on virtual/remote desktop hosts, leaving
         # otherwise valid clicks and screenshots waiting indefinitely.
-        browser = playwright.chromium.launch(args=["--disable-gpu", "--disable-dev-shm-usage"])
+        browser = playwright.chromium.launch(args=CHROMIUM_ARGS)
         try:
             yield browser
         finally:

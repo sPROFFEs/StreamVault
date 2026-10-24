@@ -5,9 +5,11 @@ import shutil
 import subprocess
 import re
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from playwright.sync_api import expect
+from regression_fixtures import CHROMIUM_ARGS
 
 
 pytestmark = pytest.mark.browser
@@ -147,7 +149,8 @@ def test_offline_download_rejects_external_urls_without_leaking_cookies(offline_
 
 
 @pytest.mark.parametrize('fragmented', [False, True], ids=['mp4', 'fragmented-mp4'])
-def test_real_video_and_included_subtitles_play_without_a_network(offline_page, tmp_path, fragmented):
+@pytest.mark.parametrize('provider', [False, True], ids=['included', 'auto-provider'])
+def test_real_video_and_included_subtitles_play_without_a_network(offline_page, tmp_path, fragmented, provider):
     page, context, origin = offline_page
     ffmpeg = os.getenv('STREAMVAULT_TEST_FFMPEG') or shutil.which('ffmpeg')
     if not ffmpeg:
@@ -164,10 +167,16 @@ def test_real_video_and_included_subtitles_play_without_a_network(offline_page, 
     page.route('**/api/downloads/files/stream?*', lambda route: route.fulfill(body=video.read_bytes(), content_type='video/mp4'))
     page.route('**/api/downloads/files/subtitle?*', lambda route: route.fulfill(
         body='WEBVTT\n\n00:00.000 --> 00:02.000\nOffline caption\n', content_type='text/vtt'))
-    entry = page.evaluate('''() => SVOffline.save({title: 'Offline playback fixture', relative_path: 'Fixture.mp4', audio_tracks: [],
+    page.route('**/api/subtitles/search?*', lambda route: route.fulfill(json={'items': [{
+        'language': parse_qs(urlsplit(route.request.url).query)['language'][0], 'provider': 'Fixture',
+        'play_url': '/api/subtitles/fetch?provider=opensubtitles&file_id=1'}]}))
+    page.route('**/api/subtitles/fetch?*', lambda route: route.fulfill(
+        body='WEBVTT\n\n00:00.000 --> 00:02.000\nOffline provider caption\n', content_type='text/vtt'))
+    entry = page.evaluate('''provider => SVOffline.save({title: 'Offline playback fixture', relative_path: 'Fixture.mp4', audio_tracks: [], tmdb_id: 7,
         overview: 'A complete offline cinema experience.', year: '2026', media_type: 'movie',
-        subtitles: [{url: '/api/downloads/files/subtitle?path=Fixture.vtt', language: 'en', label: 'English'},
-                    {url: '/api/downloads/files/subtitle?path=Fixture.es.vtt', language: 'es', label: 'Español'}]})''')
+        subtitles: provider ? [] : [{url: '/api/downloads/files/subtitle?path=Fixture.vtt', language: 'en', label: 'English'},
+                    {url: '/api/downloads/files/subtitle?path=Fixture.es.vtt', language: 'es', label: 'Español'}]},
+                    {languages: ['en', 'es']})''', provider)
     assert len(entry['subtitles']) == 2
     context.set_offline(True)
     page.goto(origin + '/portal')
@@ -194,7 +203,7 @@ def test_real_video_and_included_subtitles_play_without_a_network(offline_page, 
     assert page.evaluate('() => document.querySelector("#offline-video").currentTime') >= .5
     page.wait_for_function('() => document.querySelector("#offline-video").textTracks[0].cues?.length === 1', polling=100)
     page.locator('#sv-sub-btn').click()
-    page.locator('#sv-sub-menu').get_by_role('button', name='Español', exact=True).click()
+    page.locator('#sv-sub-menu').get_by_role('button', name='ES · Fixture' if provider else 'Español', exact=True).click()
     assert page.evaluate('() => document.querySelector("#offline-video").textTracks[1].mode') == 'showing'
     page.locator('#offline-subtitle-size').fill('150')
     page.locator('#offline-subtitle-offset').fill('0.5')
@@ -379,6 +388,139 @@ def test_active_provider_subtitle_is_saved_through_the_authenticated_proxy(offli
     assert 'file_id' not in str(entry) and 'opensubtitles' not in str(entry)
 
 
+@pytest.mark.parametrize('series', [False, True], ids=['movie', 'episode'])
+def test_available_provider_subtitles_are_downloaded_automatically_and_deleted_with_video(offline_page, series):
+    page, context, origin = offline_page
+    searches, transfers = [], []
+    base = '/api/federation/peers/1/media/' + 'a' * 64 if series else '/api/downloads/files'
+    page.route('**' + base + '/playback?*', lambda route: route.fulfill(json={
+        'url': base + '/stream', 'mode': 'file'}))
+    page.route('**' + base + '/stream', lambda route: (transfers.append(1), route.fulfill(body=b'video', content_type='video/mp4'))[-1])
+
+    def search(route):
+        params = parse_qs(urlsplit(route.request.url).query)
+        searches.append(params)
+        lang = params['language'][0]
+        route.fulfill(json={'items': [
+            {'language': lang, 'provider': 'Fixture', 'play_url': f'/api/subtitles/fetch?provider=remote&url=https%3A%2F%2Fsub.wyzie.ru%2F{lang}'}]})
+
+    page.route('**/api/subtitles/search?*', search)
+    page.route('**/api/subtitles/fetch?*', lambda route: route.fulfill(
+        body='WEBVTT\n\n00:00.000 --> 00:02.000\nAutomatic saved caption\n', content_type='text/vtt'))
+    file = dict(title='Automatic captions', overview='Known film', tmdb_id=7,
+                relative_path='Fixture.mp4', audio_tracks=[], subtitles=[])
+    if series:
+        file.update(playback_url=base + '/playback', media_type='tv', season_number=2, episode_number=3)
+    entry = page.evaluate('file => SVOffline.save(file, {languages: ["es", "en"]})', file)
+    assert {track['language'] for track in entry['subtitles']} == {'es', 'en'}
+    assert {params['language'][0] for params in searches} == {'es', 'en'}
+    assert all(params['tmdb_id'] == ['7'] and params['media_type'] == ['tv' if series else 'movie'] for params in searches)
+    if series:
+        assert all(params['season'] == ['2'] and params['episode'] == ['3'] for params in searches)
+    assert 'wyzie' not in str(entry) and 'playback_url' not in entry
+    assert entry['storage_bytes'] == 5 + sum(len(track['text'].encode()) for track in entry['subtitles'])
+    context.set_offline(True)
+    page.goto(origin + '/assets/offline.html')
+    page.locator('.offline-cover').first.click()
+    expect(page.locator('#offline-subtitle-select option')).to_have_count(3)
+    page.locator('#offline-detail-delete').click()
+    page.get_by_role('dialog').get_by_role('button', name='Delete', exact=True).click()
+    expect(page.locator('#offline-empty')).to_be_visible()
+    assert page.evaluate('SVOffline.list()') == []
+    assert page.evaluate('''async () => {
+        const db = await SVOffline.database();
+        return await new Promise(resolve => {
+            const request = db.transaction('chunks').objectStore('chunks').count();
+            request.onsuccess = () => resolve(request.result);
+        });
+    }''') == 0
+    assert transfers == [1]
+
+
+def test_existing_offline_copy_can_download_missing_languages_without_video_redownload(offline_page):
+    page, context, origin = offline_page
+    transfers = []
+    page.route('**/api/downloads/files/playback?*', lambda route: route.fulfill(json={
+        'url': '/api/downloads/files/stream', 'mode': 'file'}))
+    page.route('**/api/downloads/files/stream', lambda route: (transfers.append(1), route.fulfill(body=b'video', content_type='video/mp4'))[-1])
+    page.route('**/api/subtitles/search?*', lambda route: route.fulfill(json={'items': []}))
+    entry = page.evaluate('''() => SVOffline.save({title: 'Missing captions', tmdb_id: 7, overview: 'Known film',
+        relative_path: 'Fixture.mp4', audio_tracks: [], subtitles: []}, {languages: []})''')
+    page.route('**/api/subtitles/search?*', lambda route: route.fulfill(json={'items': [
+        {'language': 'spa', 'provider': 'Fixture', 'play_url': '/api/subtitles/fetch?provider=opensubtitles&file_id=2'},
+        {'language': 'eng', 'provider': 'Fixture', 'play_url': '/api/subtitles/fetch?provider=opensubtitles&file_id=3'}]}))
+    page.route('**/api/subtitles/fetch?*', lambda route: route.fulfill(
+        body='WEBVTT\n\n00:00.000 --> 00:02.000\nRefreshed subtitle\n', content_type='text/vtt'))
+    page.evaluate('id => SVOffline.updatePlayback(id, {progress_seconds: 12})', entry['id'])
+    page.evaluate('() => SVOfflineUI.refresh()')
+    page.locator('.offline-cover').click()
+    page.locator('#offline-refresh-subtitles').click()
+    panel = page.get_by_role('dialog')
+    panel.get_by_label('Español', exact=True).check()
+    panel.get_by_role('button', name='Download', exact=True).click()
+    expect(panel).to_contain_text('2 subtitle tracks saved')
+    updated = page.evaluate('(id) => SVOffline.list().then(items => items.find(item => item.id === id))', entry['id'])
+    assert updated['id'] == entry['id'] and updated['size_bytes'] == entry['size_bytes']
+    assert updated['playback']['progress_seconds'] == 12
+    assert {track['language'] for track in updated['subtitles']} == {'es', 'en'}
+    again = page.evaluate('id => SVOffline.refreshSubtitles(id, {languages: ["es", "en"]})', entry['id'])
+    assert len(again['subtitles']) == 2
+    assert again['storage_bytes'] == updated['storage_bytes']
+    assert transfers == [1]
+    context.set_offline(True)
+    page.goto(origin + '/assets/offline.html')
+    page.locator('.offline-cover').first.click()
+    expect(page.locator('#offline-subtitle-select option')).to_have_count(3)
+
+
+def test_automatic_subtitles_try_another_result_and_never_fetch_external_links(offline_page):
+    page, _, _ = offline_page
+    page.route('**/api/downloads/files/playback?*', lambda route: route.fulfill(json={
+        'url': '/api/downloads/files/stream', 'mode': 'file'}))
+    page.route('**/api/downloads/files/stream', lambda route: route.fulfill(body=b'video', content_type='video/mp4'))
+    page.route('**/api/subtitles/search?*', lambda route: route.fulfill(json={'items': [
+        {'language': 'es', 'play_url': 'https://untrusted.test/leak'},
+        {'language': 'es', 'play_url': '/api/subtitles/fetch?file_id=1'},
+        {'language': 'es', 'play_url': '/api/subtitles/fetch?file_id=2'},
+        {'language': 'en', 'play_url': '/api/subtitles/fetch?file_id=3'}]}))
+    external = []
+    page.route('https://untrusted.test/**', lambda route: (external.append(route.request.url), route.abort())[-1])
+    page.route('**/api/subtitles/fetch?file_id=1', lambda route: route.fulfill(status=502))
+    page.route('**/api/subtitles/fetch?file_id=2', lambda route: route.fulfill(
+        body='WEBVTT\n\n00:00.000 --> 00:02.000\nFallback subtitle\n', content_type='text/vtt'))
+    page.route('**/api/subtitles/fetch?file_id=3', lambda route: route.fulfill(
+        body='<html>Cloudflare verification</html>', content_type='text/html'))
+    entry = page.evaluate('''() => SVOffline.save({title: 'Fallback', tmdb_id: 7, overview: 'Known film',
+        relative_path: 'Fixture.mp4', audio_tracks: [], subtitles: []}, {languages: ['es', 'en']})''')
+    assert entry['status'] == 'complete' and len(entry['subtitles']) == 1
+    assert entry['subtitles'][0]['language'] == 'es'
+    assert external == []
+
+
+def test_slow_subtitle_provider_does_not_discard_captions_already_saved(offline_page):
+    page, _, _ = offline_page
+    result = page.evaluate('''async () => {
+        const originalFetch = window.fetch, timeout = window.setTimeout;
+        window.setTimeout = (callback, delay, ...args) => timeout(callback, delay === 30000 ? 100 : delay, ...args);
+        window.fetch = async (url, options = {}) => {
+            if (String(url).includes('/playback')) return new Response(JSON.stringify({mode:'file',url:'/api/downloads/files/stream'}));
+            if (String(url).includes('/stream')) return new Response('video', {headers:{'Content-Type':'video/mp4'}});
+            if (String(url).includes('fast.vtt')) return new Response('WEBVTT\\n\\n00:00.000 --> 00:02.000\\nFast caption\\n', {headers:{'Content-Type':'text/vtt'}});
+            if (String(url).includes('slow.vtt')) return new Promise((resolve,reject) => {
+                options.signal.addEventListener('abort', () => reject(new DOMException('Timed out','AbortError')), {once:true});
+            });
+            return originalFetch(url, options);
+        };
+        try {
+            return await SVOffline.save({title:'Bounded captions',overview:'Known film',relative_path:'Fixture.mp4',audio_tracks:[],
+                subtitles:[{url:'/api/downloads/files/subtitle?path=fast.vtt',language:'en',label:'English'},
+                           {url:'/api/downloads/files/subtitle?path=slow.vtt',language:'es',label:'Español'}]}, {languages:[]});
+        } finally { window.fetch = originalFetch; window.setTimeout = timeout; }
+    }''')
+    assert result['status'] == 'complete'
+    assert len(result['subtitles']) == 1 and result['subtitles'][0]['language'] == 'en'
+
+
 def test_device_download_audio_choice_and_offline_audio_variants(offline_page):
     page, context, origin = offline_page
     page.route('**/api/downloads/files/playback?*', lambda route: route.fulfill(json={
@@ -454,7 +596,7 @@ def test_device_library_opens_after_browser_restart_without_network_or_session(
     def launch():
         return browser_type.launch_persistent_context(
             profile, viewport=browser_viewport,
-            args=['--disable-gpu', '--disable-dev-shm-usage'])
+            args=CHROMIUM_ARGS)
 
     context = launch()
     try:

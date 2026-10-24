@@ -101,7 +101,12 @@ def test_android_connection_error_offers_same_origin_device_library():
     assert '@+id/offline_button' in buttons
     activity = (ROOT / 'android/app/src/main/java/com/streamvault/app/MainActivity.java').read_text()
     assert 'findViewById(R.id.offline_button).setOnClickListener' in activity
-    assert 'webView.loadUrl(server + "/assets/offline.html")' in activity
+    # Use the installed alias so an older SW cache cannot replace the new
+    # offline screen before its first online visit. Media stays in the same IDB.
+    assert 'webView.loadUrl(server + "/_streamvault/offline")' in activity
+    frontend = (ROOT / 'android/app/src/main/java/com/streamvault/app/MobileFrontend.java').read_text()
+    assert 'path.equals("/_streamvault/offline")' in frontend
+    assert 'return asset("assets/offline.html")' in frontend
     assert 'addJavascriptInterface' not in activity
 
 

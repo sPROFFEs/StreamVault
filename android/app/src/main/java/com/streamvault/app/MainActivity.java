@@ -33,6 +33,12 @@ import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.webkit.ServiceWorkerController;
+import android.view.WindowManager;
+import androidx.webkit.WebViewCompat;
+import androidx.webkit.WebViewFeature;
+import org.json.JSONObject;
+import java.util.Collections;
 import android.widget.FrameLayout;
 import android.widget.ImageButton;
 import android.widget.ProgressBar;
@@ -40,7 +46,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 import android.window.OnBackInvokedDispatcher;
 
-/** Hosted server-rendered UI; no native JavaScript bridge or packaged Python runtime. */
+/** Installed canonical frontend with server-owned authentication and restricted Android integration. */
 public final class MainActivity extends Activity {
     public static final String PREFS_NAME = "server";
     public static final String KEY_ORIGIN = "origin";
@@ -60,6 +66,8 @@ public final class MainActivity extends Activity {
     private int previousOrientation;
     private int previousSystemUi;
     private ConnectivityManager connectivity;
+    private MobileFrontend frontend;
+    private AppUpdater updater;
     private final ConnectivityManager.NetworkCallback networkCallback = new ConnectivityManager.NetworkCallback() {
         @Override public void onAvailable(Network network) {
             handler.post(() -> { if (failedUrl != null && !server.isEmpty() && !isFinishing()) retry(); });
@@ -106,7 +114,7 @@ public final class MainActivity extends Activity {
 
         findViewById(R.id.btn_retry).setOnClickListener(view -> retry());
         findViewById(R.id.offline_button).setOnClickListener(view -> {
-            if (!server.isEmpty()) webView.loadUrl(server + "/assets/offline.html");
+            if (!server.isEmpty()) webView.loadUrl(server + "/_streamvault/offline");
         });
         btnSettings.setOnClickListener(view -> showSettingsMenu());
 
@@ -123,6 +131,8 @@ public final class MainActivity extends Activity {
                     OnBackInvokedDispatcher.PRIORITY_DEFAULT, this::navigateBack);
         }
 
+        frontend = new MobileFrontend(this, server);
+        updater = new AppUpdater(this, this::publishUpdate);
         configureWebView();
         connectivity = getSystemService(ConnectivityManager.class);
         if (connectivity != null) {
@@ -154,7 +164,35 @@ public final class MainActivity extends Activity {
         cookieManager.setAcceptCookie(true);
         cookieManager.setAcceptThirdPartyCookies(webView, true);
 
+        ServiceWorkerController.getInstance().setServiceWorkerClient(new MobileFrontend.WorkerClient(frontend));
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
+            WebViewCompat.addWebMessageListener(webView, "StreamVaultAndroid", Collections.singleton(server),
+                    (view, message, sourceOrigin, mainFrame, reply) -> {
+                if (!mainFrame || !ServerUrl.sameOrigin(server, sourceOrigin.toString())
+                        || !ServerUrl.sameOrigin(server, view.getUrl()) || ServerUrl.isAccessPage(server, view.getUrl())) return;
+                String data = message.getData();
+                if (data == null || data.length() > 1024) return;
+                try {
+                    JSONObject payload = new JSONObject(data);
+                    switch (payload.optString("type")) {
+                        case "check-update": updater.check(); break;
+                        case "install-update": updater.offerInstall(); break;
+                        case "client-ready": updater.publish(""); updater.check(); break;
+                        case "playback":
+                            if (payload.optBoolean("playing")) getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                            else getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                            break;
+                        default: break;
+                    }
+                } catch (org.json.JSONException ignored) { /* Ignore unrecognized messages. */ }
+            });
+        }
+
         webView.setWebViewClient(new WebViewClient() {
+            @Override
+            public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                return frontend.intercept(request.getUrl(), request.getMethod(), request.isForMainFrame());
+            }
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 Uri uri = request.getUrl();
@@ -181,6 +219,7 @@ public final class MainActivity extends Activity {
 
             @Override
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
+                getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
                 diagnostics.add("load started", url, 0);
                 if (ServerUrl.isAccessPage(server, url)) authenticating = true;
                 if (ServerUrl.sameOrigin(server, url)) lastUrl = url;
@@ -213,6 +252,7 @@ public final class MainActivity extends Activity {
                 }
                 updateSettingsButton(url);
                 CookieManager.getInstance().flush();
+                updater.publish("");
             }
 
             @Override
@@ -342,12 +382,24 @@ public final class MainActivity extends Activity {
 
     private void showSettingsMenu() {
         new AlertDialog.Builder(this).setItems(new String[]{getString(R.string.main_btn_settings_desc),
-                getString(R.string.connection_diagnostics), getString(R.string.open_browser)}, (dialog, item) -> {
+                getString(R.string.connection_diagnostics), getString(R.string.open_browser), getString(R.string.about_updates)}, (dialog, item) -> {
             if (item == 0) startActivity(new Intent(this, SetupActivity.class)
                     .putExtra(SetupActivity.EXTRA_FIRST_RUN, false));
             else if (item == 1) showDiagnostics();
-            else openExternal(Uri.parse(server));
+            else if (item == 2) openExternal(Uri.parse(server));
+            else webView.loadUrl(server + "/about");
         }).show();
+    }
+
+    private void publishUpdate(ClientRelease release, String message) {
+        if (webView == null || isFinishing() || !ServerUrl.sameOrigin(server, webView.getUrl())
+                || ServerUrl.isAccessPage(server, webView.getUrl())) return;
+        try {
+            JSONObject payload = new JSONObject().put("message", message);
+            if (release != null) payload.put("release", release.json());
+            String quoted = JSONObject.quote(payload.toString());
+            webView.evaluateJavascript("window.dispatchEvent(new CustomEvent('sv-android-update',{detail:JSON.parse(" + quoted + ")}))", null);
+        } catch (org.json.JSONException ignored) { /* Only public release metadata is sent. */ }
     }
 
     private void showDiagnostics() {
@@ -461,9 +513,11 @@ public final class MainActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         if (webView != null) webView.onResume();
+        if (updater != null) updater.resume();
     }
 
     @Override protected void onDestroy() {
+        if (updater != null) updater.close();
         if (connectivity != null) connectivity.unregisterNetworkCallback(networkCallback);
         handler.removeCallbacksAndMessages(null);
         hideFullscreen();

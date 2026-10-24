@@ -18,6 +18,7 @@ import uvicorn
 
 from routers import media_local
 from shared_templates import templates
+from regression_fixtures import CHROMIUM_ARGS
 
 
 @contextmanager
@@ -96,7 +97,7 @@ def test_real_iptv_hls_plays_without_upstream_cors(tmp_path, monkeypatch, browse
             return route.fulfill(json={})
 
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch()
+            browser = playwright.chromium.launch(args=CHROMIUM_ARGS)
             try:
                 page = browser.new_page(viewport=browser_viewport)
                 errors, requested = [], []

@@ -9,6 +9,7 @@ from starlette.requests import Request
 
 from services.admin_download_library import scan_download_library
 from shared_templates import templates
+from regression_fixtures import CHROMIUM_ARGS
 
 
 @pytest.mark.skipif(os.getenv("STREAMVAULT_BROWSER_TESTS") != "1", reason="Opt-in browser check")
@@ -62,7 +63,7 @@ def test_admin_tabs_and_folder_navigation(tmp_path, width):
         return route.fulfill(json={})
 
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch()
+        browser = playwright.chromium.launch(args=CHROMIUM_ARGS)
         try:
             page = browser.new_page(viewport={"width": width, "height": 1000})
             page.on("pageerror", lambda error: errors.append(str(error)))

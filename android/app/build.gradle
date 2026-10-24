@@ -24,6 +24,8 @@ android {
         buildConfigField 'String', 'SERVER_URL', groovy.json.JsonOutput.toJson(serverUrl)
     }
     buildFeatures { buildConfig true }
+    sourceSets.main.assets.srcDir layout.buildDirectory.dir('generated/frontend/assets')
+    testOptions.unitTests.includeAndroidResources = true
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
@@ -71,6 +73,22 @@ tasks.configureEach {
     if (name == 'preReleaseBuild') dependsOn 'validateReleaseServer'
 }
 
+tasks.register('bundleFrontend', Exec) {
+    workingDir rootProject.projectDir
+    def python = rootProject.file('../.venv/bin/python')
+    commandLine python.exists() ? python.absolutePath : 'python3', 'build_frontend.py'
+    inputs.dir rootProject.file('../vault/assets')
+    inputs.dir rootProject.file('../vault/core/templates')
+    inputs.file rootProject.file('../vault/core/version.json')
+    inputs.dir rootProject.file('frontend')
+    inputs.file rootProject.file('build_frontend.py')
+    outputs.dir layout.buildDirectory.dir('generated/frontend/assets')
+}
+tasks.named('preBuild') { dependsOn 'bundleFrontend' }
+
 dependencies {
+    implementation 'androidx.webkit:webkit:1.10.0'
+    implementation 'androidx.core:core:1.12.0'
     testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.robolectric:robolectric:4.12.2'
 }

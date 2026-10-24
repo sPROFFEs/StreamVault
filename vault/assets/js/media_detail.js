@@ -568,6 +568,7 @@ function saveCurrentToDevice() {
         genres: (state.item?.genres || []).map(genre => genre.name),
         ...(MTYPE === "tv" ? {season_number: Number(el.seasonSelect.value), episode_number: Number(el.episodeSelect.value)} : {}),
     }, {audio: isActive && el.audioSelect.value ? Number(el.audioSelect.value) : undefined,
+        languages: [state.subtitleLangPref || LANG, "en"],
         subtitles: state.remoteSubtitles.filter(track => track.play_url && track.play_url === state.activeSubtitleKey)
             .map(track => ({url: track.play_url, language: track.language, label: `${track.language || T.noLang} · ${track.provider || "Subtitles"}`})),
     });

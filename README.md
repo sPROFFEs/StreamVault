@@ -74,9 +74,13 @@ Keep your existing data directory and `SECRET_KEY` when upgrading.
 Get `streamvault-VERSION-android.apk` from [Releases](https://github.com/sPROFFEs/StreamVault/releases),
 verify it with the accompanying `SHA256SUMS`, and enter your server's HTTPS address
 on first launch. Android **8.0+** and an up-to-date Android System WebView are required.
-The APK is a WebView wrapper, not a bundled server or preloaded media library.
+The APK installs StreamVault's interface and offline player locally, with Android
+integration for fullscreen, playback screen wake and verified in-app APK updates.
+It is a packaged WebView client, not a bundled server or preloaded media library.
 After the first connected setup, **Save to device** makes selected videos available
 in its offline library; downloads must finish with the screen open.
+Selected subtitle languages are downloaded alongside the video when available.
+**More → About & updates** shows versions, release notes and Android downloads.
 
 Stable version tags build and publish the signed APK, server archive and checksums
 after the web, Android and security checks pass. APK downloads appear once the
