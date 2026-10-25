@@ -30,11 +30,19 @@ final class ServerUrl {
         return lastUrl != null && sameOrigin(origin, lastUrl) ? lastUrl : origin;
     }
 
+    /** WebView origin rules have no path; retain the persisted setup URL's format. */
+    static String webOrigin(String value, boolean debug) {
+        String normalized = normalize(value, debug);
+        return normalized.substring(0, normalized.length() - 1);
+    }
+
     static boolean sameOrigin(String origin, String target) {
+        if (origin == null || target == null) return false;
         try {
             URI base = new URI(origin);
             URI next = new URI(target);
-            return next.getRawUserInfo() == null && base.getHost() != null && next.getHost() != null
+            return next.getRawUserInfo() == null && base.getScheme() != null
+                    && base.getHost() != null && next.getHost() != null
                     && base.getScheme().equalsIgnoreCase(next.getScheme())
                     && base.getHost().equalsIgnoreCase(next.getHost()) && port(base) == port(next);
         } catch (URISyntaxException exception) {

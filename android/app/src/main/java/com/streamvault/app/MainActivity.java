@@ -96,7 +96,7 @@ public final class MainActivity extends Activity {
         preferences = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
         String configured = preferences.getString(KEY_ORIGIN, BuildConfig.SERVER_URL);
         if (!configured.isEmpty()) {
-            try { server = ServerUrl.normalize(configured, BuildConfig.DEBUG); }
+            try { server = ServerUrl.webOrigin(configured, BuildConfig.DEBUG); }
             catch (IllegalArgumentException ignored) { server = ""; }
         }
         if (server.isEmpty()) {

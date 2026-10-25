@@ -45,6 +45,13 @@ public class ServerUrlTest {
         }
     }
 
+    @Test public void missingUrlsBeforeFirstPageLoadAreNotAnOrigin() {
+        assertFalse(ServerUrl.sameOrigin("https://watch.example.com/", null));
+        assertFalse(ServerUrl.sameOrigin(null, "https://watch.example.com/portal"));
+        assertFalse(ServerUrl.sameOrigin(null, null));
+        assertFalse(ServerUrl.sameOrigin("//watch.example.com", "https://watch.example.com/"));
+    }
+
     @Test public void recognizesCloudflareAuthHosts() {
         assertTrue(ServerUrl.isCloudflareAuth("https://myteam.cloudflareaccess.com/cdn-cgi/access/login"));
         assertTrue(ServerUrl.isCloudflareAuth("https://cloudflareaccess.com/auth"));
