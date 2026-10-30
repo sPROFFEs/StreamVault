@@ -59,7 +59,7 @@
             // leaves no reserve for encoding or network jitter.
             const deadline = Date.now() + 4000;
             const remaining = Number(playback.duration_seconds || 0) - start;
-            const target = remaining > 0 ? Math.min(2, Math.max(0, remaining - 0.25)) : 2;
+            const target = remaining > 0 ? Math.min(2.5, Math.max(0, remaining - 0.25)) : 2.5;
             const startBuffered = () => {
                 if (video._playbackRequest !== request) return;
                 let ahead = 0;

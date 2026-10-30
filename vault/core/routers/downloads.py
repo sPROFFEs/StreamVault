@@ -518,7 +518,10 @@ async def stream_downloaded_file(path: str):
         raise HTTPException(404, "Archivo no encontrado")
     if await asyncio.to_thread(is_incomplete_media, media_path, settings.DOWNLOADS_ROOT):
         raise HTTPException(409, "Download is not complete yet")
-    return FileResponse(media_path)
+    response = FileResponse(media_path)
+    response.headers["Accept-Ranges"] = "bytes"
+    response.headers["X-Accel-Buffering"] = "no"
+    return response
 
 
 def _probe_media_tracks(media_path) -> dict:
@@ -824,16 +827,17 @@ async def remux_downloaded_media(
     async def output():
         nonlocal process
         process = await asyncio.create_subprocess_exec(
-                "ffmpeg", "-nostdin", "-v", "error", "-threads", "2",
+                "ffmpeg", "-nostdin", "-v", "error", "-threads", "4",
                 *input_seek_args, "-i", str(media_path), *output_seek_args,
                 "-map", "0:v:0", "-map", audio_map,
                 *_encoding_args(tracks, audio_map),
                 "-avoid_negative_ts", "make_zero",
-                "-movflags", "frag_keyframe+empty_moov+default_base_moof",
-                "-frag_duration", "2000000", "-f", "mp4", "pipe:1",
+                "-movflags", "frag_keyframe+empty_moov+default_base_moof+flush_packets",
+                "-flush_packets", "1",
+                "-frag_duration", "1000000", "-f", "mp4", "pipe:1",
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
         )
-        while chunk := await process.stdout.read(256 * 1024):
+        while chunk := await process.stdout.read(64 * 1024):
             yield chunk
         await process.wait()
         if process.returncode:
@@ -845,7 +849,7 @@ async def remux_downloaded_media(
         output(),
         cleanup=cleanup,
         media_type="video/mp4",
-        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-store"},
+        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-store", "Accept-Ranges": "none"},
     )
 
 
@@ -858,7 +862,7 @@ _active_live_remuxes = 0
 
 def _encoding_args(tracks: dict, audio_map: str) -> list[str]:
     video = ["-c:v", "copy"] if tracks.get("video_codec") == "h264" else [
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p", "-threads:v", "2",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p", "-threads:v", "4",
     ]
     selected = next((track for track in tracks["audio"] if f"0:{track['stream_index']}" == audio_map), None)
     audio = ["-c:a", "copy"] if selected and selected["codec"] == "aac" else [

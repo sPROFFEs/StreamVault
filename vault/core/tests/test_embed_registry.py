@@ -8,13 +8,16 @@ def test_movie_providers_follow_preferred_personal_order():
         tmdb_id="550",
         media_type="movie",
         preferred_source="vidlink",
-        source_order=["vidrock", "videasy", "vidlink", "vidfast"],
+        source_order=["vidrock", "videasy", "vidlink", "autoembed", "vixsrc", "vidsrc_cc", "vidfast"],
     )
 
     assert [stream["provider_id"] for stream in streams] == [
         "vidlink",
         "vidrock",
         "videasy",
+        "autoembed",
+        "vixsrc",
+        "vidsrc_cc",
         "vidfast",
     ]
     assert streams[0]["url"] == "https://vidlink.pro/movie/550"
@@ -50,6 +53,9 @@ def test_unknown_preference_is_ignored_without_losing_sources():
     assert [stream["provider_id"] for stream in streams] == [
         "videasy",
         "vidlink",
+        "autoembed",
+        "vixsrc",
+        "vidsrc_cc",
         "vidfast",
         "vidrock",
     ]
@@ -62,4 +68,14 @@ def test_removed_provider_preferences_are_migrated_to_registry_defaults():
     )
 
     assert preferred == "videasy"
-    assert order == ["vidrock", "videasy", "vidlink", "vidfast"]
+    assert order == ["vidrock", "videasy", "vidlink", "autoembed", "vixsrc", "vidsrc_cc", "vidfast"]
+
+
+def test_vidrock_uses_net_endpoint():
+    streams = build_embed_streams(
+        tmdb_id="550",
+        media_type="movie",
+        preferred_source="vidrock",
+    )
+    assert streams[0]["url"] == "https://vidrock.net/movie/550"
+    assert streams[0]["provider_id"] == "vidrock"

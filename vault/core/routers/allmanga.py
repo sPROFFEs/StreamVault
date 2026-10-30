@@ -95,19 +95,16 @@ async def proxy_stream(
     if "range" in request.headers:
         headers["Range"] = request.headers["range"]
 
-    async def _stream():
-        async with httpx.AsyncClient(timeout=None, follow_redirects=True) as client:
-            async with client.stream("GET", url, headers=headers) as upstream:
-                async for chunk in upstream.aiter_bytes(64 * 1024):
-                    yield chunk
-
-    # We need response headers from upstream — open the connection first to
-    # grab content-type and content-range, then stream the body.
-    async with httpx.AsyncClient(timeout=None, follow_redirects=True) as client:
+    client = httpx.AsyncClient(timeout=None, follow_redirects=True)
+    try:
         upstream = await client.send(
             client.build_request("GET", url, headers=headers),
             stream=True,
         )
+    except Exception as e:
+        await client.aclose()
+        raise HTTPException(502, f"Failed to reach upstream video stream: {e}")
+
     pass_headers = {}
     for h in ("content-type", "content-length", "content-range", "accept-ranges",
               "last-modified", "etag"):
@@ -118,10 +115,11 @@ async def proxy_stream(
 
     async def _iter():
         try:
-            async for chunk in upstream.aiter_bytes(64 * 1024):
+            async for chunk in upstream.aiter_bytes(128 * 1024):
                 yield chunk
         finally:
             await upstream.aclose()
+            await client.aclose()
 
     return StreamingResponse(
         _iter(),

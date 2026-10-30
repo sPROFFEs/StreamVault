@@ -64,19 +64,22 @@ async def resolve_media_stream(
     federated = await asyncio.to_thread(match_sources, tmdb_id, media_type, resolved_season, resolved_episode,
                                         title=title, original_title=original_title, year=year)
 
-    logger.info(f"Resolving {tmdb_id}, type={media_type}, embed playback")
+    torrent_enabled = bool(prefs.get("torrent_sources", False))
+    imdb_id = await _fetch_imdb_id(tmdb_id, media_type) if torrent_enabled else None
+    include_torrents = bool(torrent_enabled and imdb_id)
+    logger.info(f"Resolving {tmdb_id}, type={media_type}, torrents={include_torrents}")
 
     try:
         streams = await asyncio.wait_for(
             orchestrator.resolve_stream(
                 tmdb_id=tmdb_id,
-                imdb_id=None,
+                imdb_id=imdb_id,
                 media_type=media_type,
                 season=resolved_season,
                 episode=resolved_episode,
                 preferred_source=prefs["default_source"],
                 source_order=prefs["source_order"],
-                include_torrents=False,
+                include_torrents=include_torrents,
             ),
             timeout=25.0,
         )

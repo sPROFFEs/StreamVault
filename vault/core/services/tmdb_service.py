@@ -26,7 +26,7 @@ class TMDBService:
     # URLs base para imágenes
     IMAGE_BASE = "https://image.tmdb.org/t/p/"
     POSTER_SIZE = "w500"
-    BACKDROP_SIZE = "original"
+    BACKDROP_SIZE = "w1280"
 
     # TTL cache: keyed by (method, args tuple) → (timestamp, result).
     # TMDB metadata rarely changes, so a 10-minute TTL dramatically reduces

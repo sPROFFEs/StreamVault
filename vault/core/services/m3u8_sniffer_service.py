@@ -56,6 +56,10 @@ def _playwright_available() -> bool:
         return False
 
 
+_SNIFF_CACHE: Dict[str, tuple[float, Dict[str, Any]]] = {}
+_SNIFF_CACHE_TTL = 900.0  # 15 minutes
+
+
 class M3u8Sniffer:
     """Reuse a single Playwright + browser instance across requests."""
 
@@ -114,8 +118,16 @@ class M3u8Sniffer:
               "reason": "..."  # only when ok is False
             }
         """
+        cache_key = f"{url}|{referer or ''}"
+        now = time.time()
+        cached = _SNIFF_CACHE.get(cache_key)
+        if cached and (now - cached[0]) < _SNIFF_CACHE_TTL:
+            logger.info("Sniffer cache hit for %s", url)
+            return dict(cached[1])
+
         if not _playwright_available():
             return {
+    
                 "ok": False,
                 "url": None,
                 "reason": (
@@ -129,6 +141,8 @@ class M3u8Sniffer:
             await self._ensure_browser()
         except Exception as e:
             return {"ok": False, "url": None, "reason": f"chromium launch failed: {e}"}
+
+
 
         from playwright.async_api import Request, Response
 
@@ -200,6 +214,7 @@ class M3u8Sniffer:
             try:
                 await page.goto(url, wait_until="domcontentloaded", timeout=int(timeout_s * 1000))
             except Exception as e:
+
                 logger.debug("page.goto failed (ok if media already fired): %s", e)
 
             # Loop: wait until either we have a hit + IDLE_AFTER_HIT_S has
@@ -223,6 +238,7 @@ class M3u8Sniffer:
 
         if not chosen:
             return {
+    
                 "ok": False,
                 "url": None,
                 "reason": "no media URL captured before timeout",
@@ -232,7 +248,7 @@ class M3u8Sniffer:
         # Strip per-request hop-by-hop / browser-internal headers we don't
         # want to replay; keep only what's useful for replay.
         replay = _replay_headers(chosen["headers"], default_referer=url)
-        return {
+        res = {
             "ok": True,
             "url": chosen["url"],
             "type": chosen["type"],
@@ -240,7 +256,8 @@ class M3u8Sniffer:
             "subtitles": subtitle_hits[:8],
             "blocked": blocked,
         }
-
+        _SNIFF_CACHE[cache_key] = (time.time(), dict(res))
+        return res
 
 def _guess_lang(url: str) -> str:
     m = re.search(r"[?&](?:lang|language)=([a-z]{2,3})", url.lower())

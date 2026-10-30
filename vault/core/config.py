@@ -58,7 +58,7 @@ class Settings(BaseSettings):
     # Streaming Settings
     MAX_CACHE_SIZE_GB: int = 100  # Maximum cache storage in GB
     DEFAULT_QUALITY: str = "1080p"  # Default streaming quality
-    STREAM_BUFFER_SIZE: int = 8192  # Chunk size for streaming (bytes)
+    STREAM_BUFFER_SIZE: int = 65536  # Chunk size for streaming (bytes)
     AUTO_CACHE_ON_WATCH: bool = True  # Cache content while streaming
     # Total transfer budget, shared by all download workers (bytes/second).
     CONCURRENT_DOWNLOADS: int = Field(1, ge=1, le=8)

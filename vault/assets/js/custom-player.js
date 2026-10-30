@@ -138,6 +138,7 @@
         $(".sv-player__title").title = titleText;
         const status = $(".sv-player__status");
         let isDragging = false, destroyed = false, hideTimer = null, keyboardInteraction = false;
+        let stallWatchdog = null, lastProgressTime = Date.now(), lastCurrentTime = -1, stallRecoveryCount = 0, isRecovering = false;
         function setStatus(kind, message) {
             status.textContent = message || labels[kind] || "";
             status.hidden = !status.textContent;
@@ -197,13 +198,78 @@
         }
 
         ["play", "pause", "ended"].forEach(name => listen(video, name, updatePlayState));
-        listen(video, "play", showControls);
-        ["timeupdate", "loadedmetadata", "durationchange", "seeked"].forEach(name => listen(video, name, updateTimeAndProgress));
+        listen(video, "play", () => {
+            lastProgressTime = Date.now();
+            lastCurrentTime = Number(video.currentTime || 0);
+            isRecovering = false;
+            showControls();
+        });
+        listen(video, "playing", () => {
+            lastProgressTime = Date.now();
+            lastCurrentTime = Number(video.currentTime || 0);
+            stallRecoveryCount = 0;
+            isRecovering = false;
+            setStatus("");
+        });
+        ["timeupdate", "loadedmetadata", "durationchange", "seeked"].forEach(name => listen(video, name, () => {
+            updateTimeAndProgress();
+            checkStall();
+        }));
         listen(video, "volumechange", updateVolumeUI);
-        ["waiting", "seeking"].forEach(name => listen(video, name, () => setStatus("buffering")));
-        ["playing", "canplay", "seeked"].forEach(name => listen(video, name, () => setStatus("")));
+        ["waiting", "stalled"].forEach(name => listen(video, name, () => {
+            setStatus("buffering");
+            if (Date.now() - lastProgressTime >= 1500) checkStall();
+        }));
+        listen(video, "seeking", () => setStatus("buffering"));
+        ["canplay", "seeked"].forEach(name => listen(video, name, () => setStatus("")));
         listen(video, "error", () => setStatus("error"));
         listen(video, "loadstart", () => setStatus("buffering"));
+        function checkStall() {
+            if (destroyed || isDragging || video.paused || video.ended) return;
+            const now = Date.now();
+            const curTime = Number(video.currentTime || 0);
+
+            // Forward progression confirms video decoder is healthy
+            if (curTime > lastCurrentTime && (curTime - lastCurrentTime) >= 0.15) {
+                lastCurrentTime = curTime;
+                lastProgressTime = now;
+                stallRecoveryCount = 0;
+                isRecovering = false;
+                return;
+            }
+
+            const stalledDuration = now - lastProgressTime;
+            if (stalledDuration >= 2500 && !isRecovering) {
+                isRecovering = true;
+                stallRecoveryCount++;
+
+                if (stallRecoveryCount > 4) {
+                    setStatus("buffering");
+                    return;
+                }
+
+                if (stallRecoveryCount === 1) {
+                    try {
+                        const nudge = Math.max(0, curTime - 0.2);
+                        lastCurrentTime = nudge;
+                        video.currentTime = nudge;
+                        video.play()?.catch?.(() => {});
+                    } catch (_) {}
+                    isRecovering = false;
+                    return;
+                }
+
+                const effCurrent = getEffectiveCurrentTime();
+                const target = Math.max(0, Math.round((effCurrent - 4) * 100) / 100);
+                setStatus("buffering");
+                lastCurrentTime = target - Number(video.dataset.playbackOffset || 0);
+                seekTo(target);
+                lastProgressTime = now;
+                isRecovering = false;
+            }
+        }
+        stallWatchdog = setInterval(checkStall, 1000);
+
 
         async function togglePlay() {
             try {
@@ -422,6 +488,7 @@
             events.abort();
             observer.disconnect();
             clearTimeout(hideTimer);
+            clearInterval(stallWatchdog);
             ui.remove();
             container.classList.remove("sv-active", "sv-hide-cursor");
             if (previousTabindex === null) container.removeAttribute("tabindex");

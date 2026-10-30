@@ -144,8 +144,8 @@ class DownloadService:
             'socket_timeout': 30,
             'retries': 5,
             'fragment_retries': 5,
-            'buffersize': 65536,
-            'concurrent_fragment_downloads': 1,
+            'buffersize': 131072,
+            'concurrent_fragment_downloads': int(os.environ.get("YTDLP_CONCURRENT_FRAGMENTS", "5")),
             'ratelimit': download_rate_per_job(),
             'noplaylist': True,
         }

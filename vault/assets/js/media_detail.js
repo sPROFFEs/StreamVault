@@ -932,7 +932,7 @@ function loadTorrentSource(source) {
     const peerTid = state.torrentPeerTimer = setTimeout(() => {
         if (el.torrentInfo.textContent === T.torrentConnecting)
             el.torrentInfo.textContent = T.noBrowserTorrent;
-    }, 45000);
+    }, 20000);
 
     state.wtClient.on("error", (err) => {
         clearTimeout(peerTid);
@@ -946,8 +946,8 @@ function loadTorrentSource(source) {
             "wss://tracker.btorrent.xyz",
             "wss://tracker.webtorrent.dev",
             "wss://tracker.files.fm:7073/announce",
-            "udp://tracker.opentrackr.org:1337/announce",
-            "udp://open.tracker.cl:1337/announce"
+
+
         ]
     };
 
