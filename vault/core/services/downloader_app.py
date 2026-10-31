@@ -114,6 +114,7 @@ class YtDlpPayload(BaseModel):
     title: str
     quality: Optional[str] = "best"
     type: Optional[str] = "video"
+    extra_headers: Optional[Dict[str, str]] = None
 
 
 class TorrentPayload(BaseModel):
@@ -133,7 +134,11 @@ async def health():
 async def start_yt_dlp(payload: YtDlpPayload):
     try:
         job_id = download_service.start_download(
-            payload.url, payload.title, payload.quality, quota_checked=True
+            payload.url,
+            payload.title,
+            payload.quality,
+            extra_headers=payload.extra_headers,
+            quota_checked=True,
         )
         return {"success": True, "job_id": job_id, "type": "yt-dlp"}
     except ValueError as e:

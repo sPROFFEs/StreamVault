@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
+from typing import Any, Optional, Union
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -22,13 +23,13 @@ def get_current_user(request: Request, db: Session = Depends(get_db)):
 
 
 class FavoritePayload(BaseModel):
-    tmdb_id: int
+    tmdb_id: Union[int, str]
     media_type: str
     title: str
-    poster_path: str | None = None
-    backdrop_path: str | None = None
-    release_date: str | None = None
-    rating: float | None = None
+    poster_path: Optional[str] = None
+    backdrop_path: Optional[str] = None
+    release_date: Optional[str] = None
+    rating: Optional[Any] = None
 
 
 class HistoryPayload(BaseModel):
@@ -55,11 +56,12 @@ async def get_favorites(user: database.User = Depends(get_current_user)):
 @router.get("/favorites/{media_type}/{tmdb_id}")
 async def favorite_status(
     media_type: str,
-    tmdb_id: int,
+    tmdb_id: str,
     user: database.User = Depends(get_current_user),
 ):
+    mt = "tv" if media_type in {"tv", "series"} else media_type
     return {
-        "is_favorite": user_library_service.is_favorite(user.username, tmdb_id, media_type)
+        "is_favorite": user_library_service.is_favorite(user.username, tmdb_id, mt)
     }
 
 
@@ -68,20 +70,33 @@ async def add_favorite(
     payload: FavoritePayload,
     user: database.User = Depends(get_current_user),
 ):
-    if payload.media_type not in {"movie", "tv"}:
+    mt = "tv" if payload.media_type in {"tv", "series"} else payload.media_type
+    if mt not in {"movie", "tv", "anime"}:
         raise HTTPException(status_code=400, detail="media_type invalido")
 
-    user_library_service.upsert_favorite(user.username, payload.model_dump())
+    data = payload.model_dump()
+    data["media_type"] = mt
+    raw_rating = data.get("rating")
+    if raw_rating is not None and raw_rating != "":
+        try:
+            data["rating"] = float(raw_rating)
+        except (ValueError, TypeError):
+            data["rating"] = None
+    else:
+        data["rating"] = None
+
+    user_library_service.upsert_favorite(user.username, data)
     return {"success": True}
 
 
 @router.delete("/favorites/{media_type}/{tmdb_id}")
 async def delete_favorite(
     media_type: str,
-    tmdb_id: int,
+    tmdb_id: str,
     user: database.User = Depends(get_current_user),
 ):
-    removed = user_library_service.remove_favorite(user.username, tmdb_id, media_type)
+    mt = "tv" if media_type in {"tv", "series"} else media_type
+    removed = user_library_service.remove_favorite(user.username, tmdb_id, mt)
     return {"success": removed}
 
 

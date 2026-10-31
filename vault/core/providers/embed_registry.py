@@ -39,9 +39,8 @@ class EmbedProviderDefinition:
 EMBED_PROVIDERS: tuple[EmbedProviderDefinition, ...] = (
     EmbedProviderDefinition("videasy", "Videasy", "https://player.videasy.to"),
     EmbedProviderDefinition("vidlink", "VidLink", "https://vidlink.pro"),
-    EmbedProviderDefinition("autoembed", "AutoEmbed", "https://player.autoembed.cc", movie_template="/embed/movie/{id}", tv_template="/embed/tv/{id}/{s}/{e}"),
+    EmbedProviderDefinition("autoembed", "AutoEmbed", "https://autoembed.co", movie_template="/movie/tmdb/{id}", tv_template="/tv/tmdb/{id}-{s}-{e}"),
     EmbedProviderDefinition("vixsrc", "VixSrc", "https://vixsrc.to"),
-    EmbedProviderDefinition("vidsrc_cc", "VidSrc", "https://vidsrc.cc", movie_template="/v2/embed/movie/{id}", tv_template="/v2/embed/tv/{id}/{s}/{e}"),
     EmbedProviderDefinition("vidfast", "VidFast", "https://vidfast.vc"),
     EmbedProviderDefinition("vidrock", "VidRock", "https://vidrock.net"),
 )

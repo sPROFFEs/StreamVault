@@ -2,7 +2,7 @@ import os
 import sqlite3
 import time
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, Optional
 
 
 class UserLibraryService:
@@ -17,7 +17,13 @@ class UserLibraryService:
             favorites = connection.execute("SELECT COUNT(*) FROM favorites").fetchone()[0]
         return {**dict(counts), "favorites": favorites}
 
-    def __init__(self, data_root: str = "/saas-data/users") -> None:
+    def __init__(self, data_root: Optional[str] = None) -> None:
+        if data_root is None:
+            try:
+                from config import settings
+                data_root = settings.USER_DATA_ROOT
+            except Exception:
+                data_root = os.path.join(os.environ.get("DATA_ROOT", "/saas-data"), "users")
         self.data_root = data_root
 
     def list_favorites(self, username: str) -> list[dict[str, Any]]:
@@ -201,20 +207,30 @@ class UserLibraryService:
                 ),
             )
 
-    def is_favorite(self, username: str, tmdb_id: int, media_type: str) -> bool:
+    def is_favorite(self, username: str, tmdb_id: Any, media_type: str) -> bool:
         with self._connection(username) as connection:
             row = connection.execute(
                 """
                 SELECT 1
                 FROM favorites
-                WHERE tmdb_id = ? AND media_type = ?
+                WHERE (tmdb_id = ? OR CAST(tmdb_id AS TEXT) = ?) AND media_type = ?
                 LIMIT 1
                 """,
-                (tmdb_id, media_type),
+                (str(tmdb_id), str(tmdb_id), media_type),
             ).fetchone()
         return row is not None
 
     def upsert_favorite(self, username: str, payload: dict[str, Any]) -> None:
+        raw_id = payload["tmdb_id"]
+        try:
+            clean_id = int(raw_id)
+        except (ValueError, TypeError):
+            clean_id = str(raw_id)
+        raw_rating = payload.get("rating")
+        try:
+            clean_rating = float(raw_rating) if raw_rating is not None and raw_rating != "" else None
+        except (ValueError, TypeError):
+            clean_rating = None
         with self._connection(username) as connection:
             connection.execute(
                 """
@@ -230,21 +246,21 @@ class UserLibraryService:
                     rating=excluded.rating
                 """,
                 (
-                    payload["tmdb_id"],
+                    clean_id,
                     payload["media_type"],
                     payload["title"],
                     payload.get("poster_path"),
                     payload.get("backdrop_path"),
                     payload.get("release_date"),
-                    payload.get("rating"),
+                    clean_rating,
                 ),
             )
 
-    def remove_favorite(self, username: str, tmdb_id: int, media_type: str) -> bool:
+    def remove_favorite(self, username: str, tmdb_id: Any, media_type: str) -> bool:
         with self._connection(username) as connection:
             cursor = connection.execute(
-                "DELETE FROM favorites WHERE tmdb_id = ? AND media_type = ?",
-                (tmdb_id, media_type),
+                "DELETE FROM favorites WHERE (tmdb_id = ? OR CAST(tmdb_id AS TEXT) = ?) AND media_type = ?",
+                (str(tmdb_id), str(tmdb_id), media_type),
             )
             return cursor.rowcount > 0
 

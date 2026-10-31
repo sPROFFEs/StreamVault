@@ -55,7 +55,7 @@ DEFAULT_UI_PREFS: Dict[str, Any] = {
     "age_limit": "none",
     "rating_country": "US",
     "default_source": "videasy",
-    "source_order": ["videasy", "vidlink", "autoembed", "vixsrc", "vidsrc_cc", "vidfast", "vidrock"],
+    "source_order": ["videasy", "vidlink", "autoembed", "vixsrc", "vidfast", "vidrock"],
     "torrent_sources": False,
     "auto_source_failover": True,
     "library_sort": "manual",

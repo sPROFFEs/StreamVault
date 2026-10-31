@@ -32,18 +32,31 @@ class DownloaderClient:
     def is_remote(self) -> bool:
         return bool(self.url)
 
-    async def start_yt_dlp(self, url: str, title: str, quality: str = "best") -> dict:
+    async def start_yt_dlp(
+        self,
+        url: str,
+        title: str,
+        quality: str = "best",
+        extra_headers: Optional[Dict[str, str]] = None,
+    ) -> dict:
         if self.is_remote:
             async with httpx.AsyncClient(timeout=30) as client:
                 resp = await client.post(
                     f"{self.url}/api/downloads/start",
-                    json={"url": url, "title": title, "quality": quality},
+                    json={
+                        "url": url,
+                        "title": title,
+                        "quality": quality,
+                        "extra_headers": extra_headers,
+                    },
                 )
                 if not resp.is_success:
                     err = resp.json().get("detail") if resp.headers.get("content-type") == "application/json" else resp.text
                     raise RuntimeError(err or f"Downloader returned {resp.status_code}")
                 return resp.json()
-        job_id = self.local_download_service.start_download(url, title, quality, quota_checked=True)
+        job_id = self.local_download_service.start_download(
+            url, title, quality, extra_headers=extra_headers, quota_checked=True
+        )
         return {"success": True, "job_id": job_id, "type": "yt-dlp"}
 
     async def start_torrent(

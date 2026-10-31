@@ -243,7 +243,7 @@ async function loadJobs() {
 // Render active downloads                                             //
 // ------------------------------------------------------------------ //
 function renderActive() {
-    const activeStatuses = ["pending", "connecting", "downloading"];
+    const activeStatuses = ["pending", "connecting", "downloading", "error"];
     const all = [
         ...Object.values(state.torrentJobs),
         ...Object.values(state.ytJobs),
@@ -295,6 +295,21 @@ function updateJobRow(job) {
     const row = el.activeList.querySelector(`[data-job-id="${job.id}"]`);
     if (!row) return;
 
+    if (job.status === "error") {
+        const st = row.querySelector("[data-status]");
+        if (st) {
+            st.textContent = `${T.statusError}${job.error ? `: ${job.error}` : ""}`;
+            st.style.color = "var(--color-danger, #ef4444)";
+        }
+        const fill = row.querySelector("[data-fill]");
+        if (fill) {
+            fill.style.background = "var(--color-danger, #ef4444)";
+            fill.style.width = "100%";
+        }
+        const pctEl = row.querySelector("[data-pct]");
+        if (pctEl) pctEl.textContent = "Error";
+        return;
+    }
     const pct = Math.min(100, job.progress || 0);
     row.querySelector("[data-fill]").style.width = `${pct}%`;
     row.querySelector("[data-pct]").textContent = `${pct.toFixed(0)}%`;

@@ -1331,38 +1331,42 @@ async function checkFavorite() {
     try {
         const resp = await fetch("/api/library/favorites");
         const data = await resp.json();
+        const normMt = MTYPE === "series" ? "tv" : MTYPE;
         state.isFavorite = (data.items || []).some(
-            i => String(i.tmdb_id) === String(TMDB_ID) && i.media_type === MTYPE
+            i => String(i.tmdb_id) === String(TMDB_ID) && (i.media_type === normMt || (normMt === "tv" && i.media_type === "series"))
         );
         syncFavBtn();
     } catch (_) {}
 }
 
 async function toggleFavorite() {
-    if (!state.item) return;
+    const title = state.item?.title || state.item?.name || el.detailTitle.textContent || "Untitled";
+    const normMt = MTYPE === "series" ? "tv" : MTYPE;
     try {
         if (state.isFavorite) {
-            const response = await fetch(`/api/library/favorites/${MTYPE}/${TMDB_ID}`, { method: "DELETE" });
+            const response = await fetch(`/api/library/favorites/${normMt}/${TMDB_ID}`, { method: "DELETE" });
             if (!response.ok) throw new Error("Favorite update failed");
             state.isFavorite = false;
         } else {
+            const cleanId = parseInt(TMDB_ID, 10);
             const response = await fetch("/api/library/favorites", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
-                    tmdb_id:      TMDB_ID,
-                    media_type:   MTYPE,
-                    title:        state.item.title || state.item.name || T.untitled,
-                    poster_path:  state.item.poster_path   || null,
-                    backdrop_path:state.item.backdrop_path || null,
-                    release_date: state.item.release_date  || state.item.first_air_date || null,
-                    rating:       state.item.vote_average  || null,
+                    tmdb_id:      isNaN(cleanId) ? TMDB_ID : cleanId,
+                    media_type:   normMt,
+                    title:        title,
+                    poster_path:  state.item?.poster_path   || null,
+                    backdrop_path:state.item?.backdrop_path || null,
+                    release_date: state.item?.release_date  || state.item?.first_air_date || null,
+                    rating:       typeof state.item?.vote_average === "number" ? state.item.vote_average : null,
                 }),
             });
             if (!response.ok) throw new Error("Favorite update failed");
             state.isFavorite = true;
         }
         syncFavBtn();
+        el.detailStatus.textContent = "";
         // Keep the saved list snapshot consistent when returning to its card.
         try {
             const saved = JSON.parse(sessionStorage.getItem("sv_catalog_return"));

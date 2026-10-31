@@ -270,6 +270,42 @@ class TorrentRequest(BaseModel):
 # Endpoints                                                           #
 # ------------------------------------------------------------------ #
 
+class EmbedDownloadRequest(BaseModel):
+    embed_url: str
+    title: str
+    quality: str = "best"
+    referer: Optional[str] = None
+
+
+@router.post("/start-from-embed")
+async def start_embed_download(req: EmbedDownloadRequest, user=Depends(get_download_authorized)):
+    """Extrae el stream m3u8 del embed y lo pone en cola de descargas con yt-dlp."""
+    await _check_download_quota()
+    from services.m3u8_sniffer_service import sniffer
+
+    try:
+        sniffed = await sniffer.sniff(req.embed_url, referer=req.referer, timeout_s=30)
+    except Exception as e:
+        logger.warning(f"Error sniffing embed {req.embed_url}: {e}")
+        raise HTTPException(502, f"Error extrayendo stream del reproductor embed: {e}")
+
+    if not sniffed.get("ok") or not sniffed.get("url"):
+        reason = sniffed.get("reason", "no media URL captured")
+        raise HTTPException(422, f"No se pudo capturar el enlace de vídeo del servidor embed: {reason}")
+
+    media_url = sniffed["url"]
+    headers = sniffed.get("headers") or {}
+    try:
+        return await downloader_client.start_yt_dlp(
+            url=media_url,
+            title=req.title,
+            quality=req.quality,
+            extra_headers=headers if headers else None,
+        )
+    except Exception as e:
+        raise HTTPException(500, f"Error iniciando descarga: {e}")
+
+
 @router.post("/start")
 async def start_yt_dlp_download(req: YtDlpRequest, user=Depends(get_download_authorized)):
     """Inicia descarga con yt-dlp (YouTube, URLs HTTP directas)."""

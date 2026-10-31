@@ -82,7 +82,7 @@ class DownloadService:
         for job in self.active_downloads.values():
             if url and job.url == url:
                 return job.id
-            if title and job.title.casefold() == title.casefold():
+            if title and job.title.casefold() == title.casefold() and job.status in ("pending", "downloading"):
                 return job.id
         return None
 
@@ -128,8 +128,16 @@ class DownloadService:
                 job.progress = 100.0
                 job.filepath = d.get('filename')
 
+        def _safe_format(q: str) -> str:
+            if not q or str(q).lower() in ("best", "auto"):
+                return "bestvideo+bestaudio/best"
+            height = "".join(filter(str.isdigit, str(q)))
+            if height:
+                return f"bestvideo[height<={height}]+bestaudio/best[height<={height}]/best"
+            return "bestvideo+bestaudio/best"
+
         ydl_opts = {
-            'format': f'bestvideo[height<={job.quality[:-1]}]+bestaudio/best' if job.quality != 'best' else 'best',
+            'format': _safe_format(job.quality),
             'outtmpl': os.path.join(DOWNLOADS_DIR, '%(title)s.%(ext)s'),
             'progress_hooks': [progress_hook],
             'quiet': True,
@@ -138,7 +146,6 @@ class DownloadService:
             'restrictfilenames': True,
             # Hardened options matching YouTubeService
             'nocheckcertificate': True,
-            'source_address': '0.0.0.0',
             # Android client logic for bot bypass
             'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
             'socket_timeout': 30,
