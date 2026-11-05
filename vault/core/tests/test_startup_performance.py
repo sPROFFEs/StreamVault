@@ -27,8 +27,23 @@ def test_download_recovery_does_not_block_application_startup(monkeypatch):
 
     try:
         assert [coroutine.cr_code.co_name for coroutine in scheduled] == [
-            "_recover_downloads_background", "_update_checks_background", "background_loop",
+            "_recover_downloads_background", "_update_checks_background", "background_loop", "background_loop",
         ]
     finally:
         for coroutine in scheduled:
             coroutine.close()
+
+
+def test_storage_maintenance_yields_before_touching_disk(monkeypatch):
+    from unittest.mock import Mock
+    scan = Mock()
+    monkeypatch.setattr(main.storage_maintenance, 'maintain_cache', scan)
+    async def scenario():
+        task = asyncio.create_task(main.storage_maintenance.background_loop())
+        await asyncio.sleep(0)
+        try:
+            scan.assert_not_called()
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+    asyncio.run(scenario())

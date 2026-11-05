@@ -86,17 +86,15 @@ async def _auto_fetch_subtitles(local_path: str, title: str):
                     if auth_resp.is_success:
                         dl_url = auth_resp.json().get("link")
                         if dl_url:
-                            resp = await client.get(dl_url)
-                            if resp.is_success:
-                                content = resp.content
+                            from services.subtitle_content import download_subtitle
+                            content, _ = await download_subtitle(client, dl_url)
         elif best.get("stream_url"):
             async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
-                resp = await client.get(best["stream_url"])
-                if resp.is_success:
-                    content = resp.content
+                from services.subtitle_content import download_subtitle
+                content, _ = await download_subtitle(client, best["stream_url"])
         if content:
-            from routers.downloads import _subtitle_bytes_to_vtt
-            text = _subtitle_bytes_to_vtt(content)
+            from services.subtitle_content import subtitle_bytes_to_vtt
+            text = await asyncio.to_thread(subtitle_bytes_to_vtt, content)
             base_path = os.path.splitext(local_path)[0]
             sub_path = f"{base_path}.en.vtt"
             with open(sub_path, "w", encoding="utf-8") as f:

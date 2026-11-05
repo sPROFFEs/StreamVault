@@ -210,6 +210,8 @@ def _invalidate_scan_cache(root: str | Path = None) -> None:
 
     Called when files are deleted, downloaded, or the library_updated SSE fires.
     """
+    from services.storage_policy import invalidate_path_size
+    invalidate_path_size(root)
     if root is None:
         _SCAN_CACHE.clear()
     else:

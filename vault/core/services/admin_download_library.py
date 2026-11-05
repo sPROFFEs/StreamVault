@@ -140,7 +140,11 @@ def _is_abandoned_marker(marker: Path, root: Path, active_job_ids: set[str] | No
         job_id = marker.parent.relative_to(root).parts[0]
         if job_id in active_job_ids:
             return False
-        return True
+        # Completed transfers remove their own marker. Never expose a failed
+        # video merely by deleting its marker. Old UUID-owned partial jobs can
+        # instead be offered as a whole, explicitly in the cleaner preview.
+        owned_job = bool(re.fullmatch(r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}", job_id))
+        return _is_stale_marker(marker) or (owned_job and time.time() - marker.stat().st_mtime >= _STALE_MARKER_SECONDS)
     except (OSError, ValueError, IndexError):
         return False
 
@@ -161,6 +165,8 @@ def scan_download_cleanup(
                 "total_bytes": 0, "total_bytes_label": _human_size(0)}
 
     active_roots: list[Path] = []
+    abandoned_roots: list[Path] = []
+    review_jobs: set[str] = set()
     stale_markers: set[Path] = set()
     directories: list[Path] = []
     candidates: list[dict] = []
@@ -169,15 +175,24 @@ def scan_download_cleanup(
             current = Path(directory)
             folders[:] = [name for name in folders if not (current / name).is_symlink()]
             directories.append(current)
+            relative_parts = current.relative_to(base).parts
+            if active_job_ids and relative_parts and relative_parts[0] in active_job_ids:
+                active_roots.append(current)
+                folders[:] = []
+                continue
             marker = current / INCOMPLETE_MARKER
             if INCOMPLETE_MARKER in names:
                 if _is_abandoned_marker(marker, base, active_job_ids):
                     stale_markers.add(marker)
+                    abandoned_roots.append(current)
                 else:
                     active_roots.append(current)
+                    folders[:] = []
+                    continue
             for name in names:
                 path = current / name
-                if path.is_symlink() or not _is_orphan_artifact(path):
+                abandoned = any(parent == current or parent in current.parents for parent in abandoned_roots)
+                if path.is_symlink() or not (abandoned or _is_orphan_artifact(path)):
                     continue
                 if any(active == path or active in path.parents for active in active_roots):
                     continue
@@ -185,8 +200,12 @@ def scan_download_cleanup(
                     stat = path.stat()
                 except OSError:
                     continue
+                if not abandoned and active_job_ids is None and time.time() - stat.st_mtime < _STALE_MARKER_SECONDS:
+                    continue
                 if path.name == INCOMPLETE_MARKER and path not in stale_markers:
                     continue
+                if abandoned and not _is_orphan_artifact(path):
+                    review_jobs.add(path.relative_to(base).parts[0])
                 candidates.append({
                     "name": path.name,
                     "relative_path": path.relative_to(base).as_posix(),
@@ -194,7 +213,7 @@ def scan_download_cleanup(
                     "is_directory": False,
                     "size_bytes": stat.st_size,
                     "size_label": _human_size(stat.st_size),
-                    "reason": "stale download control/temporary file",
+                    "reason": "abandoned incomplete download" if abandoned else "stale download control/temporary file",
                 })
     except OSError:
         return {"items": [], "total_files": 0, "total_directories": 0,
@@ -230,6 +249,11 @@ def scan_download_cleanup(
         candidate_paths.add(relative_directory)
 
     candidates.sort(key=lambda item: (not item["is_directory"], item["relative_path"].casefold()))
+    for item in candidates:
+        if Path(item['relative_path']).parts[0] in review_jobs:
+            # A failed season can contain completed episodes too. The user
+            # must opt into deleting that whole partial job after reviewing it.
+            item['requires_review'] = True
     total_bytes = sum(item["size_bytes"] for item in candidates)
     return {
         "items": candidates,
@@ -248,11 +272,12 @@ def cleanup_download_library(
     """Delete only paths currently reported by :func:`scan_download_cleanup`."""
     preview = scan_download_cleanup(root, active_job_ids)
     allowed = {item["relative_path"]: item for item in preview["items"]}
-    selected = set(allowed) if paths is None else {str(path) for path in paths}
+    selected = {path for path, item in allowed.items() if not item.get('requires_review')} if paths is None else {str(path) for path in paths}
     deleted: list[str] = []
     errors: list[dict] = []
+    freed = 0
     base = Path(root).resolve()
-    for relative in sorted(selected, key=lambda item: len(Path(item).parts), reverse=True):
+    for relative in sorted(selected, key=lambda item: (len(Path(item).parts), Path(item).name != INCOMPLETE_MARKER), reverse=True):
         item = allowed.get(relative)
         if item is None:
             errors.append({"relative_path": relative, "error": "Not a cleanup candidate"})
@@ -264,7 +289,11 @@ def cleanup_download_library(
             if item["is_directory"]:
                 target.rmdir()
             else:
+                if target.name == INCOMPLETE_MARKER and any(entry != target for entry in target.parent.iterdir()):
+                    raise ValueError("Incomplete media remains; keep its marker until all selected partial files are removed")
+                size = target.stat().st_size
                 target.unlink()
+                freed += size
             deleted.append(relative)
         except (OSError, ValueError) as exc:
             errors.append({"relative_path": relative, "error": str(exc)})
@@ -273,7 +302,7 @@ def cleanup_download_library(
         from services.media_library import _invalidate_scan_cache
         _invalidate_scan_cache(base)
     remaining = scan_download_cleanup(base, active_job_ids)
-    return {"deleted": deleted, "errors": errors, "remaining": remaining}
+    return {"deleted": deleted, "errors": errors, "freed_bytes": freed, "remaining": remaining}
 
 
 def _directory_entries(directory: Path, recursive: bool):

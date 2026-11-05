@@ -93,6 +93,13 @@
                             <div class="sv-menu" id="sv-sub-menu"></div>
                         </div>
 
+                        <div class="sv-menu-wrapper" id="sv-speed-wrap">
+                            <button class="sv-btn sv-btn--small" id="sv-speed-btn">1×</button>
+                            <div class="sv-menu" id="sv-speed-menu"></div>
+                        </div>
+                        <button class="sv-btn sv-btn--small" id="sv-pip" hidden>
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><rect x="11" y="11" width="8" height="6" rx="1"/></svg>
+                        </button>
                         <!-- Fullscreen -->
                         <button class="sv-btn sv-btn--small" id="sv-fullscreen" title="Pantalla Completa (F)">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 00-2 2v3m18 0V5a2 2 0 00-2-2h-3m0 18h3a2 2 0 002-2v-3M3 16v3a2 2 0 002 2h3"/></svg>
@@ -109,6 +116,7 @@
         const muteBtn = $("#sv-mute"), iconVol = $("#sv-icon-vol"), iconMute = $("#sv-icon-mute"), volSlider = $("#sv-volume");
         const rewindBtn = $("#sv-rewind"), forwardBtn = $("#sv-forward");
         const fsBtn = $("#sv-fullscreen"), backBtn = $("#sv-back");
+        const speedBtn = $("#sv-speed-btn"), speedMenu = $("#sv-speed-menu"), pipBtn = $("#sv-pip");
 
         const spanish = window.APP_LANG === "es" || document.documentElement.lang === "es";
         const labels = spanish ? {
@@ -117,14 +125,16 @@
             sources: "Fuentes", audio: "Pistas de audio", subtitles: "Subtítulos", off: "Desactivados",
             fullscreen: "Pantalla completa", exitFullscreen: "Salir de pantalla completa",
             buffering: "Cargando…", error: "Vídeo no disponible o formato no compatible. Prueba otra fuente.",
-            blocked: "Pulsa reproducir para iniciar el vídeo."
+            blocked: "Pulsa reproducir para iniciar el vídeo.",
+            speed: "Velocidad de reproducción", pip: "Imagen en imagen", pipError: "Imagen en imagen no disponible"
         } : {
             play: "Play", pause: "Pause", back: "Close player", seek: "Seek", volume: "Volume",
             mute: "Mute", unmute: "Unmute", rewind: "Rewind 10 seconds", forward: "Forward 10 seconds",
             sources: "Sources", audio: "Audio tracks", subtitles: "Subtitles", off: "Off",
             fullscreen: "Fullscreen", exitFullscreen: "Exit fullscreen",
             buffering: "Buffering…", error: "Video unavailable or unsupported format. Try another source.",
-            blocked: "Press play to start the video."
+            blocked: "Press play to start the video.",
+            speed: "Playback speed", pip: "Picture in picture", pipError: "Picture in picture unavailable"
         };
         function label(control, text) {
             control.setAttribute("aria-label", text);
@@ -132,7 +142,7 @@
         }
         [[playBtn, labels.play], [backBtn, labels.back], [seek, labels.seek], [volSlider, labels.volume],
          [rewindBtn, labels.rewind], [forwardBtn, labels.forward], [muteBtn, labels.mute],
-         [fsBtn, labels.fullscreen]].forEach(([control, text]) => label(control, text));
+         [fsBtn, labels.fullscreen], [pipBtn, labels.pip]].forEach(([control, text]) => label(control, text));
         ui.querySelectorAll("button").forEach(button => { button.type = "button"; });
         $(".sv-player__title").textContent = titleText;
         $(".sv-player__title").title = titleText;
@@ -148,12 +158,10 @@
 
         function getEffectiveDuration() {
             const offset = Number(video.dataset.playbackOffset || 0);
-            // A converted fragment's duration excludes the absolute playback offset.
-            if (offset > 0) {
-                if (knownDuration > 0) return knownDuration;
-                const total = Number(video.dataset.playbackDuration || options.getDuration?.() || 0);
-                if (total > 0) return total;
-            }
+            // Fragmented MP4 can report only the first fragment's duration,
+            // including at offset zero. The descriptor knows the full movie.
+            const total = Number(video.dataset.playbackDuration || 0) || knownDuration || Number(options.getDuration?.() || 0);
+            if (Number.isFinite(total) && total > 0) return total;
             if (Number.isFinite(video.duration) && video.duration > 0) return offset + video.duration;
             return knownDuration || Number(options.getDuration?.() || 0);
         }
@@ -186,6 +194,14 @@
             seek.value = pct;
             seek.setAttribute("aria-valuetext", `${currentText} / ${fmtTime(dur)}`);
             paintSeek(pct);
+            let bufferedEnd = cur;
+            for (let index = 0; index < (video.buffered?.length || 0); index++) {
+                if (video.buffered.start(index) <= video.currentTime + .25 && video.buffered.end(index) >= video.currentTime) {
+                    bufferedEnd = Number(video.dataset.playbackOffset || 0) + video.buffered.end(index);
+                    break;
+                }
+            }
+            seek.style.setProperty('--sv-buffered', `${dur > 0 ? Math.min(100, Math.max(pct, bufferedEnd / dur * 100)) : 0}%`);
         }
         function updateVolumeUI() {
             const muted = video.muted || video.volume === 0;
@@ -211,7 +227,7 @@
             isRecovering = false;
             setStatus("");
         });
-        ["timeupdate", "loadedmetadata", "durationchange", "seeked"].forEach(name => listen(video, name, () => {
+        ["timeupdate", "progress", "loadedmetadata", "durationchange", "seeked"].forEach(name => listen(video, name, () => {
             updateTimeAndProgress();
             checkStall();
         }));
@@ -225,7 +241,9 @@
         listen(video, "error", () => setStatus("error"));
         listen(video, "loadstart", () => setStatus("buffering"));
         function checkStall() {
-            if (destroyed || isDragging || video.paused || video.ended) return;
+            // Local and federated playback own their bounded reconnects.
+            // A second watchdog must not seek backwards while they buffer.
+            if (destroyed || isDragging || video.paused || video.ended || video._playbackRequest) return;
             const now = Date.now();
             const curTime = Number(video.currentTime || 0);
 
@@ -319,6 +337,13 @@
         volSlider.oninput = () => { video.muted = false; video.volume = Number(volSlider.value); };
         fsBtn.onclick = () => window.SVToggleFs?.();
         backBtn.onclick = () => window.SVDestroyPlayer?.();
+        pipBtn.hidden = !(document.pictureInPictureEnabled && video.requestPictureInPicture && !video.disablePictureInPicture);
+        pipBtn.onclick = async () => {
+            try {
+                if (document.pictureInPictureElement === video) await document.exitPictureInPicture();
+                else await video.requestPictureInPicture();
+            } catch (_) { label(pipBtn, labels.pipError); }
+        };
 
         function showControls(event) {
             if (destroyed) return;
@@ -350,7 +375,8 @@
         const sourceWrap = $("#sv-source-wrap"), sourceBtn = $("#sv-source-btn"), sourceMenu = $("#sv-source-menu");
         const audioWrap = $("#sv-audio-wrap"), audioBtn = $("#sv-audio-btn"), audioMenu = $("#sv-audio-menu");
         const subWrap = $("#sv-sub-wrap"), subBtn = $("#sv-sub-btn"), subMenu = $("#sv-sub-menu");
-        const menus = [[sourceBtn, sourceMenu, labels.sources], [audioBtn, audioMenu, labels.audio], [subBtn, subMenu, labels.subtitles]];
+        const menus = [[sourceBtn, sourceMenu, labels.sources], [audioBtn, audioMenu, labels.audio],
+                       [subBtn, subMenu, labels.subtitles], [speedBtn, speedMenu, labels.speed]];
         function closeAllMenus(restore = false) {
             menus.forEach(([button, menu]) => {
                 const open = menu.classList.contains("sv-menu--open");
@@ -455,6 +481,15 @@
         }
         function syncSources() { syncSelect("source-select", sourceWrap, sourceMenu, 1); }
         function syncAudio() { syncSelect("audio-select", audioWrap, audioMenu, 2); }
+        function syncSpeed() {
+            speedBtn.textContent = `${video.playbackRate || 1}×`;
+            speedMenu.replaceChildren();
+            [.5, .75, 1, 1.25, 1.5, 1.75, 2].forEach(rate => menuItem(speedMenu, `${rate}×`, video.playbackRate === rate, () => {
+                video.defaultPlaybackRate = rate;
+                video.playbackRate = rate;
+            }));
+        }
+        listen(video, 'ratechange', syncSpeed);
         function syncSubtitles() {
             const buttons = Array.from(document.querySelectorAll("#subtitle-list .source-item"));
             subWrap.hidden = !buttons.length;
@@ -498,7 +533,7 @@
             delete video._svCleanup;
         };
         video._svReturnFocus = returnFocus;
-        syncSources(); syncAudio(); syncSubtitles();
+        syncSources(); syncAudio(); syncSubtitles(); syncSpeed();
         updatePlayState(); updateTimeAndProgress(); updateVolumeUI(); syncFullscreen(); showControls();
         playBtn.focus({preventScroll: true});
     }

@@ -24,6 +24,8 @@ def test_admin_tabs_and_folder_navigation(tmp_path, width):
     errors, scans = [], []
     fail_listing = False
     cleanup_items = [{"name": "old.part", "relative_path": "old.part", "kind": "orphan", "is_directory": False, "size_label": "12 B"}, {"name": "empty", "relative_path": "empty", "kind": "empty_directory", "is_directory": True, "size_label": "0 B"}]
+    cleanup_items.append({'name': 'partial.mkv', 'relative_path': 'old-job/partial.mkv', 'kind': 'orphan',
+                          'is_directory': False, 'size_label': '1 MiB', 'requires_review': True})
 
     def route_request(route):
         url = urlsplit(route.request.url)
@@ -55,9 +57,10 @@ def test_admin_tabs_and_folder_navigation(tmp_path, width):
         if url.path == "/admin/api/downloads/cleanup":
             if route.request.method == "GET":
                 return route.fulfill(json={"items": cleanup_items, "total_bytes_label": "12 B"})
-            removed = [item["relative_path"] for item in cleanup_items]
-            cleanup_items.clear()
-            return route.fulfill(json={"deleted": removed, "errors": [], "remaining": {"items": []}})
+            removed = route.request.post_data_json['paths']
+            assert set(removed) == {'old.part', 'empty'}
+            cleanup_items[:] = [item for item in cleanup_items if item['relative_path'] not in removed]
+            return route.fulfill(json={"deleted": removed, "errors": [], "remaining": {"items": cleanup_items, 'total_bytes_label': '1 MiB'}})
         if url.path == "/api/downloads/notifications":
             return route.fulfill(content_type="text/event-stream", body=": connected\n\n")
         return route.fulfill(json={})
@@ -117,11 +120,13 @@ def test_admin_tabs_and_folder_navigation(tmp_path, width):
             expect(page.locator("#fm-select-all")).to_be_enabled()
             page.locator("#fm-cleaner").click()
             expect(page.locator("#fm-cleaner-overlay")).to_be_visible()
-            expect(page.locator("#fm-cleaner-summary")).to_contain_text("2")
+            expect(page.locator("#fm-cleaner-summary")).to_contain_text("3 candidatos")
+            expect(page.locator('[data-cleanup-select="old-job/partial.mkv"]')).not_to_be_checked()
             page.once("dialog", lambda dialog: dialog.accept())
             page.locator("#fm-cleaner-run").click()
             expect(page.locator("#fm-cleaner-summary")).to_contain_text("2")
-            expect(page.locator("#fm-cleaner-count")).to_be_hidden()
+            expect(page.locator("#fm-cleaner-count")).to_have_text('1')
+            expect(page.locator('#fm-cleaner-run')).to_be_disabled()
             page.locator("#fm-cleaner-close").click()
             expect(page.locator("#fm-cleaner-overlay")).to_be_hidden()
             page.get_by_role("tab", name="Catálogo", exact=True).click()

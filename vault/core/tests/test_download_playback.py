@@ -29,6 +29,29 @@ def test_local_files_support_byte_ranges(client, tmp_path):
     assert response.headers["content-range"] == "bytes 3-6/10"
 
 
+def test_proxy_can_send_local_file_after_authorization_without_python_copy(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(downloads.settings, 'MEDIA_ACCEL_REDIRECT', True)
+    folder = tmp_path / 'A series'
+    folder.mkdir()
+    (folder / 'Episode #1?.mp4').write_bytes(b'0123456789')
+    response = client.get('/api/downloads/files/stream', params={'path': 'A series/Episode #1?.mp4'},
+                          headers={'X-StreamVault-Sendfile': '1'})
+    assert response.status_code == 200
+    assert response.content == b''
+    assert response.headers['x-accel-redirect'] == '/_streamvault_media/downloads/A%20series/Episode%20%231%3F.mp4'
+    assert response.headers['cache-control'] == 'private, no-store'
+    # Direct access still works without the cooperating proxy.
+    assert client.get('/api/downloads/files/stream', params={'path': 'A series/Episode #1?.mp4'}).content == b'0123456789'
+
+
+def test_head_local_file_does_not_send_media_body(client, tmp_path):
+    (tmp_path / 'video.mp4').write_bytes(b'0123456789')
+    response = client.head('/api/downloads/files/stream?path=video.mp4')
+    assert response.status_code == 200
+    assert response.headers['content-length'] == '10'
+    assert not response.content
+
+
 def test_partial_season_cannot_be_streamed_directly(client, tmp_path):
     folder = tmp_path / "season"
     folder.mkdir()
@@ -190,6 +213,17 @@ def test_playback_returns_explicit_offset_for_uncached_remux(client, tmp_path, m
     assert "force_stream=true" in result["url"]
 
 
+def test_high_bit_depth_h264_is_converted_instead_of_assumed_browser_safe(client, tmp_path, monkeypatch):
+    (tmp_path / 'video.mp4').write_bytes(b'video')
+    tracks = {'audio': [], 'subtitles': [], 'video_codec': 'h264',
+              'video_pixel_format': 'yuv420p10le', 'duration_seconds': 120}
+    monkeypatch.setattr(downloads, '_probe_media_tracks', lambda _: tracks)
+    monkeypatch.setattr(downloads.shutil, 'which', lambda _: 'ffmpeg')
+    result = client.get('/api/downloads/files/playback?path=video.mp4').json()
+    assert result['mode'] == 'stream'
+    assert 'libx264' in downloads._encoding_args(tracks, '0:a:0?')
+
+
 def test_match_can_select_exact_release_path(client, tmp_path, monkeypatch):
     (tmp_path / "Movie.720p.mp4").write_bytes(b"first")
     (tmp_path / "Movie.1080p.mp4").write_bytes(b"second")
@@ -233,6 +267,97 @@ def test_media_probe_is_cached_by_file_identity(tmp_path, monkeypatch):
     file.write_bytes(b"changed video")
     downloads._probe_media_tracks(file)
     assert probe.call_count == 2
+
+
+def test_concurrent_metadata_requests_share_one_probe(tmp_path, monkeypatch):
+    import concurrent.futures
+    import time
+    media = tmp_path / 'parallel.mkv'
+    media.write_bytes(b'video')
+    def slow_probe(*args, **kwargs):
+        time.sleep(.05)
+        return SimpleNamespace(stdout='{"streams": [], "format": {"duration": "10"}}')
+    probe = Mock(side_effect=slow_probe)
+    monkeypatch.setattr(downloads.shutil, 'which', lambda _: 'ffprobe')
+    monkeypatch.setattr(downloads.subprocess, 'run', probe)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as workers:
+        results = list(workers.map(downloads._probe_media_tracks, [media] * 6))
+    assert all(result['duration_seconds'] == 10 for result in results)
+    assert probe.call_count == 1
+
+
+def test_transient_probe_timeout_does_not_poison_metadata_cache(tmp_path, monkeypatch):
+    import subprocess
+    path = tmp_path / 'temporary-timeout.mkv'
+    path.write_bytes(b'video')
+    probe = Mock(side_effect=[subprocess.TimeoutExpired('ffprobe', 8),
+                            SimpleNamespace(stdout='{"streams": [], "format": {"duration": "10"}}')])
+    monkeypatch.setattr(downloads.shutil, 'which', lambda _: 'ffprobe')
+    monkeypatch.setattr(downloads.subprocess, 'run', probe)
+    assert downloads._probe_media_tracks(path)['duration_seconds'] == 0
+    assert downloads._probe_media_tracks(path)['duration_seconds'] == 10
+    assert probe.call_count == 2
+
+
+def test_embedded_subtitles_coalesce_requests_and_limit_concurrent_processes(tmp_path, monkeypatch):
+    import httpx
+    monkeypatch.setattr(downloads.settings, 'DOWNLOADS_ROOT', str(tmp_path))
+    monkeypatch.setattr(downloads.settings, 'MEDIA_STORAGE_PATH', str(tmp_path / 'cache'))
+    (tmp_path / 'video.mkv').write_bytes(b'video')
+    monkeypatch.setattr(downloads, '_probe_media_tracks', lambda _: {
+        'audio': [], 'subtitles': [{'stream_index': number, 'codec': 'subrip'} for number in (1, 2, 3)]})
+    monkeypatch.setattr(downloads.shutil, 'which', lambda _: 'ffmpeg')
+    async def scenario():
+        entered, release = asyncio.Event(), asyncio.Event()
+        running = maximum = launches = 0
+        async def launch(*args, **kwargs):
+            nonlocal running, maximum, launches
+            running += 1
+            launches += 1
+            maximum = max(maximum, running)
+            if running == 2:
+                entered.set()
+            Path(args[-1]).write_text('WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nHello\n')
+            process = SimpleNamespace(returncode=None, communicate=AsyncMock())
+            async def wait():
+                nonlocal running
+                await release.wait()
+                running -= 1
+                process.returncode = 0
+            process.wait = wait
+            return process
+        monkeypatch.setattr(asyncio, 'create_subprocess_exec', launch)
+        app = FastAPI()
+        app.include_router(downloads.router)
+        app.dependency_overrides[downloads.get_current_user] = lambda: SimpleNamespace(is_admin=True)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://test') as client:
+            tasks = [asyncio.create_task(client.get('/api/downloads/files/embedded-subtitle',
+                     params={'path': 'video.mkv', 'stream': number})) for number in (1, 1, 2, 3)]
+            try:
+                await asyncio.wait_for(entered.wait(), timeout=2)
+                assert launches == 2
+            finally:
+                release.set()
+            responses = await asyncio.gather(*tasks)
+            assert all(response.status_code == 200 for response in responses)
+            assert all('Hello' in response.text for response in responses)
+            assert launches == 3 and maximum == 2
+    asyncio.run(scenario())
+
+
+def test_federated_first_playback_of_uncached_video_has_numeric_offset(tmp_path, monkeypatch):
+    from routers import federation
+    (tmp_path / 'episode.mkv').write_bytes(b'video')
+    monkeypatch.setattr(downloads.settings, 'DOWNLOADS_ROOT', str(tmp_path))
+    monkeypatch.setattr(downloads.settings, 'MEDIA_STORAGE_PATH', str(tmp_path / 'cache'))
+    monkeypatch.setattr(downloads, '_probe_media_tracks', lambda _: {
+        'audio': [], 'subtitles': [], 'video_codec': 'h264', 'duration_seconds': 120})
+    monkeypatch.setattr(downloads.shutil, 'which', lambda _: 'ffmpeg')
+    monkeypatch.setattr(federation, '_relative', AsyncMock(return_value='episode.mkv'))
+    result = asyncio.run(federation.media_metadata('fixture', prepare_playback=True))
+    assert result['playback']['mode'] == 'stream'
+    assert result['playback']['offset'] == 0
+    assert isinstance(result['playback']['offset'], (int, float))
 
 
 def test_cached_remux_does_not_change_a_pinned_stream_offset(tmp_path, monkeypatch):
@@ -311,7 +436,10 @@ def test_live_playback_defers_cache_encoding_until_stream_closes(tmp_path, monke
                 [part async for part in response.body_iterator]
         else:
             assert b"".join([part async for part in response.body_iterator]) == b"fragment"
-        schedule_cache.assert_called_once()
+        if process_exit:
+            schedule_cache.assert_not_called()
+        else:
+            schedule_cache.assert_called_once()
     asyncio.run(scenario())
 
 

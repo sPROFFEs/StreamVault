@@ -18,16 +18,18 @@ from functools import lru_cache
 from hashlib import sha256
 import json
 import logging
+import math
 import os
 from pathlib import Path
 import shutil
 import subprocess
+import threading
 from uuid import uuid4
 from urllib.parse import quote
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse, Response
 from pydantic import BaseModel, Field
 
 from services.download_service import DownloadService
@@ -36,11 +38,14 @@ from services.download_client import downloader_client
 from services.download_limits import stop_process
 from services.streaming_response import ClosingStreamingResponse
 from services.storage_policy import get_global_download_quota_gb, get_path_size_bytes
+from services.storage_policy import ensure_download_space
+from services.storage_maintenance import PlaybackFileResponse, protect_cache, reserve_cache_space, touch_cache
+from services.media_response import media_file_response
+from services.subtitle_content import subtitle_bytes_to_vtt as _subtitle_bytes_to_vtt, download_subtitle, MAX_SUBTITLE_BYTES, SubtitleTooLarge
 from services.media_library import (
     find_matching_media,
     resolve_library_path,
     scan_media_library,
-    srt_to_vtt,
     _invalidate_scan_cache,
     is_incomplete_media,
     classify_video,
@@ -169,7 +174,7 @@ async def _auto_fetch_subtitles(local_path: str, title: str):
         if not content:
             logger.info(f"[auto-subs] No download URL for subtitle of '{title}'")
             return
-        text = _subtitle_bytes_to_vtt(content)
+        text = await asyncio.to_thread(_subtitle_bytes_to_vtt, content)
         base_path = os.path.splitext(local_path)[0]
         sub_path = f"{base_path}.en.vtt"
         with open(sub_path, "w", encoding="utf-8") as f:
@@ -202,9 +207,8 @@ async def _download_opensubtitles_subtitle(file_id: int) -> bytes | None:
             dl_url = auth_resp.json().get("link")
             if not dl_url:
                 return None
-            resp = await client.get(dl_url)
-            if resp.is_success:
-                return resp.content
+            content, _ = await download_subtitle(client, dl_url)
+            return content
     except Exception as exc:
         logger.warning(f"[auto-subs] OpenSubtitles download error: {exc}")
     return None
@@ -217,31 +221,11 @@ async def _download_remote_subtitle(url: str) -> bytes | None:
         return None
     try:
         async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
-            resp = await client.get(url)
-            if resp.is_success:
-                return resp.content
+            content, _ = await download_subtitle(client, url)
+            return content
     except Exception as exc:
         logger.warning(f"[auto-subs] Remote subtitle download error: {exc}")
     return None
-
-
-def _subtitle_bytes_to_vtt(content: bytes, content_type: str = "") -> str:
-    """Convert raw subtitle bytes (plain, zip, or gzip) to WebVTT text.
-    Shared with the /api/subtitles/fetch endpoint for consistency."""
-    import gzip
-    import io
-    import zipfile
-    if content.startswith(b"PK") or "zip" in content_type:
-        with zipfile.ZipFile(io.BytesIO(content)) as archive:
-            candidates = [name for name in archive.namelist()
-                          if name.lower().endswith((".srt", ".vtt"))]
-            if not candidates:
-                raise ValueError("Archive contains no supported subtitle")
-            content = archive.read(candidates[0])
-    elif content.startswith(b"\x1f\x8b") or "gzip" in content_type:
-        content = gzip.decompress(content)
-    text = content.decode("utf-8-sig", errors="replace")
-    return text if text.lstrip().startswith("WEBVTT") else srt_to_vtt(text)
 
 
 torrent_service.on_completion(_on_torrent_done)
@@ -344,6 +328,10 @@ async def _check_download_quota(expected_bytes: int = 0):
     quota_bytes = get_global_download_quota_gb() * (1024 ** 3)
     if used_bytes + expected_bytes >= quota_bytes:
         raise HTTPException(400, "Cuota de descarga superada. Libera espacio primero.")
+    try:
+        await asyncio.to_thread(ensure_download_space, settings.DOWNLOADS_ROOT, expected_bytes)
+    except ValueError as exc:
+        raise HTTPException(507, str(exc)) from exc
 
 
 @router.get("/jobs")
@@ -544,8 +532,8 @@ async def list_downloaded_files(
     }
 
 
-@router.get("/files/stream")
-async def stream_downloaded_file(path: str):
+@router.api_route("/files/stream", methods=["GET", "HEAD"])
+async def stream_downloaded_file(path: str, request: Request = None):
     try:
         media_path = resolve_library_path(settings.DOWNLOADS_ROOT, path)
     except ValueError as exc:
@@ -554,16 +542,30 @@ async def stream_downloaded_file(path: str):
         raise HTTPException(404, "Archivo no encontrado")
     if await asyncio.to_thread(is_incomplete_media, media_path, settings.DOWNLOADS_ROOT):
         raise HTTPException(409, "Download is not complete yet")
-    response = FileResponse(media_path)
-    response.headers["Accept-Ranges"] = "bytes"
-    response.headers["X-Accel-Buffering"] = "no"
-    return response
+    return media_file_response(media_path, request)
 
 
 def _probe_media_tracks(media_path) -> dict:
     media_path = Path(media_path)
     stat = media_path.stat()
-    return _cached_media_tracks(str(media_path.resolve()), stat.st_size, stat.st_mtime_ns)
+    identity = (str(media_path.resolve()), stat.st_size, stat.st_mtime_ns)
+    with _media_probe_lock(identity):
+        try:
+            return _cached_media_tracks(*identity)
+        except MediaProbeUnavailable:
+            return {"audio": [], "subtitles": [], "duration_seconds": 0}
+
+
+class MediaProbeUnavailable(RuntimeError):
+    pass
+
+
+@lru_cache(maxsize=256)
+def _media_probe_lock(identity):
+    return threading.Lock()
+
+
+_media_probe_slots = threading.BoundedSemaphore(4)
 
 
 @lru_cache(maxsize=256)
@@ -571,20 +573,25 @@ def _cached_media_tracks(media_path: str, size: int, mtime_ns: int) -> dict:
     if not shutil.which("ffprobe"):
         return {"audio": [], "subtitles": [], "duration_seconds": 0}
     try:
-        result = subprocess.run(
-            [
-                "ffprobe", "-v", "error",
-                "-show_entries", "format=duration:stream=index,codec_type,codec_name:stream_tags=language,title",
-                "-of", "json", str(media_path),
-            ],
-            check=True, capture_output=True, text=True, timeout=8,
-        )
+        with _media_probe_slots:
+            result = subprocess.run(
+                [
+                    "ffprobe", "-v", "error",
+                    "-show_entries", "format=duration:stream=index,codec_type,codec_name,pix_fmt,width,height:stream_tags=language,title",
+                    "-of", "json", str(media_path),
+                ],
+                check=True, capture_output=True, text=True, timeout=8,
+            )
         payload = json.loads(result.stdout)
-    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
-        return {"audio": [], "subtitles": [], "duration_seconds": 0}
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
+        # lru_cache must not retain a timeout/error as the permanent metadata
+        # for an unchanged file. A later request can retry after server load drops.
+        raise MediaProbeUnavailable('Video probe temporarily unavailable') from exc
     try:
         duration = float(payload.get("format", {}).get("duration") or 0)
     except (TypeError, ValueError):
+        duration = 0
+    if not math.isfinite(duration) or duration < 0:
         duration = 0
     streams = payload.get("streams", [])
     tracks = {"audio": [], "subtitles": [], "duration_seconds": duration, "video_codec": ""}
@@ -603,11 +610,16 @@ def _cached_media_tracks(media_path: str, size: int, mtime_ns: int) -> dict:
             tracks["subtitles"].append(item)
         elif stream.get("codec_type") == "video" and not tracks["video_codec"]:
             tracks["video_codec"] = item["codec"]
+            tracks["video_pixel_format"] = stream.get("pix_fmt", "")
+            tracks["video_width"] = stream.get("width", 0)
+            tracks["video_height"] = stream.get("height", 0)
     return tracks
 
 
 TEXT_SUBTITLE_CODECS = {"ass", "mov_text", "ssa", "srt", "subrip", "text", "webvtt"}
 SUBTITLE_EXTRACTION_TIMEOUT = 180
+_subtitle_extract_tasks: dict[tuple, asyncio.Task] = {}
+_subtitle_extract_slots: dict[object, asyncio.Semaphore] = {}
 
 
 def subtitle_cache_path(media_path: Path, stream: int) -> Path:
@@ -676,7 +688,7 @@ async def _playable_path(path: str) -> Path:
 
 def _remux_cache_path(media_path: Path, audio_map: str) -> Path:
     stat = media_path.stat()
-    fingerprint = f"v2|{media_path.resolve()}|{stat.st_size}|{stat.st_mtime_ns}|{audio_map}"
+    fingerprint = f"v3|{media_path.resolve()}|{stat.st_size}|{stat.st_mtime_ns}|{audio_map}"
     return Path(settings.MEDIA_STORAGE_PATH) / "remux" / f"{sha256(fingerprint.encode()).hexdigest()}.mp4"
 
 
@@ -697,7 +709,7 @@ async def prepare_local_playback(path: str, audio: Optional[int] = None,
     audio_map = _audio_map(tracks, audio)
     primary_audio = tracks["audio"][0] if tracks["audio"] else None
     default_audio = audio is None or (primary_audio and audio == primary_audio["stream_index"])
-    native_mp4 = media_path.suffix.lower() in {".mp4", ".m4v", ".mov"} and tracks.get("video_codec") == "h264"
+    native_mp4 = media_path.suffix.lower() in {".mp4", ".m4v", ".mov"} and _browser_h264(tracks)
     native_webm = media_path.suffix.lower() == ".webm" and tracks.get("video_codec") in {"vp8", "vp9", "av1"}
     audio_ok = not primary_audio or primary_audio["codec"] in ({"opus", "vorbis"} if native_webm else {"aac", "mp3"})
     url = f"/api/downloads/files/stream?path={quote(path)}"
@@ -709,7 +721,7 @@ async def prepare_local_playback(path: str, audio: Optional[int] = None,
         url = f"/api/downloads/files/remux?path={quote(path)}"
         if audio is not None:
             url += f"&audio={audio}"
-        if not cached.is_file() or not cached.stat().st_size:
+        if not await asyncio.to_thread(touch_cache, cached):
             mode, offset = "stream", start
             # Pin the mode even if the cache finishes before the video GET.
             url += f"&start={start}&force_stream=true"
@@ -724,9 +736,13 @@ async def serve_downloaded_subtitle(path: str):
         raise HTTPException(403, str(exc))
     if not subtitle_path.is_file() or subtitle_path.suffix.lower() not in {".srt", ".vtt"}:
         raise HTTPException(404, "Subtitle not found")
-    content = subtitle_path.read_text(encoding="utf-8", errors="replace")
-    if subtitle_path.suffix.lower() == ".srt":
-        content = srt_to_vtt(content)
+    def convert():
+        with subtitle_path.open('rb') as source:
+            return _subtitle_bytes_to_vtt(source.read(MAX_SUBTITLE_BYTES + 1))
+    try:
+        content = await asyncio.to_thread(convert)
+    except SubtitleTooLarge as exc:
+        raise HTTPException(413, str(exc)) from exc
     return PlainTextResponse(content, media_type="text/vtt")
 
 
@@ -745,13 +761,16 @@ async def preview_downloaded_file(path: str):
     if suffix in IMAGE_EXTS:
         return FileResponse(file_path)
     if suffix in TEXT_EXTS:
-        content = file_path.read_text(encoding="utf-8", errors="replace")[:200000]
+        def read_preview():
+            with file_path.open(encoding='utf-8', errors='replace') as source:
+                return source.read(200000)
+        content = await asyncio.to_thread(read_preview)
         return PlainTextResponse(content, media_type="text/plain; charset=utf-8")
     raise HTTPException(404, "Preview not available for this file type")
 
 
 @router.get("/files/embedded-subtitle")
-async def serve_embedded_subtitle(path: str, stream: int):
+async def serve_embedded_subtitle(path: str, stream: int = Query(..., ge=0)):
     """Convert a text subtitle stream in a local file to browser-native WebVTT."""
     try:
         media_path = resolve_library_path(settings.DOWNLOADS_ROOT, path)
@@ -761,43 +780,71 @@ async def serve_embedded_subtitle(path: str, stream: int):
         raise HTTPException(404, "Subtitle unavailable")
 
     cached = subtitle_cache_path(media_path, stream)
-    if cached.is_file() and cached.stat().st_size > 0:
-        return FileResponse(cached, media_type="text/vtt")
+    if touch_cache(cached):
+        return PlaybackFileResponse(cached, media_type="text/vtt", headers={'Cache-Control': 'private, no-store'})
+    tracks = await asyncio.to_thread(_probe_media_tracks, media_path)
+    if not any(item['stream_index'] == stream and item['codec'] in TEXT_SUBTITLE_CODECS for item in tracks.get('subtitles', [])):
+        raise HTTPException(404, 'Text subtitle track unavailable')
+    loop = asyncio.get_running_loop()
+    key = (loop, str(cached))
+    task = _subtitle_extract_tasks.get(key)
+    if task is None:
+        if sum(owner is loop for owner, _ in _subtitle_extract_tasks) >= 16:
+            raise HTTPException(503, 'Subtitle extraction is busy', headers={'Retry-After': '3'})
+        slots = _subtitle_extract_slots.setdefault(loop, asyncio.Semaphore(2))
+        async def convert():
+            async with slots:
+                await _extract_embedded_subtitle(media_path, stream, cached)
+        task = asyncio.create_task(convert())
+        _subtitle_extract_tasks[key] = task
+        def done(completed):
+            _subtitle_extract_tasks.pop(key, None)
+            if not any(owner is loop for owner, _ in _subtitle_extract_tasks):
+                _subtitle_extract_slots.pop(loop, None)
+            if not completed.cancelled():
+                completed.exception()  # Also reap failures after a waiting client disconnects.
+        task.add_done_callback(done)
+    await asyncio.shield(task)
+    return PlaybackFileResponse(cached, media_type='text/vtt', headers={'Cache-Control': 'private, no-store'})
+
+
+async def _extract_embedded_subtitle(media_path, stream, cached):
     temporary = cached.with_name(f"{cached.name}.{uuid4().hex}.tmp")
+    process = None
+    with protect_cache(cached, temporary):
+        try:
+            if not await asyncio.to_thread(reserve_cache_space, 2 * MAX_SUBTITLE_BYTES):
+                raise HTTPException(507, 'Insufficient disk space for subtitles')
+            priority = ['nice', '-n', '10'] if shutil.which('nice') else []
+            process = await asyncio.create_subprocess_exec(
+                *priority, 'ffmpeg', '-nostdin', '-v', 'error', '-threads', '1', '-i', str(media_path),
+                '-map', f'0:{stream}', '-c:s', 'webvtt', '-f', 'webvtt',
+                '-fs', str(MAX_SUBTITLE_BYTES + 1), '-y', str(temporary),
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+            await asyncio.wait_for(process.wait(), timeout=SUBTITLE_EXTRACTION_TIMEOUT)
+            if process.returncode or not temporary.is_file() or not temporary.stat().st_size:
+                raise HTTPException(422, 'Subtitle conversion failed')
+            if temporary.stat().st_size > MAX_SUBTITLE_BYTES:
+                raise HTTPException(413, 'Subtitle file is too large')
+            os.replace(temporary, cached)
+        except asyncio.TimeoutError as exc:
+            raise HTTPException(504, 'Subtitle extraction timed out') from exc
+        except OSError as exc:
+            raise HTTPException(422, 'Subtitle conversion failed') from exc
+        finally:
+            await stop_process(process)
+            temporary.unlink(missing_ok=True)
+            from services.storage_policy import invalidate_path_size
+            invalidate_path_size(settings.MEDIA_STORAGE_PATH)
 
-    def extract():
-        return subprocess.run(
-            [
-                "ffmpeg", "-v", "error", "-i", str(media_path),
-                "-map", f"0:{stream}", "-c:s", "webvtt", "-f", "webvtt", "-y", str(temporary),
-            ],
-            capture_output=True, timeout=SUBTITLE_EXTRACTION_TIMEOUT,
-        )
 
-    try:
-        result = await asyncio.to_thread(extract)
-    except subprocess.TimeoutExpired as exc:
-        temporary.unlink(missing_ok=True)
-        logger.warning("Subtitle extraction timed out for stream %s", stream)
-        raise HTTPException(504, "Subtitle extraction timed out") from exc
-    except (OSError, subprocess.SubprocessError) as exc:
-        temporary.unlink(missing_ok=True)
-        raise HTTPException(422, "Subtitle conversion failed") from exc
-    if result.returncode or not temporary.is_file() or temporary.stat().st_size == 0:
-        temporary.unlink(missing_ok=True)
-        error = result.stderr.decode("utf-8", errors="replace").strip()[-800:]
-        logger.warning("Subtitle conversion failed for stream %s: %s", stream, error)
-        raise HTTPException(422, "Subtitle conversion failed")
-    os.replace(temporary, cached)
-    return FileResponse(cached, media_type="text/vtt")
-
-
-@router.get("/files/remux")
+@router.api_route("/files/remux", methods=["GET", "HEAD"])
 async def remux_downloaded_media(
     path: str,
     audio: Optional[int] = None,
     start: float = Query(0, ge=0, le=86400),
     force_stream: bool = False,
+    request: Request = None,
 ):
     """Remux local video while converting unsupported audio to browser-safe AAC.
 
@@ -819,11 +866,16 @@ async def remux_downloaded_media(
     cached = _remux_cache_path(media_path, audio_map)
 
     # Mode 1: cached file exists → serve it (full seeking via Range requests).
-    if not force_stream and cached.is_file() and cached.stat().st_size > 0:
-        file_response = FileResponse(cached, media_type="video/mp4")
-        file_response.headers["Accept-Ranges"] = "bytes"
-        file_response.headers["X-Accel-Buffering"] = "no"
-        return file_response
+    with protect_cache(cached):
+        if not force_stream and cached.is_file() and cached.stat().st_size > 0:
+            file_response = PlaybackFileResponse(cached, media_type="video/mp4", headers={"Cache-Control": "private, no-store"})
+            file_response.headers["Accept-Ranges"] = "bytes"
+            file_response.headers["X-Accel-Buffering"] = "no"
+            return file_response
+    if request is not None and request.method == 'HEAD':
+        response = Response(media_type='video/mp4', headers={'Cache-Control': 'private, no-store'})
+        del response.headers['content-length']
+        return response
 
     # Jump close to the target using the input index, then discard at most
     # fifteen seconds for frame-accurate output without transcoding the video.
@@ -839,6 +891,9 @@ async def remux_downloaded_media(
     global _active_live_remuxes
     _active_live_remuxes += 1
     process = None
+    bytes_sent = 0
+    completed = False
+    conversion_failed = False
 
     async def cleanup():
         global _active_live_remuxes
@@ -847,7 +902,8 @@ async def remux_downloaded_media(
         finally:
             _active_live_remuxes -= 1
             _live_remux_slots.release()
-        if process is not None and not cached.is_file():
+        if (process is not None and not conversion_failed and not cached.is_file()
+                and (completed or bytes_sent >= 4 * 1024**2)):
             _ensure_background_remux(media_path, audio_map, cached)
 
     # A cache build started after a previous viewing must yield to this one.
@@ -861,25 +917,28 @@ async def remux_downloaded_media(
         raise
 
     async def output():
-        nonlocal process
+        nonlocal process, bytes_sent, completed, conversion_failed
         process = await asyncio.create_subprocess_exec(
                 "ffmpeg", "-nostdin", "-v", "error", "-threads", "4",
                 *input_seek_args, "-i", str(media_path), *output_seek_args,
                 "-map", "0:v:0", "-map", audio_map,
                 *_encoding_args(tracks, audio_map),
                 "-avoid_negative_ts", "make_zero",
-                "-movflags", "frag_keyframe+empty_moov+default_base_moof+flush_packets",
+                "-movflags", "frag_keyframe+empty_moov+default_base_moof",
                 "-flush_packets", "1",
                 "-frag_duration", "1000000", "-f", "mp4", "pipe:1",
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
         )
         while chunk := await process.stdout.read(64 * 1024):
+            bytes_sent += len(chunk)
             yield chunk
         await process.wait()
         if process.returncode:
+            conversion_failed = True
             # Terminate the HTTP body as an error, rather than marking a
             # truncated conversion as a complete device download.
             raise RuntimeError("Video conversion failed before completion")
+        completed = True
 
     return ClosingStreamingResponse(
         output(),
@@ -897,7 +956,7 @@ _active_live_remuxes = 0
 
 
 def _encoding_args(tracks: dict, audio_map: str) -> list[str]:
-    video = ["-c:v", "copy"] if tracks.get("video_codec") == "h264" else [
+    video = ["-c:v", "copy"] if _browser_h264(tracks) else [
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p", "-threads:v", "4",
     ]
     selected = next((track for track in tracks["audio"] if f"0:{track['stream_index']}" == audio_map), None)
@@ -907,9 +966,13 @@ def _encoding_args(tracks: dict, audio_map: str) -> list[str]:
     return video + audio
 
 
+def _browser_h264(tracks: dict) -> bool:
+    return tracks.get('video_codec') == 'h264' and tracks.get('video_pixel_format', '') in {'', 'yuv420p', 'yuvj420p'}
+
+
 def _ensure_background_remux(media_path: Path, audio_map: str, cached: Path) -> None:
     """Start a background pre-remux to a seekable faststart MP4 if not already running."""
-    if _active_live_remuxes:
+    if not settings.AUTO_CACHE_ON_WATCH or _active_live_remuxes:
         return  # Foreground playback owns the CPU and disk budget.
     key = str(cached)
     existing = _background_remux_tasks.get(key)
@@ -933,13 +996,14 @@ async def _build_remux_cache(media_path: Path, audio_map: str, cached: Path) -> 
     """Pre-remux the full file to a seekable faststart MP4. Runs in the background."""
     temporary = cached.with_name(f"{cached.stem}.{uuid4().hex}.mp4")
     process = None
+    waiter = None
+    lease = protect_cache(cached, temporary)
+    lease.__enter__()
     try:
         cached.parent.mkdir(parents=True, exist_ok=True)
         # A faststart copy temporarily needs another file's worth of space.
         required = media_path.stat().st_size * 2
-        used = await asyncio.to_thread(get_path_size_bytes, settings.MEDIA_STORAGE_PATH)
-        free = await asyncio.to_thread(shutil.disk_usage, cached.parent)
-        if free.free < required or used + required > settings.MAX_CACHE_SIZE_GB * 1024**3:
+        if not await asyncio.to_thread(reserve_cache_space, required):
             logger.info("Skipping remux cache: insufficient cache space")
             return
         tracks = await asyncio.to_thread(_probe_media_tracks, media_path)
@@ -954,7 +1018,19 @@ async def _build_remux_cache(media_path: Path, audio_map: str, cached: Path) -> 
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
         )
-        await asyncio.wait_for(process.wait(), timeout=6 * 3600)
+        waiter = asyncio.create_task(process.wait())
+        deadline = asyncio.get_running_loop().time() + 6 * 3600
+        while True:
+            try:
+                await asyncio.wait_for(asyncio.shield(waiter), timeout=5)
+                break
+            except asyncio.TimeoutError:
+                if asyncio.get_running_loop().time() >= deadline:
+                    raise TimeoutError('Background video conversion timed out')
+                # Encoded H.264 can grow beyond the source estimate. Stop a
+                # writer before it consumes space needed by the server itself.
+                if not await asyncio.to_thread(reserve_cache_space, 0):
+                    raise OSError('Playback cache budget exhausted')
         if process.returncode or not temporary.is_file() or temporary.stat().st_size == 0:
             logger.warning("Background remux failed for %s (exit %s)", media_path, process.returncode)
             return
@@ -963,16 +1039,24 @@ async def _build_remux_cache(media_path: Path, audio_map: str, cached: Path) -> 
     except Exception:
         logger.exception("Background remux crashed for %s", media_path)
     finally:
-        await stop_process(process)
-        temporary.unlink(missing_ok=True)
+        try:
+            await stop_process(process)
+            if waiter:
+                waiter.cancel()
+                await asyncio.gather(waiter, return_exceptions=True)
+            temporary.unlink(missing_ok=True)
+            from services.storage_policy import invalidate_path_size
+            invalidate_path_size(settings.MEDIA_STORAGE_PATH)
+        finally:
+            lease.__exit__(None, None, None)
 
 
 async def close_playback_tasks():
     global _downloader_listener_task
+    tasks = list(_background_remux_tasks.values()) + list(_subtitle_extract_tasks.values())
     if _downloader_listener_task and not _downloader_listener_task.done():
-        _downloader_listener_task.cancel()
+        tasks.append(_downloader_listener_task)
         _downloader_listener_task = None
-    tasks = list(_background_remux_tasks.values())
     for task in tasks:
         task.cancel()
     await asyncio.gather(*tasks, return_exceptions=True)

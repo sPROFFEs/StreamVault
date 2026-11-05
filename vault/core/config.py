@@ -65,6 +65,9 @@ class Settings(BaseSettings):
     DOWNLOAD_RATE_LIMIT: int = Field(4 * 1024**2, ge=1024)
     TORRENT_UPLOAD_RATE_LIMIT: int = Field(64 * 1024, ge=1024)
     MAX_LIVE_REMUXES: int = Field(2, ge=1, le=8)
+    MIN_FREE_DISK_GB: float = Field(2, ge=0, le=1024)
+    PLAYBACK_CACHE_RETENTION_HOURS: int = Field(168, ge=1, le=8760)
+    MEDIA_ACCEL_REDIRECT: bool = False  # Compose enables the internal read-only nginx location.
     
     # Infrastructure
     CHECK_INTERVAL_MINUTES: int = 30  # Cleanup task interval

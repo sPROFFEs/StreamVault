@@ -150,6 +150,43 @@ def test_download_cleanup_can_release_marker_from_job_that_is_no_longer_active(t
     result = scan_download_cleanup(tmp_path, active_job_ids={"job-live"})
     paths = {item["relative_path"] for item in result["items"]}
 
-    assert "job-gone/.streamvault-incomplete" in paths
+    # Removing a marker alone would advertise a possibly partial movie as complete.
+    assert "job-gone/.streamvault-incomplete" not in paths
     assert "job-gone/Movie.mkv" not in paths
     assert "job-live/partial.part" not in paths
+
+
+def test_cleaner_protects_active_directory_even_before_marker_is_written(tmp_path):
+    active = tmp_path / 'job-starting'
+    active.mkdir()
+    (active / 'transfer.part').write_bytes(b'active')
+    assert scan_download_cleanup(tmp_path, active_job_ids={'job-starting'})['items'] == []
+
+
+def test_abandoned_incomplete_job_can_be_reclaimed_without_unlocking_unselected_videos(tmp_path):
+    from services.admin_download_library import cleanup_download_library
+    job_id = '3c79b5ee-80fe-4bc3-ad87-5ef97e1e301c'
+    job = tmp_path / job_id
+    job.mkdir()
+    marker = job / '.streamvault-incomplete'
+    marker.touch()
+    os.utime(marker, (0, 0))
+    media = job / 'partial.mkv'
+    media.write_bytes(b'not a completed movie')
+    preview = scan_download_cleanup(tmp_path, active_job_ids=set())
+    assert f'{job_id}/partial.mkv' in {item['relative_path'] for item in preview['items']}
+    result = cleanup_download_library(tmp_path, [f'{job_id}/.streamvault-incomplete'], set())
+    assert not result['deleted']
+    assert marker.exists() and media.exists()
+    result = cleanup_download_library(tmp_path, None, set())
+    assert not result['deleted']
+    assert media.exists(), 'Partial jobs require explicit review and selection'
+    result = cleanup_download_library(tmp_path, [item['relative_path'] for item in preview['items']], set())
+    assert not job.exists()
+    assert result['freed_bytes'] == len(b'not a completed movie')
+
+
+def test_unknown_downloader_state_preserves_recent_flat_download_artifacts(tmp_path):
+    recent = tmp_path / 'ongoing.mp4.part'
+    recent.write_bytes(b'in use')
+    assert scan_download_cleanup(tmp_path, active_job_ids=None)['items'] == []

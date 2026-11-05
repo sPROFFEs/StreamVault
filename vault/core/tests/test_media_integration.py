@@ -18,12 +18,16 @@ from services.media_library import find_matching_media, is_incomplete_media, sca
 
 
 @pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"), reason="FFmpeg tools required")
-def test_real_video_conversion_and_seekable_cache(tmp_path, monkeypatch):
+@pytest.mark.parametrize('video_args', [
+    ['-c:v', 'mpeg4'],
+    ['-c:v', 'libx264', '-pix_fmt', 'yuv420p10le', '-profile:v', 'high10'],
+], ids=['unsupported-codec', 'h264-10bit'])
+def test_real_video_conversion_and_seekable_cache(tmp_path, monkeypatch, video_args):
     source = tmp_path / "sample.mkv"
     subprocess.run([
         "ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=10",
         "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
-        "-t", "4", "-c:v", "mpeg4", "-c:a", "ac3", str(source),
+        "-t", "4", *video_args, "-threads", "1", "-c:a", "ac3", str(source),
     ], check=True, capture_output=True, timeout=15)
     monkeypatch.setattr(downloads.settings, "MEDIA_STORAGE_PATH", str(tmp_path / "cache"))
     cached = downloads._remux_cache_path(source, "0:1")
@@ -31,11 +35,32 @@ def test_real_video_conversion_and_seekable_cache(tmp_path, monkeypatch):
     assert cached.is_file()
     tracks = downloads._probe_media_tracks(cached)
     assert tracks["video_codec"] == "h264"
+    assert tracks['video_pixel_format'] == 'yuv420p'
     assert tracks["audio"][0]["codec"] == "aac"
     assert 3.9 < tracks["duration_seconds"] < 4.2
     content = cached.read_bytes()
     assert content.index(b"moov") < content.index(b"mdat")
     subprocess.run(["ffmpeg", "-v", "error", "-i", str(cached), "-f", "null", "-"],
+                   check=True, capture_output=True, timeout=15)
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"), reason="FFmpeg tools required")
+def test_live_conversion_produces_decodable_fragments(tmp_path, monkeypatch):
+    source = tmp_path / 'sample.mkv'
+    subprocess.run([
+        'ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=160x90:rate=10',
+        '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000', '-t', '4',
+        '-c:v', 'mpeg4', '-threads', '1', '-c:a', 'ac3', str(source),
+    ], check=True, capture_output=True, timeout=15)
+    monkeypatch.setattr(downloads.settings, 'DOWNLOADS_ROOT', str(tmp_path))
+    monkeypatch.setattr(downloads.settings, 'MEDIA_STORAGE_PATH', str(tmp_path / 'cache'))
+    monkeypatch.setattr(downloads, '_ensure_background_remux', lambda *_: None)
+    async def stream():
+        response = await downloads.remux_downloaded_media('sample.mkv', start=0, force_stream=True)
+        return b''.join([chunk async for chunk in response.body_iterator])
+    output = tmp_path / 'fragments.mp4'
+    output.write_bytes(asyncio.run(stream()))
+    subprocess.run(['ffmpeg', '-v', 'error', '-i', str(output), '-f', 'null', '-'],
                    check=True, capture_output=True, timeout=15)
 
 

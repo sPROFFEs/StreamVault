@@ -7,6 +7,12 @@
         if (!panel) return;
         const es = window.APP_LANG === "es";
         const t = (en, spanish) => es ? spanish : en;
+        const fmtBytes = value => {
+            let size = Math.max(0, Number(value) || 0), unit = 0;
+            const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+            while (size >= 1024 && unit < units.length - 1) { size /= 1024; unit++; }
+            return `${size.toFixed(unit ? 1 : 0)} ${units[unit]}`;
+        };
         const escape = value => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;")
             .replaceAll(">", "&gt;").replaceAll('"', "&quot;");
         const icons = {
@@ -166,6 +172,17 @@
             $("fm-cleaner-summary").textContent = total
                 ? `${total} ${t("candidates", "candidatos")} · ${cleanerData.total_bytes_label}`
                 : t("Nothing safe to clean was found.", "No se han encontrado residuos seguros para limpiar.");
+            if (cleanerData?.total_candidates > total) {
+                $("fm-cleaner-summary").textContent += ` · ${t(`Showing ${total} of ${cleanerData.total_candidates}; clean this batch to see more.`, `Se muestran ${total} de ${cleanerData.total_candidates}; limpia este lote para ver más.`)}`;
+            }
+            if (items.some(item => item.requires_review)) {
+                $("fm-cleaner-summary").textContent += t(" · Partial jobs require explicit selection.", " · Selecciona expresamente las descargas incompletas que quieras borrar.");
+            }
+            const storage = cleanerData?.storage;
+            $("fm-cleaner-storage").textContent = storage
+                ? t(`Free disk: ${fmtBytes(storage.disk_free_bytes)} · Playback cache: ${fmtBytes(storage.cache_bytes)} · Reserved: ${fmtBytes(storage.reserve_bytes)}`,
+                    `Disco libre: ${fmtBytes(storage.disk_free_bytes)} · Caché de reproducción: ${fmtBytes(storage.cache_bytes)} · Reserva: ${fmtBytes(storage.reserve_bytes)}`)
+                : "";
             $("fm-cleaner-list").innerHTML = items.length ? items.map(item => {
                 const path = escape(item.relative_path);
                 return `<label class="admin-cleaner-row"><input type="checkbox" data-cleanup-select="${path}"><span class="admin-cleaner-row__icon">${icon(item.is_directory ? "folder" : "file")}</span><span class="admin-cleaner-row__name"><strong>${escape(item.name)}</strong><small>${escape(item.relative_path)} · ${escape(item.reason)}</small></span><span class="admin-cleaner-row__size">${escape(item.size_label)}</span></label>`;
@@ -186,7 +203,7 @@
                 if (!response.ok) throw new Error(result.detail || `HTTP ${response.status}`);
                 cleanerData = result;
                 cleanerSelected.clear();
-                result.items.forEach(item => cleanerSelected.add(item.relative_path));
+                result.items.filter(item => !item.requires_review).forEach(item => cleanerSelected.add(item.relative_path));
                 renderCleaner();
             } catch (error) {
                 cleanerData = {items: [], total_bytes_label: "0 B"};
@@ -214,7 +231,9 @@
 
         async function runCleaner() {
             if (cleanerLoading || !cleanerSelected.size) return;
-            if (!confirm(t("Remove the selected abandoned files and empty folders?", "¿Eliminar los archivos abandonados y carpetas vacías seleccionados?"))) return;
+            const review = cleanerData?.items.some(item => item.requires_review && cleanerSelected.has(item.relative_path));
+            const question = t("Remove the selected partial downloads, empty folders and playback copies?", "¿Eliminar las descargas parciales, carpetas vacías y copias de reproducción seleccionadas?");
+            if (!confirm(question + (review ? t(" Incomplete jobs may contain playable episodes.", " Los trabajos incompletos pueden contener capítulos ya descargados.") : ""))) return;
             cleanerLoading = true;
             updateCleanerSelection();
             try {
@@ -225,8 +244,14 @@
                 const result = await response.json();
                 if (!response.ok) throw new Error(result.detail || `HTTP ${response.status}`);
                 await load();
-                await loadCleaner();
-                $("fm-cleaner-summary").textContent = `${result.deleted.length} ${t("items removed", "elementos eliminados")}`;
+                if (result.remaining) {
+                    cleanerData = result.remaining;
+                    cleanerSelected.clear();
+                    cleanerData.items.filter(item => !item.requires_review).forEach(item => cleanerSelected.add(item.relative_path));
+                    renderCleaner();
+                } else await loadCleaner();
+                const failed = result.errors?.length || 0;
+                $("fm-cleaner-summary").textContent = `${result.deleted.length} ${t("items removed", "elementos eliminados")} · ${fmtBytes(result.freed_bytes || 0)}${failed ? ` · ${failed} ${t("items could not be removed", "elementos no se pudieron eliminar")}` : ""}`;
             } catch (error) {
                 $("fm-cleaner-summary").textContent = error.message;
             } finally {
@@ -405,5 +430,6 @@
             }
         });
         setView(view);
+        if (new URLSearchParams(location.search).get("clean") === "1") $("fm-cleaner").click();
     });
 })();

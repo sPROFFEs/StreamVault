@@ -83,3 +83,63 @@ def test_cleanup_endpoints_require_authentication():
     with TestClient(app) as client:
         assert client.get("/admin/api/downloads/cleanup").status_code == 401
         assert client.post("/admin/api/downloads/cleanup", json={}).status_code == 401
+
+
+def test_cleaner_includes_idle_playback_copies_and_reports_disk_budget(tmp_path, monkeypatch):
+    import os
+    import time
+    root = tmp_path / 'downloads'
+    root.mkdir()
+    video = root / 'keep.mp4'
+    video.write_bytes(b'original')
+    cache = tmp_path / 'cache' / 'remux'
+    cache.mkdir(parents=True)
+    copy = cache / ('a' * 64 + '.mp4')
+    copy.write_bytes(b'disposable')
+    old = time.time() - 7200
+    os.utime(copy, (old, old))
+    monkeypatch.setattr(admin.settings, 'DOWNLOADS_ROOT', str(root))
+    monkeypatch.setattr(admin.settings, 'MEDIA_STORAGE_PATH', str(cache.parent))
+    app = FastAPI()
+    app.include_router(admin.router)
+    app.dependency_overrides[admin.get_current_admin] = lambda: SimpleNamespace(is_admin=True)
+    with TestClient(app) as client:
+        preview = client.get('/admin/api/downloads/cleanup').json()
+        assert preview['storage']['disk_free_bytes'] > 0
+        candidate = '@cache/remux/' + copy.name
+        assert candidate in {item['relative_path'] for item in preview['items']}
+        result = client.post('/admin/api/downloads/cleanup', json={'paths': [candidate]}).json()
+        assert result['freed_bytes'] == len(b'disposable')
+        assert not copy.exists() and video.exists()
+
+
+def test_legacy_purge_opens_preview_instead_of_erasing_global_tmp(monkeypatch):
+    def forbidden(*args, **kwargs):
+        raise AssertionError('A maintenance request must not traverse global temporary directories')
+    monkeypatch.setattr('os.walk', forbidden)
+    app = FastAPI()
+    app.include_router(admin.router)
+    app.dependency_overrides[admin.get_current_admin] = lambda: SimpleNamespace(is_admin=True)
+    with TestClient(app) as client:
+        response = client.post('/admin/system/purge-storage', follow_redirects=False)
+        assert response.status_code == 303
+        assert response.headers['location'] == '/admin/?tab=files&clean=1'
+
+
+def test_large_cleanup_batches_remove_children_before_offering_parent_folders(tmp_path, monkeypatch):
+    root = tmp_path / 'downloads'
+    for index in range(501):
+        folder = root / f'job-{index:04d}'
+        folder.mkdir(parents=True)
+        (folder / 'abandoned.part').write_bytes(b'partial')
+    monkeypatch.setattr(admin.settings, 'DOWNLOADS_ROOT', str(root))
+    monkeypatch.setattr(admin.settings, 'MEDIA_STORAGE_PATH', str(tmp_path / 'cache'))
+    preview = admin._storage_cleanup_preview(set())
+    assert preview['total_candidates'] == 1002
+    assert len(preview['items']) == 500
+    selected = [item['relative_path'] for item in preview['items']]
+    result = admin._cleanup_storage(selected, set())
+    assert len(result['deleted']) == 500
+    assert not result['errors']
+    assert result['freed_bytes'] == 500 * len(b'partial')
+    assert result['remaining']['total_candidates'] == 502

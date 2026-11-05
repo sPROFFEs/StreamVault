@@ -15,7 +15,7 @@ def test_aria2_command_is_conservative_for_personal_server():
 
     assert "--bt-max-peers=8" in command
     assert "--disk-cache=64M" in command
-    assert "--file-allocation=falloc" in command
+    assert "--file-allocation=none" in command
     assert "--bt-enable-lpd=false" in command
     assert f"--max-overall-download-limit={settings.DOWNLOAD_RATE_LIMIT // settings.CONCURRENT_DOWNLOADS}" in command
     assert command[-1] == "magnet:?xt=urn:btih:test"

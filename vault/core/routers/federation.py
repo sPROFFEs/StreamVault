@@ -23,6 +23,7 @@ from routers import downloads, profiles
 from services import federation_service as federation
 from services.media_library import resolve_library_path
 from services.streaming_response import ClosingStreamingResponse
+from services.media_response import media_file_response
 
 router = APIRouter()
 _tasks: set[asyncio.Task] = set()
@@ -212,7 +213,7 @@ async def media_metadata(media_id: str, prepare_playback: bool = False,
             "subtitles": [{"language": item["language"], "label": item["label"], "index": index}
                           for index, item in enumerate(match["subtitles"])]}
     if prepare_playback:
-        result = await downloads.prepare_local_playback(relative)
+        result = await downloads.prepare_local_playback(relative, start=0)
         metadata["playback"] = {key: result[key] for key in ("mode", "offset", "duration_seconds")} | {
             "transport": "remux" if "/remux?" in result["url"] else "native"}
     return metadata
@@ -245,8 +246,7 @@ async def media_stream(media_id: str, request: Request, audio: int | None = None
             return response
         return await downloads.remux_downloaded_media(relative, audio=audio, start=start, force_stream=force_stream)
     path = resolve_library_path(settings.DOWNLOADS_ROOT, relative)
-    return FileResponse(path, media_type=mimetypes.guess_type(str(path))[0] or "application/octet-stream",
-                        headers={"Cache-Control": "private, no-store"})
+    return media_file_response(path, request)
 
 
 @router.get("/api/federation/v1/media/{media_id}/subtitles/{index}")

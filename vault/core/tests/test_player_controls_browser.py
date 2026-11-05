@@ -101,6 +101,49 @@ def test_timeline_paints_elapsed_and_remaining_track(player_page):
     assert seek.bounding_box()["height"] >= 28
 
 
+def test_fragment_duration_does_not_replace_the_full_movie_duration(player_page):
+    player_page.evaluate("duration = 2; video.currentTime = 1; video.dispatchEvent(new Event('durationchange'))")
+    expect(player_page.locator('#sv-seek')).to_have_value('1')
+    expect(player_page.locator('#sv-time-remaining')).to_have_text('-1:39')
+
+
+def test_custom_controls_leave_managed_local_playback_recovery_to_its_owner(player_page):
+    page = player_page
+    page.clock.install()
+    page.evaluate("init(); video._playbackRequest = {}; video.play(); video.currentTime = 10; video.dispatchEvent(new Event('timeupdate'))")
+    page.clock.fast_forward(5000)
+    assert page.evaluate('video.currentTime') == 10
+    assert page.evaluate('seeks') == []
+
+
+def test_playback_speed_menu_updates_video_and_survives_player_reinitialization(player_page):
+    page = player_page
+    page.get_by_role('button', name='Playback speed', exact=True).click()
+    page.get_by_role('button', name='1.5×', exact=True).click()
+    assert page.evaluate('video.playbackRate') == 1.5
+    assert page.evaluate('video.defaultPlaybackRate') == 1.5
+    page.evaluate('init()')
+    page.get_by_role('button', name='Playback speed', exact=True).click()
+    expect(page.get_by_role('button', name='1.5×', exact=True)).to_have_attribute('aria-pressed', 'true')
+
+
+def test_picture_in_picture_is_only_exposed_when_supported(player_page):
+    page = player_page
+    page.evaluate('''() => {
+      Object.defineProperty(document, 'pictureInPictureEnabled', {configurable:true, value:true});
+      window.pipCalls = 0;
+      video.requestPictureInPicture = async () => { window.pipCalls++; };
+      init();
+    }''')
+    page.get_by_role('button', name='Picture in picture', exact=True).click()
+    assert page.evaluate('pipCalls') == 1
+    page.evaluate('''() => {
+      Object.defineProperty(document, 'pictureInPictureEnabled', {configurable:true, value:false});
+      init();
+    }''')
+    expect(page.locator('#sv-pip')).to_be_hidden()
+
+
 @pytest.mark.parametrize("resume_from", ["playing", "paused", "buffering"])
 def test_mouse_inactivity_hides_controls_and_keyboard_restores_them(player_page, resume_from):
     page = player_page
@@ -308,17 +351,23 @@ def test_fatal_hls_errors_offer_bounded_recovery_and_feedback(player_page):
     expect(page.get_by_role("status")).to_contain_text("unavailable")
 
 
-def test_streaming_playback_starts_with_two_seconds_of_reserve(player_page):
+def test_streaming_playback_waits_for_two_and_a_half_seconds_of_reserve(player_page):
     page = player_page
+    page.clock.install()
     page.evaluate('''async () => {
         video.load = () => {};
+        Object.defineProperty(video, 'src', {set() {}});
+        window.bufferedAhead = 2;
         window.fetch = async () => ({ok: true, json: async () => ({
             mode: 'stream', offset: 0, duration_seconds: 100, url: 'https://streamvault.test/fixture.mp4'
         })});
-        Object.defineProperty(video, 'buffered', {get: () => ({length: 1, start: () => 0, end: () => 2})});
+        Object.defineProperty(video, 'buffered', {get: () => ({length: 1, start: () => 0, end: () => bufferedAhead})});
         await SVLocalPlayback.open(video, {relative_path: 'fixture.mkv'});
         video.dispatchEvent(new Event('loadedmetadata'));
     }''')
+    assert page.evaluate('playCalls') == 0
+    page.evaluate('bufferedAhead = 2.5')
+    page.clock.fast_forward(200)
     assert page.evaluate('playCalls') == 1
 
 

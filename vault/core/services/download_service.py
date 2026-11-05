@@ -2,6 +2,8 @@ import os
 import uuid
 import logging
 import asyncio
+import time
+from pathlib import Path
 try:
     import yt_dlp
 except ImportError:
@@ -10,9 +12,9 @@ from typing import Dict, List, Optional
 from datetime import datetime
 
 from config import settings
-from services.storage_policy import get_global_download_quota_gb, get_path_size_bytes
+from services.storage_policy import ensure_download_space
 from services.download_limits import download_slots, download_rate_per_job
-from services.media_library import _invalidate_scan_cache
+from services.media_library import _invalidate_scan_cache, INCOMPLETE_MARKER
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +31,7 @@ class DownloadJob:
     def __init__(self, url: str, title: str, quality: str = 'best',
                  extra_headers: Optional[Dict[str, str]] = None):
         self.id = str(uuid.uuid4())
+        self.download_dir = os.path.join(DOWNLOADS_DIR, self.id)
         self.url = url
         self.title = title
         self.quality = quality
@@ -60,10 +63,7 @@ class DownloadService:
                        extra_headers: Optional[Dict[str, str]] = None,
                        quota_checked: bool = False) -> str:
         if not quota_checked:
-            used_bytes = get_path_size_bytes(DOWNLOADS_DIR)
-            quota_bytes = get_global_download_quota_gb() * (1024**3)
-            if used_bytes >= quota_bytes:
-                raise ValueError("Download pool quota exceeded. Free space from shared downloads.")
+            ensure_download_space(DOWNLOADS_DIR)
 
         duplicate_id = self.find_active_duplicate(url=url, title=title)
         if duplicate_id:
@@ -116,9 +116,15 @@ class DownloadService:
 
     async def _download(self, job: DownloadJob):
         job.status = "downloading"
-        logger.info(f"Starting download: {job.title} ({job.url})")
+        logger.info("Starting download: %s", job.id)
+        marker = Path(job.download_dir) / INCOMPLETE_MARKER
+        last_space_check = 0.0
 
         def progress_hook(d):
+            nonlocal last_space_check
+            if time.monotonic() - last_space_check >= 5:
+                ensure_download_space(DOWNLOADS_DIR)
+                last_space_check = time.monotonic()
             if d['status'] == 'downloading':
                 try:
                     p = d.get('_percent_str', '0%').replace('%','')
@@ -138,7 +144,7 @@ class DownloadService:
 
         ydl_opts = {
             'format': _safe_format(job.quality),
-            'outtmpl': os.path.join(DOWNLOADS_DIR, '%(title)s.%(ext)s'),
+            'outtmpl': os.path.join(job.download_dir, '%(title)s.%(ext)s'),
             'progress_hooks': [progress_hook],
             'quiet': True,
             'no_warnings': True,
@@ -160,10 +166,15 @@ class DownloadService:
             ydl_opts['http_headers'] = dict(job.extra_headers)
 
         try:
+            # Recheck after queueing: another transfer or conversion may have
+            # consumed the available space while this job waited for its slot.
+            await asyncio.to_thread(ensure_download_space, DOWNLOADS_DIR)
+            await asyncio.to_thread(Path(job.download_dir).mkdir, parents=True, exist_ok=True)
+            await asyncio.to_thread(marker.touch)
             # Offload blocking yt-dlp to thread
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(None, self._run_yt_dlp, ydl_opts, job.url)
-
+            await asyncio.to_thread(marker.unlink, missing_ok=True)
             job.status = "completed"
             _invalidate_scan_cache(DOWNLOADS_DIR)
             self._archive(job)

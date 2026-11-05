@@ -37,6 +37,16 @@ def proxy(tmp_path, request):
 
     class Upstream(BaseHTTPRequestHandler):
         def do_GET(self):
+            if self.path.startswith('/api/downloads/files/stream?offload='):
+                if self.headers.get('Cookie') != 'access_token=fixture':
+                    self.send_error(401)
+                    return
+                self.send_response(200)
+                name = 'link.mp4' if self.path.endswith('link') else 'Episode%20%231%3F.mp4'
+                self.send_header('X-Accel-Redirect', '/_streamvault_media/downloads/' + name)
+                self.send_header('Content-Type', 'video/mp4')
+                self.end_headers()
+                return
             if self.path.startswith("/api/downloads/files/?"):
                 self.send_response(307)
                 self.send_header("Location", "http://watch.example.test" + self.path.replace("files/?", "files?"))
@@ -63,6 +73,13 @@ def proxy(tmp_path, request):
     source = Path(__file__).resolve().parents[2] / "nginx.conf"
     config = source.read_text().replace("include       mime.types;", "types { text/css css; application/javascript js; }")
     config = config.replace("alias /app/assets/;", f"alias {source.parent / 'assets'}/;")
+    media = tmp_path / 'media'
+    media.mkdir()
+    (media / 'Episode #1?.mp4').write_bytes(b'0123456789')
+    outside = tmp_path / 'private.mp4'
+    outside.write_bytes(b'private')
+    (media / 'link.mp4').symlink_to(outside)
+    config = config.replace('alias /srv/downloads/;', f'alias {media}/;')
     if getattr(request, "param", None) == "legacy":
         config = config.replace("location /api/downloads/files {", "location /api/downloads/files/ {")
         config = config.replace("absolute_redirect off;", "absolute_redirect on;")
@@ -107,6 +124,24 @@ def test_library_request_is_proxied_without_redirect(proxy):
     response = proxy.get("/api/downloads/files?page=1")
     assert response.status_code == 200, response.headers.get("location")
     assert response.json() == {"path": "/api/downloads/files?page=1", "proto": "https", "range": None}
+
+
+def test_nginx_sendfile_preserves_authenticated_range_and_special_filename(proxy):
+    assert proxy.get('/api/downloads/files/stream?offload=1').status_code == 401
+    response = proxy.get('/api/downloads/files/stream?offload=1',
+                         headers={'Cookie': 'access_token=fixture', 'Range': 'bytes=3-6'})
+    assert response.status_code == 206
+    assert response.content == b'3456'
+    assert response.headers['content-range'] == 'bytes 3-6/10'
+    assert response.headers['cache-control'] == 'private, no-store'
+    assert 'x-accel-redirect' not in response.headers
+
+
+def test_nginx_media_alias_is_private_and_does_not_follow_symlinks(proxy):
+    assert proxy.get('/_streamvault_media/downloads/Episode%20%231%3F.mp4').status_code == 404
+    response = proxy.get('/api/downloads/files/stream?offload=link', headers={'Cookie': 'access_token=fixture'})
+    assert response.status_code == 403
+    assert b'private' not in response.content
 
 
 def test_static_styles_compress_and_vary_without_changing_cache_policy(proxy):

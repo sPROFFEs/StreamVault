@@ -183,3 +183,59 @@ docker compose --env-file vault/.env -f vault/docker-compose.yaml logs --since 1
 
 Redact passwords/tokens before sharing logs. For update failures, follow
 [update recovery](RELEASES.md#internal-update-operations-and-recovery).
+
+## Playback performance and storage maintenance
+
+The bundled nginx can send compatible completed downloads directly from a
+read-only mount, after the server authorizes each request. Byte ranges and HEAD
+requests are retained. Custom deployments without that mount should set
+`MEDIA_ACCEL_REDIRECT=false`; direct core access also falls back to authenticated
+file delivery. Existing installations must recreate nginx/core/downloader to
+apply the new mount, environment and bounded Docker logs:
+
+```sh
+docker compose --env-file vault/.env -f vault/docker-compose.yaml up -d --build core downloader nginx
+```
+
+Configure these in `vault/.env`:
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `MIN_FREE_DISK_GB` | `2` | Physical disk reserve for databases, logs and playback; separate from the download quota |
+| `MAX_CACHE_SIZE_GB` | `100` | Maximum playback/cache storage, independent of the shared-download quota |
+| `PLAYBACK_CACHE_RETENTION_HOURS` | `168` | Expire unused playback copies after seven days |
+| `AUTO_CACHE_ON_WATCH` | `true` | Prepare a seekable copy after meaningful converted playback closes; disable to save disk/CPU |
+| `MEDIA_ACCEL_REDIRECT` | `true` in Compose | Use the bundled nginx's private read-only file location |
+
+Queued downloads recheck their space budget when starting; transfers and cache
+writers also check while running. A job stops with a disk-space error when a
+check detects that the reserve has been reached. Torrent files allocate as
+pieces arrive rather than reserving a season's full disk space before transfer.
+Completed media is never automatically deleted to create space.
+
+**Administration → Files → Storage cleaner** previews abandoned partial jobs,
+empty folders and rebuildable playback copies. It shows physical free space,
+cache usage and the reserve, processes up to 500 candidates per batch, and
+reports failed removals as well as bytes removed. Active jobs, open cached-video
+responses and recently used copies are protected. A partial video's incomplete
+marker remains until the rest of that abandoned job has been removed. Cleanup
+leaves jobs containing media unselected by default: review them explicitly,
+because a failed season can still contain complete episodes. Cleanup does not
+traverse global `/tmp`, backups, databases or host Docker volumes.
+
+Periodic maintenance starts after readiness, expires old playback copies and
+abandoned conversion outputs, and evicts the oldest idle playback copies when
+space is needed. Complete copies have a ten-minute idle grace period; partial
+conversion files have a one-hour grace period. Source downloads, user metadata
+and unrecognized cache files remain under administrator control. Core, nginx,
+downloader and tunnel Docker logs are limited to three 10 MiB files each.
+
+H.264/AAC files take the direct path when compatible. H.264 10-bit and other
+unsupported video formats use the existing bounded conversion slots; these
+still require enough CPU for real-time encoding. Seeking inside a native file
+or an already buffered fragment no longer restarts conversion. Network stalls
+have bounded reconnection attempts that retain the playback position. The
+custom player includes buffered progress, playback speed and picture in picture
+when the browser supports it. Android's installed frontend receives these UI
+changes when a new APK is built and installed; hosted browsers receive the
+versioned assets after updating the server.

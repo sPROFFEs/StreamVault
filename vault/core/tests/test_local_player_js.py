@@ -86,6 +86,52 @@ __SCRIPT__
     assert result.returncode == 0, result.stderr
 
 
+def test_local_seek_reuses_native_file_and_buffered_fragments_without_resuming_paused_video():
+    script = (ASSETS / 'local-player.js').read_text()
+    probe = r"""
+const assert = require('node:assert/strict');
+global.window = {};
+let requests = 0, plays = 0;
+let descriptor = {mode: 'file', offset: 0, url: '/video', duration_seconds: 300};
+const video = {
+  dataset: {}, currentTime: 0, readyState: 4, paused: true, playbackRate: 1.5,
+  buffered: {length: 1, start: () => 0, end: () => 50},
+  pause() {this.paused = true;}, load() {}, removeAttribute() {}, removeEventListener() {},
+  addEventListener(name, callback) {if (name === 'loadedmetadata') this.loadedmetadata = callback;},
+  play: async function() {this.paused = false; plays++;},
+};
+global.fetch = async () => { requests++; return {ok: true, json: async () => descriptor}; };
+__SCRIPT__
+(async () => {
+  const source = {relative_path: 'video.mkv'};
+  await window.SVLocalPlayback.open(video, source);
+  video.loadedmetadata();
+  video.pause();
+  await window.SVLocalPlayback.seek(video, source, {start: 35});
+  assert.equal(video.currentTime, 35);
+  assert.equal(requests, 1);
+  assert.equal(plays, 1);
+  descriptor = {mode: 'stream', offset: 30, url: '/stream', duration_seconds: 300};
+  await window.SVLocalPlayback.open(video, source, {start: 30});
+  video.loadedmetadata();
+  video.pause();
+  await window.SVLocalPlayback.seek(video, source, {start: 60});
+  assert.equal(video.currentTime, 30);
+  assert.equal(requests, 2, 'Buffered seeks must not restart FFmpeg');
+  const before = plays;
+  descriptor = {...descriptor, offset: 200};
+  await window.SVLocalPlayback.seek(video, source, {start: 200});
+  video.loadedmetadata();
+  assert.equal(requests, 3);
+  assert.equal(plays, before, 'A paused seek must remain paused');
+  assert.equal(video.playbackRate, 1.5);
+  window.SVLocalPlayback.close(video);
+})().catch(error => {console.error(error); process.exitCode = 1;});
+""".replace('__SCRIPT__', script)
+    result = subprocess.run(['node', '-e', probe], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
 def test_stream_waits_for_buffer_and_close_cancels_delayed_play():
     script = (ASSETS / "local-player.js").read_text()
     probe = r"""
@@ -127,6 +173,52 @@ __SCRIPT__
 })().catch(error => {console.error(error); process.exitCode = 1;});
 """.replace("__SCRIPT__", script)
     result = subprocess.run(["node", "-e", probe], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+def test_stalled_playback_reconnects_at_same_position_and_pause_cancels_watchdog():
+    script = (ASSETS / 'local-player.js').read_text()
+    probe = r"""
+const assert = require('node:assert/strict');
+global.window = {};
+const timers = new Map(); let timerId = 0, requests = [];
+global.setTimeout = (fn, ms) => {timers.set(++timerId, {fn, ms}); return timerId;};
+global.clearTimeout = id => timers.delete(id);
+class Video extends EventTarget {
+  dataset = {}; currentTime = 0; readyState = 2; paused = true; ended = false;
+  duration = Infinity; buffered = {length: 1, start: () => 0, end: () => 90};
+  pause() {this.paused = true; this.dispatchEvent(new Event('pause'));}
+  async play() {this.paused = false;}
+  load() {} removeAttribute() {}
+}
+const video = new Video();
+global.fetch = async url => {requests.push(url); return {ok: true, json: async () => ({
+  mode: 'stream', offset: Number(new URL(url, 'https://example.test').searchParams.get('start')),
+  url: '/stream', duration_seconds: 300,
+})};};
+function fire(ms) {
+  const entry = [...timers].find(([id, item]) => item.ms === ms);
+  assert.ok(entry, `Missing ${ms}ms watchdog`);
+  timers.delete(entry[0]); entry[1].fn();
+}
+__SCRIPT__
+(async () => {
+  await SVLocalPlayback.open(video, {relative_path: 'video.mkv'}, {start: 30});
+  video.dispatchEvent(new Event('loadedmetadata'));
+  video.currentTime = 12;
+  video.dispatchEvent(new Event('waiting'));
+  video.pause();
+  assert.ok(![...timers.values()].some(item => item.ms === 15000));
+  await video.play(); video.dispatchEvent(new Event('waiting'));
+  fire(15000); fire(1500);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(requests.length, 2);
+  assert.equal(new URL(requests[1], 'https://example.test').searchParams.get('start'), '42');
+  SVLocalPlayback.close(video);
+  assert.equal(timers.size, 0);
+})().catch(error => {console.error(error); process.exitCode = 1;});
+""".replace('__SCRIPT__', script).replace('SVLocalPlayback.', 'window.SVLocalPlayback.')
+    result = subprocess.run(['node', '-e', probe], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
 
 

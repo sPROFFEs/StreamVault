@@ -760,7 +760,7 @@ async function loadLocalSource(source, selectedStreamIndex) {
     const onSeek = (targetTime) => {
         const localVideo = el.playerContainer.querySelector("video");
         if (!localVideo) return;
-        return window.SVLocalPlayback.open(localVideo, source, {
+        return window.SVLocalPlayback.seek(localVideo, source, {
             audio: chosen,
             start: targetTime,
             onOffset: (offset) => { state.localPlaybackOffset = offset; },

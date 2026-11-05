@@ -68,11 +68,12 @@
         <div class="preview-panel__header">
             <div>
                 <h2 id="fm-cleaner-title" class="preview-panel__title">{{ 'Storage cleaner' if lang == 'en' else 'Limpiador de almacenamiento' }}</h2>
-                <p class="panel__subtle">{{ 'Only abandoned downloader artifacts and empty folders are offered.' if lang == 'en' else 'Solo se ofrecen residuos de descargas abandonadas y carpetas vacías.' }}</p>
+                <p class="panel__subtle">{{ 'Review abandoned partial downloads, empty folders and idle playback copies. Active transfers, videos in use and copies used in the last 10 minutes are protected.' if lang == 'en' else 'Revisa descargas parciales abandonadas, carpetas vacías y copias de reproducción inactivas. Se protegen las transferencias activas, los vídeos en uso y las copias utilizadas en los últimos 10 minutos.' }}</p>
             </div>
             <button class="button button--compact" type="button" id="fm-cleaner-close" aria-label="{{ 'Close cleaner' if lang == 'en' else 'Cerrar limpiador' }}">×</button>
         </div>
         <div id="fm-cleaner-summary" class="admin-cleaner-summary" role="status" aria-live="polite"></div>
+        <div id="fm-cleaner-storage" class="panel__subtle"></div>
         <div id="fm-cleaner-list" class="admin-cleaner-list" aria-busy="false"></div>
         <div class="admin-cleaner-footer">
             <label class="admin-explorer__select"><input type="checkbox" id="fm-cleaner-select-all"><span>{{ 'Select all' if lang == 'en' else 'Seleccionar todo' }}</span></label>

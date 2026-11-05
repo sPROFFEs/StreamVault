@@ -3105,7 +3105,7 @@ kbd {
 
 .sv-player__bottom { padding: 0 12px 12px; display: flex; flex-direction: column; gap: 12px; }
 .sv-player__timeline { display: flex; align-items: center; gap: 12px; width: 100%; color: #fff; font-size: 13px; font-variant-numeric: tabular-nums; }
-.sv-player__range { min-width: 0; margin: 0; padding: 0; border: 0; flex: 1; -webkit-appearance: none; appearance: none; background: linear-gradient(to right, var(--red, #e50914) var(--sv-progress, 0%), rgba(255,255,255,.45) var(--sv-progress, 0%)) center / 100% 5px no-repeat; height: 33px; outline: none; cursor: pointer; position: relative; }
+.sv-player__range { min-width: 0; margin: 0; padding: 0; border: 0; flex: 1; -webkit-appearance: none; appearance: none; background: linear-gradient(to right, var(--red, #e50914) 0% var(--sv-progress, 0%), rgba(255,255,255,.6) var(--sv-progress, 0%) var(--sv-buffered, 0%), rgba(255,255,255,.25) var(--sv-buffered, 0%) 100%) center / 100% 5px no-repeat; height: 33px; outline: none; cursor: pointer; position: relative; }
 .sv-player__range::-webkit-slider-runnable-track { height: 15px; background: transparent; }
 .sv-player__range::-moz-range-track { height: 5px; background: transparent; }
 .sv-player__range::-moz-range-progress { background: transparent; }

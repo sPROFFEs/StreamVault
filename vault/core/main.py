@@ -33,7 +33,7 @@ import asyncio
 from config import settings
 from version import VERSION
 from services.media_library import recover_completed_downloads
-from services import federation_service
+from services import federation_service, storage_maintenance
 import auth
 import auth_forms
 import database
@@ -231,7 +231,7 @@ async def startup_event():
     recovery_task = asyncio.create_task(_recover_downloads_background())
     _startup_tasks.add(recovery_task)
     recovery_task.add_done_callback(_startup_tasks.discard)
-    for coroutine in (_update_checks_background(), federation_service.background_loop()):
+    for coroutine in (_update_checks_background(), federation_service.background_loop(), storage_maintenance.background_loop()):
         task = asyncio.create_task(coroutine)
         _startup_tasks.add(task)
         task.add_done_callback(_startup_tasks.discard)

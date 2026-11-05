@@ -21,7 +21,9 @@ from services.admin_download_library import (
     scan_download_cleanup,
     scan_download_library,
 )
-from services.media_library import resolve_library_path, _invalidate_scan_cache
+from services.media_library import resolve_library_path, _invalidate_scan_cache, INCOMPLETE_MARKER
+from services import storage_maintenance
+from services.storage_policy import disk_free_bytes
 
 cloudflared_manager = CloudflaredManager(
     settings.DATA_ROOT,
@@ -100,10 +102,12 @@ async def _active_downloader_job_ids() -> set[str] | None:
                 jobs = response.json()
         else:
             from services.torrent_service import torrent_service
-            jobs = {"torrent": torrent_service.get_all_jobs()}
+            from routers.downloads import download_service
+            jobs = {"torrent": torrent_service.get_all_jobs(), "yt_dlp": download_service.get_all_jobs()}
         return {
             str(job["id"])
-            for job in jobs.get("torrent", [])
+            for kind in ("torrent", "yt_dlp")
+            for job in jobs.get(kind, [])
             if job.get("status") in {"pending", "connecting", "downloading"}
         }
     except Exception:
@@ -375,51 +379,9 @@ def system_metrics(admin: database.User = Depends(get_current_admin)):
     return snapshot()
 
 @router.post("/system/purge-storage")
-
-async def purge_storage(db: Session = Depends(get_db), admin: database.User = Depends(get_current_admin)):
-    """Elimina residuos de descargas y archivos temporales"""
-    import shutil
-    
-    # Directorios a limpiar
-    paths_to_clean = ["/tmp", "/app/temp"] # Ajusta según tu Dockerfile
-    
-    # Extensiones de archivos basura (descargas incompletas)
-    trash_extensions = [".part", ".ytdl", ".tmp", ".cache"]
-    
-    bytes_freed = 0
-    
-    try:
-        # 1. Limpiar carpetas temporales globales
-        for path in paths_to_clean:
-            if os.path.exists(path):
-                for root, dirs, files in os.walk(path):
-                    for f in files:
-                        file_path = os.path.join(root, f)
-                        bytes_freed += os.path.getsize(file_path)
-                        os.remove(file_path)
-
-        # 2. Buscar basura en las carpetas de los usuarios
-        users_root = "/saas-data/users"
-        for root, dirs, files in os.walk(users_root):
-            # Eliminar archivos temporales de motores
-            for f in files:
-                if any(f.endswith(ext) for ext in trash_extensions):
-                    file_path = os.path.join(root, f)
-                    bytes_freed += os.path.getsize(file_path)
-                    os.remove(file_path)
-            
-            # Eliminar caches residuales de herramientas de descarga
-            for d in dirs:
-                if d == ".spotdl-cache":
-                    dir_path = os.path.join(root, d)
-                    bytes_freed += sum(os.path.getsize(os.path.join(r, f)) for r, _, fs in os.walk(dir_path) for f in fs)
-                    shutil.rmtree(dir_path)
-
-        freed_gb = round(bytes_freed / (1024**3), 3)
-        return RedirectResponse(f"/admin/system?msg=Purge completed. Freed {freed_gb} GB", status_code=303)
-    
-    except Exception as e:
-        return RedirectResponse(f"/admin/system?error=Error during purge: {str(e)}", status_code=303)
+async def purge_storage(admin: database.User = Depends(get_current_admin)):
+    """Keep legacy links, but let the administrator review owned candidates."""
+    return RedirectResponse('/admin/?tab=files&clean=1', status_code=303)
 
 
 @router.get("/api/downloads/list")
@@ -458,7 +420,41 @@ async def preview_download_cleanup(admin: database.User = Depends(get_current_ad
     """Preview stale downloader artifacts and empty folders for the file manager."""
     del admin
     active_job_ids = await _active_downloader_job_ids()
-    return await asyncio.to_thread(scan_download_cleanup, settings.DOWNLOADS_ROOT, active_job_ids)
+    return await asyncio.to_thread(_storage_cleanup_preview, active_job_ids)
+
+
+def _storage_cleanup_preview(active_job_ids):
+    preview = scan_download_cleanup(settings.DOWNLOADS_ROOT, active_job_ids)
+    cache = storage_maintenance.cache_inventory()
+    cache_items = [dict(item, relative_path='@cache/' + item['relative_path']) for item in cache['items']]
+    all_items = preview['items'] + cache_items
+    # A bounded batch must make progress: parents cannot be removed while
+    # their children remain outside the preview. Keep review-only jobs last.
+    all_items.sort(key=lambda item: (
+        bool(item.get('requires_review')), item['is_directory'],
+        Path(item['relative_path']).name == INCOMPLETE_MARKER,
+        -len(Path(item['relative_path']).parts), item['relative_path'].casefold(),
+    ))
+    total_bytes = preview['total_bytes'] + cache['total_bytes']
+    from services.admin_download_library import _human_size
+    return {**preview, 'items': all_items[:500], 'total_candidates': len(all_items),
+            'total_files': preview['total_files'] + len(cache_items),
+            'total_bytes': total_bytes, 'total_bytes_label': _human_size(total_bytes),
+            'storage': {'disk_free_bytes': disk_free_bytes(settings.DOWNLOADS_ROOT),
+                        'reserve_bytes': int(settings.MIN_FREE_DISK_GB * 1024**3),
+                        'cache_bytes': cache['used_bytes'],
+                        'download_bytes': get_path_size_bytes(settings.DOWNLOADS_ROOT)}}
+
+
+def _cleanup_storage(paths, active_job_ids):
+    downloads_paths = None if paths is None else [path for path in paths if not path.startswith('@cache/')]
+    cache_paths = None if paths is None else [path[len('@cache/'):] for path in paths if path.startswith('@cache/')]
+    result = cleanup_download_library(settings.DOWNLOADS_ROOT, downloads_paths, active_job_ids)
+    cache = storage_maintenance.cleanup_cache(cache_paths)
+    return {'deleted': result['deleted'] + ['@cache/' + path for path in cache['deleted']],
+            'errors': result['errors'] + [dict(error, relative_path='@cache/' + error['relative_path']) for error in cache['errors']],
+            'freed_bytes': result['freed_bytes'] + cache['freed_bytes'],
+            'remaining': _storage_cleanup_preview(active_job_ids)}
 
 
 @router.post("/api/downloads/cleanup")
@@ -470,8 +466,7 @@ async def run_download_cleanup(
     del admin
     active_job_ids = await _active_downloader_job_ids()
     return await asyncio.to_thread(
-        cleanup_download_library,
-        settings.DOWNLOADS_ROOT,
+        _cleanup_storage,
         None if payload is None else payload.paths,
         active_job_ids,
     )

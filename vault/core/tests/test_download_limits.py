@@ -44,17 +44,19 @@ def test_only_configured_number_of_downloads_run_at_once(monkeypatch):
     async def scenario():
         service = TorrentService()
         gate = asyncio.Event()
+        first_entered = asyncio.Event()
         entered = []
 
         async def transfer(job):
             entered.append(job.id)
+            first_entered.set()
             await gate.wait()
 
         monkeypatch.setattr(torrents, "download_slots", asyncio.Semaphore(1), raising=False)
         monkeypatch.setattr(service, "_download", transfer, raising=False)
         jobs = [TorrentJob(str(i), f"magnet:?xt=urn:btih:{i}") for i in range(3)]
         tasks = [asyncio.create_task(service._run(job)) for job in jobs]
-        await asyncio.sleep(0)
+        await asyncio.wait_for(first_entered.wait(), timeout=2)
         try:
             assert len(entered) == 1
             assert jobs[1].status == "pending"

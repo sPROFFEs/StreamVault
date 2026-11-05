@@ -1,7 +1,5 @@
-import gzip
-import io
+import asyncio
 import logging
-import zipfile
 from typing import Optional
 from urllib.parse import quote, urlparse
 
@@ -14,7 +12,7 @@ import auth
 import database
 from config import settings
 from services.subtitles_service import SubtitlesService
-from services.media_library import srt_to_vtt
+from services.subtitle_content import subtitle_bytes_to_vtt as _subtitle_bytes_to_vtt, download_subtitle, SubtitleTooLarge, SubtitleDownloadError
 
 router = APIRouter(prefix="/api/subtitles", tags=["Subtitles"])
 _service = SubtitlesService()
@@ -121,19 +119,6 @@ _ALLOWED_SUBTITLE_HOSTS = {
 }
 
 
-def _subtitle_bytes_to_vtt(content: bytes, content_type: str = "") -> str:
-    if content.startswith(b"PK") or "zip" in content_type:
-        with zipfile.ZipFile(io.BytesIO(content)) as archive:
-            candidates = [name for name in archive.namelist() if name.lower().endswith((".srt", ".vtt"))]
-            if not candidates:
-                raise ValueError("Archive contains no supported subtitle")
-            content = archive.read(candidates[0])
-    elif content.startswith(b"\x1f\x8b") or "gzip" in content_type:
-        content = gzip.decompress(content)
-    text = content.decode("utf-8-sig", errors="replace")
-    return text if text.lstrip().startswith("WEBVTT") else srt_to_vtt(text)
-
-
 @router.get("/fetch")
 async def fetch_subtitle(
     request: Request,
@@ -176,15 +161,18 @@ async def fetch_subtitle(
         if not trusted_link and parsed.hostname not in _ALLOWED_SUBTITLE_HOSTS:
             logger.warning("Subtitle host rejected: %s (url=%s)", parsed.hostname, url[:120])
             raise HTTPException(400, f"Subtitle host is not allowed: {parsed.hostname}")
-        response = await client.get(url)
-        if not response.is_success:
-            logger.warning("Subtitle download failed: %s %s (final_url=%s)",
-                           response.status_code, response.text[:200], str(response.url)[:120])
-            raise HTTPException(502, "Subtitle provider download failed")
-        if len(response.content) > 8 * 1024 * 1024:
-            raise HTTPException(413, "Subtitle file is too large")
+        try:
+            data, content_type = await download_subtitle(client, url)
+        except SubtitleTooLarge as exc:
+            raise HTTPException(413, str(exc)) from exc
+        except (SubtitleDownloadError, httpx.HTTPError) as exc:
+            raise HTTPException(502, 'Subtitle provider download failed') from exc
+        except TimeoutError as exc:
+            raise HTTPException(504, 'Subtitle download timed out') from exc
     try:
-        content = _subtitle_bytes_to_vtt(response.content, response.headers.get("content-type", ""))
-    except (ValueError, zipfile.BadZipFile, gzip.BadGzipFile) as exc:
+        content = await asyncio.to_thread(_subtitle_bytes_to_vtt, data, content_type)
+    except SubtitleTooLarge as exc:
+        raise HTTPException(413, str(exc)) from exc
+    except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     return PlainTextResponse(content, media_type="text/vtt")

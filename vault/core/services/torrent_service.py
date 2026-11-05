@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import uuid
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -24,6 +25,7 @@ from urllib.parse import parse_qs, urlsplit
 from config import settings
 from services.download_limits import download_slots, download_rate_per_job, stop_process
 from services.media_library import VIDEO_EXTENSIONS, INCOMPLETE_MARKER, _invalidate_scan_cache
+from services.storage_policy import ensure_download_space
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +49,9 @@ def build_aria2_command(
         "--no-conf=true",
         f"--dir={downloads_dir}",
         "--seed-time=0",
-        "--file-allocation=falloc",
+        # Allocate as pieces arrive, rather than freezing disk I/O and
+        # consuming the server reserve before torrent metadata is available.
+        "--file-allocation=none",
         "--summary-interval=3",
         "--console-log-level=warn",
         "--enable-color=false",
@@ -246,6 +250,7 @@ class TorrentService:
             async with download_slots:
                 try:
                     if job.status != "cancelled":
+                        await asyncio.to_thread(ensure_download_space, DOWNLOADS_DIR, job.size_bytes or 0)
                         await self._download(job)
                 finally:
                     # Keep the slot until the old process has really stopped.
@@ -293,10 +298,16 @@ class TorrentService:
             stdout_tail: list[str] = []
             stderr_tail: list[str] = []
 
-            await asyncio.gather(
-                self._parse_output(job, proc, stdout_tail),
-                self._capture_stderr(proc, stderr_tail),
-            )
+            readers = [asyncio.create_task(self._parse_output(job, proc, stdout_tail)),
+                       asyncio.create_task(self._capture_stderr(proc, stderr_tail))]
+            try:
+                await asyncio.gather(*readers)
+            finally:
+                # No pipe reader may survive a failed disk check or race
+                # stop_process().communicate() during cancellation.
+                for reader in readers:
+                    reader.cancel()
+                await asyncio.gather(*readers, return_exceptions=True)
 
             await proc.wait()
             if job.status == "cancelled":
@@ -352,11 +363,15 @@ class TorrentService:
             r".*?DL:([\d.]+\w+)"
             r"(?:.*?ETA:([\d\w]+))?"
         )
+        last_space_check = time.monotonic()
 
         async for raw in _read_output_lines(proc.stdout):
             line = raw.decode(errors="ignore").strip()
             if not line:
                 continue
+            if time.monotonic() - last_space_check >= 5:
+                await asyncio.to_thread(ensure_download_space, DOWNLOADS_DIR)
+                last_space_check = time.monotonic()
             if "[METADATA]" in line:
                 job.status = "connecting"
                 continue
