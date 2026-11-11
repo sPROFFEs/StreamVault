@@ -47,9 +47,9 @@ const T = {
         subErr: "Subtitle query failed.",
         back: "← Catalog",
         subOverlayActive: "Subtitles overlay active for embed player.",
-        subOffset: (ms) => `Offset: ${(ms / 1000).toFixed(1)}s`,
-        subSyncHint: "Use ← / → to adjust subtitle timing.",
-        subSyncHintVideo: "Use ← / → to nudge subtitle sync.",
+        subOffset: (ms) => `Offset: ${(ms / 1000).toFixed(2)}s`,
+        subSyncHint: "Adjust timing with the synchronization buttons in the subtitles panel.",
+        subSyncHintVideo: "Adjust timing with the synchronization buttons in the subtitles menu or panel.",
         subAutoOn: (lang) => `Auto-enabled ${lang} subtitles.`,
     },
     es: {
@@ -93,9 +93,9 @@ const T = {
         subErr: "Error consultando subtitulos.",
         back: "← Catalogo",
         subOverlayActive: "Capa de subtitulos activa para reproductor embed.",
-        subOffset: (ms) => `Desfase: ${(ms / 1000).toFixed(1)}s`,
-        subSyncHint: "Usa ← / → para ajustar el tiempo de los subtitulos.",
-        subSyncHintVideo: "Usa ← / → para ajustar la sincronía.",
+        subOffset: (ms) => `Desfase: ${(ms / 1000).toFixed(2)}s`,
+        subSyncHint: "Ajusta el tiempo con los botones de sincronización del panel de subtítulos.",
+        subSyncHintVideo: "Ajusta el tiempo con los botones de sincronización del menú o panel de subtítulos.",
         subAutoOn: (lang) => `Subtitulos en ${lang} activados automaticamente.`,
     },
 }[LANG];
@@ -1181,6 +1181,35 @@ function _onFsChange() {
 /* Subtitle size control                                              */
 /* ------------------------------------------------------------------ */
 
+let subtitleSyncControls;
+const subtitleSync = {
+    isActive: () => Boolean(state.videoSubtitles || state.embedSubtitles),
+    getDelay: () => -(state.videoSubtitles ? state.videoSubtitleOffset : state.embedSubtitleOffset / 1000),
+    setDelay(delay) {
+        // The overlay samples a later cue to show subtitles earlier; the UI
+        // exposes the usual convention: negative = earlier, positive = later.
+        if (state.videoSubtitles) {
+            state.videoSubtitleOffset = -delay;
+            state._videoSubTimeUpdate?.();
+        } else if (state.embedSubtitles) state.embedSubtitleOffset = -delay * 1000;
+        updateSubtitleSyncControls();
+    }
+};
+
+function updateSubtitleSyncControls() {
+    const host = document.getElementById('subtitle-sync-controls');
+    if (!subtitleSyncControls && host && window.SVCreateSubtitleSyncControls) {
+        subtitleSyncControls = window.SVCreateSubtitleSyncControls(() => subtitleSync);
+        host.appendChild(subtitleSyncControls.element);
+    }
+    subtitleSyncControls?.update();
+    const video = el.playerContainer.querySelector('video');
+    if (video) {
+        video._svSubtitleSync = state.videoSubtitles ? subtitleSync : null;
+        video.dispatchEvent(new Event('sv-subtitle-sync'));
+    }
+}
+
 let _subSize = 100;  // percentage, 50–200, persisted in localStorage
 
 function initSubtitleSize() {
@@ -1667,8 +1696,8 @@ async function activateVideoSubtitle(item, video) {
                 if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
                 event.preventDefault();
                 const delta = event.key === "ArrowLeft" ? -0.25 : 0.25;
-                state.videoSubtitleOffset += delta;
-                showToast("Subtitles", T.subOffset(state.videoSubtitleOffset * 1000), "ok");
+                subtitleSync.setDelay(-state.videoSubtitleOffset - delta);
+                showToast("Subtitles", T.subOffset(subtitleSync.getDelay() * 1000), "ok");
             };
             document.addEventListener("keydown", state._videoSubKeyHandler);
         }
@@ -1677,6 +1706,7 @@ async function activateVideoSubtitle(item, video) {
         showToast("Subtitles", `${item.language || T.noLang} · ${LANG === "es" ? "activados" : "enabled"}${hint}`, "ok");
 
         state.activeSubtitleKey = item.play_url;
+        updateSubtitleSyncControls();
         syncSubtitleSelection();
     } catch (error) {
         if (controller.signal.aborted || attempt !== state.sourceAttempt || !video.isConnected) return;
@@ -1711,6 +1741,7 @@ function stopVideoSubtitleOverlay() {
         overlay.style.display = "none";
         delete overlay.dataset.cueId;
     }
+    updateSubtitleSyncControls();
 }
 
 /* ------------------------------------------------------------------ */
@@ -1729,11 +1760,11 @@ function initEmbedSubtitleOverlay() {
             if (!state.embedSubtitles || event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey ||
                 !el.playerContainer.contains(active) || active.isContentEditable || active.matches("input, textarea, select")) return;
             if (event.key === "ArrowLeft") {
-                state.embedSubtitleOffset -= 500;
-                showToast("Subtitles", T.subOffset(state.embedSubtitleOffset), "ok");
+                subtitleSync.setDelay(-state.embedSubtitleOffset / 1000 + .5);
+                showToast("Subtitles", T.subOffset(subtitleSync.getDelay() * 1000), "ok");
             } else if (event.key === "ArrowRight") {
-                state.embedSubtitleOffset += 500;
-                showToast("Subtitles", T.subOffset(state.embedSubtitleOffset), "ok");
+                subtitleSync.setDelay(-state.embedSubtitleOffset / 1000 - .5);
+                showToast("Subtitles", T.subOffset(subtitleSync.getDelay() * 1000), "ok");
             }
         };
         document.addEventListener("keydown", state._embedSubKeyHandler);
@@ -1765,6 +1796,7 @@ async function activateEmbedSubtitle(item) {
         overlay.style.display = "block";
         runEmbedOverlayLoop();
         state.activeSubtitleKey = item.play_url;
+        updateSubtitleSyncControls();
         syncSubtitleSelection();
         showToast("Subtitles", `${item.language || T.noLang} · ${LANG === "es" ? "activados" : "enabled"} · ${T.subSyncHint}`, "ok");
     } catch (error) {
@@ -1814,6 +1846,7 @@ function stopEmbedSubtitleOverlay() {
         overlay.style.display = "none";
         delete overlay.dataset.cueId;
     }
+    updateSubtitleSyncControls();
 }
 
 /**

@@ -206,9 +206,11 @@ def test_real_video_and_included_subtitles_play_without_a_network(offline_page, 
     page.locator('#sv-sub-menu').get_by_role('button', name='ES · Fixture' if provider else 'Español', exact=True).click()
     assert page.evaluate('() => document.querySelector("#offline-video").textTracks[1].mode') == 'showing'
     page.locator('#offline-subtitle-size').fill('150')
-    page.locator('#offline-subtitle-offset').fill('0.5')
-    page.locator('#offline-subtitle-offset').dispatch_event('change')
+    page.locator('#offline-subtitle-sync-controls').get_by_role('button', name='Show subtitles 0.25 seconds later', exact=True).click(click_count=2)
     assert page.evaluate('document.querySelector("#offline-video").textTracks[1].cues[0].startTime') == .5
+    page.locator('#offline-subtitle-sync-controls').get_by_role('button', name='Reset subtitle timing', exact=True).click()
+    assert page.evaluate('document.querySelector("#offline-video").textTracks[1].cues[0].startTime') == 0
+    page.locator('#offline-subtitle-sync-controls').get_by_role('button', name='Show subtitles 0.25 seconds later', exact=True).click(click_count=2)
     page.wait_for_function('''async () => {
         const [entry] = await SVOffline.list();
         return entry.playback?.subtitle_language === 'es' && entry.playback?.subtitle_size === 150;
@@ -220,6 +222,35 @@ def test_real_video_and_included_subtitles_play_without_a_network(offline_page, 
     expect(page.locator('#offline-subtitle-select')).to_have_value('1')
     expect(page.locator('#offline-subtitle-size')).to_have_value('150')
     assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+
+
+def test_offline_subtitle_timing_buttons_persist_without_network(offline_page):
+    page, context, origin = offline_page
+    page.route('**/api/downloads/files/playback?*', lambda route: route.fulfill(json={
+        'url': '/api/downloads/files/stream?path=Fixture.mp4', 'mode': 'file'}))
+    page.route('**/api/downloads/files/stream?*', lambda route: route.fulfill(body=b'media', content_type='video/mp4'))
+    page.route('**/api/downloads/files/subtitle?*', lambda route: route.fulfill(
+        body='WEBVTT\n\n00:00.000 --> 00:02.000\nSaved caption\n', content_type='text/vtt'))
+    page.evaluate('''() => SVOffline.save({title: 'Timing fixture', relative_path: 'Fixture.mp4',
+        audio_tracks: [], subtitles: [{url: '/api/downloads/files/subtitle?path=Fixture.vtt', language: 'en', label: 'English'}]})''')
+    context.set_offline(True)
+    page.goto(origin + '/assets/offline.html')
+    page.locator('.offline-cover').click()
+    page.locator('#offline-subtitle-select').select_option('0')
+    sidebar = page.locator('#offline-subtitle-sync-controls')
+    later = sidebar.get_by_role('button', name='Show subtitles 0.25 seconds later', exact=True)
+    expect(later).to_be_visible()
+    later.click(click_count=2)
+    expect(later).to_be_focused()
+    expect(sidebar.locator('[data-subtitle-delay]')).to_have_text('+0.50 s')
+    page.wait_for_function('async () => (await SVOffline.list())[0].playback?.subtitle_offset === .5')
+    page.reload()
+    page.locator('.offline-cover').click()
+    expect(sidebar.locator('[data-subtitle-delay]')).to_have_text('+0.50 s')
+    sidebar.get_by_role('button', name='Reset subtitle timing', exact=True).click()
+    expect(sidebar.locator('[data-subtitle-delay]')).to_have_text('0.00 s')
+    page.locator('#offline-subtitle-select').select_option('off')
+    expect(sidebar.get_by_role('group')).to_be_hidden()
 
 
 def test_offline_library_search_groups_series_and_preserves_existing_downloads(offline_page):

@@ -148,6 +148,21 @@
     const $ = id => document.getElementById(id);
     let entries = [], current = null, returnFocus = null, lastSaved = 0;
     let trackUrls = [], coverUrls = [], detailUrls = [], cueTimes = new WeakMap(), trackOffsets = new WeakMap(), mediaEvents;
+    let subtitleSyncControls;
+    const subtitleSync = {
+        isActive: () => Boolean(current?.subtitles?.[Number($('offline-subtitle-select').value)]),
+        getDelay: () => Number($('offline-subtitle-offset').value) || 0,
+        setDelay(delay) {
+            $('offline-subtitle-offset').value = delay;
+            applySubtitles();
+        }
+    };
+    function updateSubtitleSyncControls() {
+        subtitleSyncControls?.update();
+        const video = $('offline-video');
+        video._svSubtitleSync = subtitleSync;
+        video.dispatchEvent(new Event('sv-subtitle-sync'));
+    }
     const kind = entry => entry.media_type === "series" || entry.media_type === "tv" || entry.episode ? "series" : "movie";
     const seasonOf = entry => entry.season_number || Number(entry.episode?.match(/S(\d+)/i)?.[1] || 1);
     const episodeOf = entry => entry.episode_number || Number(entry.episode?.match(/E(\d+)/i)?.[1] || 1);
@@ -221,6 +236,7 @@
         const size = Number($('offline-subtitle-size').value) || 100;
         $('offline-player').style.setProperty('--sub-scale', size / 100);
         $('offline-subtitle-size-value').textContent = `${size}%`;
+        updateSubtitleSyncControls();
         persist();
     }
     function playEntry(startAt) {
@@ -287,6 +303,7 @@
         subtitleOptions(entry);
         $('offline-subtitle-size').value = entry.playback?.subtitle_size || 100;
         $('offline-subtitle-offset').value = entry.playback?.subtitle_offset || 0;
+        updateSubtitleSyncControls();
         $('offline-speed').value = entry.playback?.rate || 1;
         $('offline-detail-play').textContent = entry.playback?.progress_seconds > 0 ? text.continue : text.play;
         if (autoplay) playEntry(startAt);
@@ -360,6 +377,8 @@
     async function boot() {
         if (!document.getElementById("offline-list")) return;
         document.documentElement.lang = es ? "es" : "en";
+        subtitleSyncControls = window.SVCreateSubtitleSyncControls(() => subtitleSync, {spanish: es});
+        $('offline-subtitle-sync-controls').appendChild(subtitleSyncControls.element);
         document.querySelectorAll("[data-offline-label]").forEach(el => { el.textContent = text[el.dataset.offlineLabel]; });
         document.getElementById("offline-limit").value = SVOffline.limitBytes() / 1024 ** 3;
         document.getElementById("offline-save-limit").addEventListener("click", async () => {

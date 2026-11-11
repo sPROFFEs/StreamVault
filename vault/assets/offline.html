@@ -6,13 +6,13 @@
     <meta name="theme-color" content="#141414">
     <title>StreamVault · Offline</title>
     <link rel="icon" href="/assets/favicon.ico">
-    <link rel="stylesheet" href="/assets/css/app.css?v=20261105-1">
+    <link rel="stylesheet" href="/assets/css/app.css?v=20261111-1">
     <link rel="stylesheet" href="/assets/css/ui-extras.css?v=20261008-1">
     <link rel="stylesheet" href="/assets/css/offline.css?v=20261024-1">
     <script defer src="/assets/js/offline-store.js?v=20261024-1"></script>
-    <script defer src="/assets/js/custom-player.js?v=20261105-1"></script>
+    <script defer src="/assets/js/custom-player.js?v=20261111-1"></script>
     <script defer src="/assets/js/shell.js?v=20261010-1"></script>
-    <script defer src="/assets/js/offline-ui.js?v=20261024-1"></script>
+    <script defer src="/assets/js/offline-ui.js?v=20261111-1"></script>
 </head>
 <body class="offline-page">
     <header class="offline-heading"><a href="/portal" class="offline-brand">STREAMVAULT</a><span class="offline-device-badge" data-offline-label="device">THIS DEVICE</span><a href="/downloads" data-offline-label="server">Server library</a></header>
@@ -74,7 +74,8 @@
                     <button id="offline-refresh-subtitles" type="button" data-offline-label="refreshSubtitles">Download subtitles online</button>
                     <div id="subtitle-list" hidden></div>
                     <label><span data-offline-label="subtitleSize">Subtitle size</span><input id="offline-subtitle-size" type="range" min="50" max="200" step="10" value="100"><output id="offline-subtitle-size-value">100%</output></label>
-                    <label><span data-offline-label="subtitleOffset">Subtitle offset (seconds)</span><input id="offline-subtitle-offset" type="number" min="-120" max="120" step="0.5" value="0"></label>
+                    <input id="offline-subtitle-offset" type="hidden" value="0">
+                    <div id="offline-subtitle-sync-controls"></div>
                     <label><span data-offline-label="speed">Playback speed</span><select id="offline-speed"><option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option></select></label>
                     <p class="offline-notice" data-offline-label="available">Only tracks saved on this device are available offline.</p>
                 </section>

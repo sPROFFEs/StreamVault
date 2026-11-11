@@ -23,6 +23,7 @@ def player_page(regression_browser, browser_viewport):
       <select id="audio-select"><option value="1">English</option><option value="2">Spanish</option></select></div>
       <select id="source-select"><option value="0">Fixture source</option></select>
       <div id="subtitle-list"><button class="source-item"><strong>English captions</strong></button></div>
+      <div id="subtitle-sync-controls"></div>
     </html>''')
     page.add_style_tag(path=ASSETS / "css/app.css")
     page.add_style_tag(path=ASSETS / "css/ui-extras.css")
@@ -235,6 +236,20 @@ def test_remote_menus_restore_focus_and_skip_unrelated_mutations(player_page):
     assert page.locator("video").count() == 1
 
 
+def test_clicking_sidebar_closes_the_menu_and_restores_control_autohide(player_page):
+    page = player_page
+    page.clock.install()
+    page.evaluate('video._playbackRequest = {}')
+    page.locator('#sv-play').click()
+    page.locator('#sv-sub-btn').click()
+    page.clock.fast_forward(4000)
+    expect(page.locator('.sv-player')).to_have_css('opacity', '1')
+    page.locator('#outside').click()
+    expect(page.locator('#sv-sub-menu')).to_be_hidden()
+    page.clock.fast_forward(4000)
+    expect(page.locator('.sv-player')).to_have_css('opacity', '0')
+
+
 def test_reinitialize_and_leave_release_resources(player_page):
     page = player_page
     page.clock.install()
@@ -405,10 +420,78 @@ def test_subtitles_select_off_and_shortcuts_stay_inside_player(player_page):
     page.keyboard.press("Shift+ArrowRight")
     assert page.evaluate("state.videoSubtitleOffset") == .25
     assert page.evaluate("seeks") == []
-    page.locator("#sv-sub-btn").click()
     page.locator("#sv-sub-menu button").first.click()
     expect(page.locator("#video-subtitle-overlay")).to_be_hidden()
     assert page.evaluate("state._videoSubKeyHandler") is None
+
+
+def test_subtitle_timing_buttons_work_in_pause_without_seeking_or_losing_focus(player_page):
+    page = player_page
+    page.evaluate('''() => {
+      window.showToast = () => {};
+      const item = {play_url: '/timed.vtt', language: 'English'};
+      state.remoteSubtitles = [item];
+      const button = document.querySelector('#subtitle-list button');
+      button.dataset.subtitleIndex = '0';
+      button.onclick = () => activateVideoSubtitle(item, video);
+      video.currentTime = 9.8;
+      window.fetch = async () => ({ok: true, text: async () => 'WEBVTT\\n\\n00:00:10.000 --> 00:00:11.000\\nTimed caption\\n'});
+    }''')
+    page.evaluate("document.querySelector('#player-container').classList.add('player-box--pseudo-fs')")
+    page.locator('#sv-sub-btn').click()
+    page.locator('#sv-sub-menu').get_by_role('button', name='English captions', exact=True).click()
+    menu = page.locator('#sv-sub-menu')
+    timing = menu.get_by_role('group', name='Subtitle synchronization', exact=True)
+    expect(timing).to_be_visible()
+    earlier = timing.get_by_role('button', name='Show subtitles 0.25 seconds earlier', exact=True)
+    earlier.click()
+    expect(earlier).to_be_focused()
+    expect(timing.locator('[data-subtitle-delay]')).to_have_text('−0.25 s')
+    player_box = page.locator('#player-container').bounding_box()
+    for button in timing.get_by_role('button').all():
+        box = button.bounding_box()
+        assert box['width'] >= 44 and box['height'] >= 44
+        assert player_box['x'] <= box['x'] < box['x'] + box['width'] <= player_box['x'] + player_box['width']
+        assert player_box['y'] <= box['y'] < box['y'] + box['height'] <= player_box['y'] + player_box['height']
+    expect(page.locator('#video-subtitle-overlay')).to_have_text('Timed caption')
+    assert page.evaluate('video.paused && video.currentTime === 9.8 && seeks.length === 0')
+    expect(page.locator('#subtitle-sync-controls [data-subtitle-delay]')).to_have_text('−0.25 s')
+    timing.get_by_role('button', name='Reset subtitle timing', exact=True).click()
+    expect(page.locator('#video-subtitle-overlay')).to_be_empty()
+    expect(timing.locator('[data-subtitle-delay]')).to_have_text('0.00 s')
+    page.evaluate("document.querySelector('#player-container').classList.remove('player-box--pseudo-fs')")
+    page.locator('#sv-sub-btn').click()
+    sidebar = page.locator('#subtitle-sync-controls')
+    sidebar.get_by_role('button', name='Show subtitles 0.25 seconds later', exact=True).click()
+    expect(sidebar.locator('[data-subtitle-delay]')).to_have_text('+0.25 s')
+    assert page.evaluate('state.videoSubtitleOffset') == -.25
+    page.locator('#sv-sub-btn').click()
+    expect(timing.locator('[data-subtitle-delay]')).to_have_text('+0.25 s')
+    menu.get_by_role('button', name='Off', exact=True).click()
+    expect(sidebar.get_by_role('group')).to_be_hidden()
+    page.locator('#sv-sub-btn').click()
+    menu.get_by_role('button', name='English captions', exact=True).click()
+    expect(timing.locator('[data-subtitle-delay]')).to_have_text('0.00 s')
+
+
+def test_embed_subtitle_timing_is_adjustable_from_the_sidebar(player_page):
+    page = player_page
+    page.evaluate('''async () => {
+      video._svCleanup();
+      document.querySelector('#player-container').innerHTML = '<iframe srcdoc="Fixture embed"></iframe><div id="subtitle-overlay"></div>';
+      window.showToast = () => {};
+      window.fetch = async () => ({ok: true, text: async () => 'WEBVTT\\n\\n00:00:00.000 --> 00:00:20.000\\nFixture caption\\n'});
+      initEmbedSubtitleOverlay();
+      await activateEmbedSubtitle({play_url: '/embed.vtt'});
+    }''')
+    sidebar = page.locator('#subtitle-sync-controls')
+    sidebar.get_by_role('button', name='Show subtitles 0.25 seconds later', exact=True).click()
+    assert page.evaluate('state.embedSubtitleOffset') == -250
+    expect(sidebar.locator('[data-subtitle-delay]')).to_have_text('+0.25 s')
+    sidebar.get_by_role('button', name='Reset subtitle timing', exact=True).click()
+    assert page.evaluate('state.embedSubtitleOffset') == 0
+    page.evaluate('SVStopSubtitles()')
+    expect(sidebar.get_by_role('group')).to_be_hidden()
 
 
 def test_pending_subtitle_does_not_restore_resources_after_close(player_page):

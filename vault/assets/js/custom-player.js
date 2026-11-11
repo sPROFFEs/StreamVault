@@ -13,6 +13,50 @@
             : `${m}:${sc.toString().padStart(2, "0")}`;
     }
 
+    function createSubtitleSyncControls(getController, {spanish = window.APP_LANG === "es" || document.documentElement.lang === "es"} = {}) {
+        const labels = spanish ? {
+            group: "Sincronización de subtítulos", title: "Sincronización", reset: "Restablecer",
+            earlier: "Adelantar subtítulos 0,25 segundos", later: "Retrasar subtítulos 0,25 segundos",
+            resetLabel: "Restablecer sincronización de subtítulos", step: "0,25 s",
+            hint: "−: aparecen antes · +: aparecen después"
+        } : {
+            group: "Subtitle synchronization", title: "Synchronization", reset: "Reset",
+            earlier: "Show subtitles 0.25 seconds earlier", later: "Show subtitles 0.25 seconds later",
+            resetLabel: "Reset subtitle timing", step: "0.25 s",
+            hint: "−: show earlier · +: show later"
+        };
+        const element = document.createElement("div");
+        element.className = "subtitle-sync";
+        element.setAttribute("role", "group");
+        element.setAttribute("aria-label", labels.group);
+        element.innerHTML = `<div class="subtitle-sync__heading"><strong>${labels.title}</strong><span data-subtitle-delay aria-live="polite" aria-atomic="true"></span></div>
+            <div class="subtitle-sync__buttons"><button type="button" data-subtitle-earlier aria-label="${labels.earlier}">−${labels.step}</button><button type="button" data-subtitle-reset aria-label="${labels.resetLabel}">${labels.reset}</button><button type="button" data-subtitle-later aria-label="${labels.later}">+${labels.step}</button></div>
+            <small class="subtitle-sync__hint">${labels.hint}</small>`;
+        const earlier = element.querySelector('[data-subtitle-earlier]');
+        const later = element.querySelector('[data-subtitle-later]');
+        function update() {
+            const controller = getController();
+            element.hidden = !controller?.isActive();
+            const delay = Number(controller?.getDelay() || 0);
+            const value = Math.abs(delay).toFixed(2).replace('.', spanish ? ',' : '.');
+            element.querySelector('[data-subtitle-delay]').textContent = `${delay < 0 ? '−' : delay > 0 ? '+' : ''}${value} s`;
+            earlier.disabled = delay <= -120;
+            later.disabled = delay >= 120;
+        }
+        function change(delta) {
+            const controller = getController();
+            if (!controller?.isActive()) return;
+            const delay = delta === null ? 0 : Number(controller.getDelay() || 0) + delta;
+            controller.setDelay(Math.max(-120, Math.min(120, Math.round(delay * 100) / 100)));
+            update();
+        }
+        earlier.onclick = () => change(-.25);
+        later.onclick = () => change(.25);
+        element.querySelector('[data-subtitle-reset]').onclick = () => change(null);
+        update();
+        return {element, update};
+    }
+
     function initCustomPlayer(video, container, options = {}) {
         if (!video || !container) return;
 
@@ -375,6 +419,29 @@
         const sourceWrap = $("#sv-source-wrap"), sourceBtn = $("#sv-source-btn"), sourceMenu = $("#sv-source-menu");
         const audioWrap = $("#sv-audio-wrap"), audioBtn = $("#sv-audio-btn"), audioMenu = $("#sv-audio-menu");
         const subWrap = $("#sv-sub-wrap"), subBtn = $("#sv-sub-btn"), subMenu = $("#sv-sub-menu");
+        const subTracks = document.createElement('div');
+        const subTiming = createSubtitleSyncControls(() => video._svSubtitleSync, {spanish});
+        subMenu.append(subTracks, subTiming.element);
+        function positionSubtitleMenu() {
+            if (!subMenu.classList.contains('sv-menu--open')) return;
+            subMenu.style.right = '0px';
+            const bounds = container.getBoundingClientRect(), menuBounds = subMenu.getBoundingClientRect();
+            // Wrapped mobile controls can put this button on the left edge.
+            // Keep the wider synchronization panel inside the video viewport.
+            const left = Math.max(0, bounds.left + 8 - menuBounds.left);
+            const right = Math.max(0, menuBounds.right - bounds.right + 8);
+            subMenu.style.right = `${right - left}px`;
+        }
+        listen(window, 'resize', positionSubtitleMenu);
+        listen(window, 'orientationchange', positionSubtitleMenu);
+        listen(video, 'sv-subtitle-sync', () => {
+            const wasHidden = subTiming.element.hidden;
+            subTiming.update();
+            positionSubtitleMenu();
+            if (wasHidden && !subTiming.element.hidden && subMenu.classList.contains('sv-menu--open')) {
+                subTiming.element.scrollIntoView({block: 'nearest'});
+            }
+        });
         const menus = [[sourceBtn, sourceMenu, labels.sources], [audioBtn, audioMenu, labels.audio],
                        [subBtn, subMenu, labels.subtitles], [speedBtn, speedMenu, labels.speed]];
         function closeAllMenus(restore = false) {
@@ -398,12 +465,17 @@
                     menu.hidden = false;
                     menu.classList.add("sv-menu--open");
                     button.setAttribute("aria-expanded", "true");
+                    if (menu === subMenu) positionSubtitleMenu();
                     menu.querySelector("button")?.focus();
                 }
                 showControls();
             };
         });
-        listen(container, "click", event => { if (!event.target.closest(".sv-menu-wrapper")) closeAllMenus(); });
+        listen(document, "click", event => {
+            // Selecting a track can replace its button before the click
+            // finishes bubbling and trigger a synthetic sidebar click.
+            if (event.isTrusted && !event.composedPath().some(node => node.classList?.contains('sv-menu-wrapper'))) closeAllMenus();
+        });
 
         function handleKey(event) {
             const active = document.activeElement;
@@ -459,13 +531,13 @@
         // Window capture precedes shared shell Back handling; only player focus is owned.
         listen(window, "keydown", handleKey, true);
 
-        function menuItem(menu, text, selected, action) {
+        function menuItem(menu, text, selected, action, keepOpen = false) {
             const button = document.createElement("button");
             button.type = "button";
             button.textContent = text;
             button.classList.toggle("active", selected);
             button.setAttribute("aria-pressed", String(selected));
-            button.onclick = () => { action(); if (!destroyed) closeAllMenus(true); };
+            button.onclick = () => { action(); if (!destroyed && !keepOpen) closeAllMenus(true); };
             menu.appendChild(button);
         }
         function syncSelect(id, wrapper, menu, minimum) {
@@ -492,11 +564,15 @@
         listen(video, 'ratechange', syncSpeed);
         function syncSubtitles() {
             const buttons = Array.from(document.querySelectorAll("#subtitle-list .source-item"));
+            const focused = Array.from(subTracks.children).indexOf(document.activeElement);
             subWrap.hidden = !buttons.length;
-            subMenu.replaceChildren();
+            subTracks.replaceChildren();
+            subTiming.update();
             if (!buttons.length) return;
-            menuItem(subMenu, labels.off, !buttons.some(button => button.classList.contains("source-item--active")), () => window.SVStopSubtitles?.());
-            buttons.forEach(button => menuItem(subMenu, button.textContent.trim(), button.classList.contains("source-item--active"), () => button.click()));
+            menuItem(subTracks, labels.off, !buttons.some(button => button.classList.contains("source-item--active")), () => window.SVStopSubtitles?.());
+            buttons.forEach(button => menuItem(subTracks, button.textContent.trim(), button.classList.contains("source-item--active"), () => button.click(), true));
+            positionSubtitleMenu();
+            if (focused >= 0 && subMenu.classList.contains('sv-menu--open')) subTracks.children[focused]?.focus({preventScroll: true});
         }
         const observer = new MutationObserver(records => {
             const changed = new Set(records.map(record => record.target.closest("#source-select, #audio-select, #subtitle-list")?.id));
@@ -539,4 +615,5 @@
     }
 
     window.SVInitCustomPlayer = initCustomPlayer;
+    window.SVCreateSubtitleSyncControls = createSubtitleSyncControls;
 })();
