@@ -130,6 +130,7 @@
                         <span>{{ "Audio" if lang == "en" else "Audio" }}</span>
                         <select id="local-player-audio" class="filter-select"></select>
                     </label>
+                    <button id="local-player-retry" class="button" type="button" hidden>{{ "Retry playback" if lang == "en" else "Reintentar reproducción" }}</button>
                     <button id="local-player-close" class="button" type="button">{{ "Close" if lang == "en" else "Cerrar" }}</button>
                 </div>
             </div>
@@ -151,7 +152,7 @@
     <script>window.APP_LANG = "{{ lang }}"; window.IS_ADMIN = {{ 'true' if is_admin else 'false' }};</script>
     <script defer src="/assets/js/offline-store.js?v=20261024-1"></script>
     <script defer src="/assets/js/offline-ui.js?v=20261111-1"></script>
-    <script defer src="/assets/js/local-player.js?v=20261105-1"></script>
-    <script defer src="/assets/js/download-manager.js?v=20261105-1"></script>
+    <script defer src="/assets/js/local-player.js?v=20261122-2"></script>
+    <script defer src="/assets/js/download-manager.js?v=20261122-1"></script>
 </body>
 </html>

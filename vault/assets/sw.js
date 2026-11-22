@@ -1,6 +1,6 @@
 // Only public static assets are cached. Device media is explicitly saved in IDB.
 importScripts("/assets/js/offline-store.js?v=20261024-1");
-const CACHE_NAME = "streamvault-shell-v6";
+const CACHE_NAME = "streamvault-shell-v7";
 const APP_SHELL = [
   "/assets/icon.png",
   "/assets/favicon.ico",
@@ -9,7 +9,7 @@ const APP_SHELL = [
   "/assets/css/ui-extras.css",
   "/assets/css/app.css?v=20261111-1",
   "/assets/css/ui-extras.css?v=20261008-1",
-  "/assets/js/custom-player.js?v=20261111-1",
+  "/assets/js/custom-player.js?v=20261122-1",
   "/assets/js/shell.js?v=20261010-1",
   "/assets/fonts/bebas-neue-regular.woff2",
   "/assets/fonts/dm-sans-300.woff2",

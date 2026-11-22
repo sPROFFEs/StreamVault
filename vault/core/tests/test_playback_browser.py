@@ -20,13 +20,14 @@ from regression_fixtures import CHROMIUM_ARGS
 
 
 @pytest.mark.skipif(os.getenv("STREAMVAULT_BROWSER_TESTS") != "1", reason="Opt-in browser check")
-def test_browser_plays_seeks_and_resumes_uncached_and_cached_video(tmp_path, monkeypatch):
+@pytest.mark.parametrize("codec", ["libx264", "mpeg4"], ids=["copy-video", "transcode-video"])
+def test_browser_plays_seeks_and_resumes_uncached_and_cached_video(tmp_path, monkeypatch, codec):
     assert shutil.which("ffmpeg") and shutil.which("ffprobe")
     source = tmp_path / "Show.S01E01.mkv"
     subprocess.run([
         "ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=10",
         "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "40",
-        "-c:v", "libx264", "-g", "10", "-threads", "1", "-c:a", "ac3", str(source),
+        "-c:v", codec, "-g", "10", "-threads", "1", "-c:a", "ac3", str(source),
     ], check=True, capture_output=True, timeout=20)
     monkeypatch.setattr(downloads.settings, "DOWNLOADS_ROOT", str(tmp_path))
     monkeypatch.setattr(downloads.settings, "MEDIA_STORAGE_PATH", str(tmp_path / "cache"))
@@ -78,8 +79,10 @@ def test_browser_plays_seeks_and_resumes_uncached_and_cached_video(tmp_path, mon
                 assert page.evaluate("SVLocalPlayback.currentTime(document.querySelector('video'))") >= 6
                 assert page.locator(".local-playback-timeline").count() == 0
                 assert page.locator("video").evaluate("video => video.controls")
-                page.evaluate("SVLocalPlayback.open(document.querySelector('video'), source, {start: 20, audio: 1})")
-                page.wait_for_function("document.querySelector('video').dataset.playbackOffset === '20' && document.querySelector('video').currentTime > .5", timeout=15000)
+                page.evaluate("SVLocalPlayback.seek(document.querySelector('video'), source, {start: 2, audio: 1})")
+                page.wait_for_function("document.querySelector('video').dataset.playbackOffset === '2' && document.querySelector('video').currentTime > .5", timeout=15000)
+                page.evaluate("SVLocalPlayback.seek(document.querySelector('video'), source, {start: 20, audio: 1})")
+                page.wait_for_function("SVLocalPlayback.currentTime(document.querySelector('video')) > 20.5", timeout=15000)
                 # Leave Chromium before invoking asyncio; Playwright's sync API
                 # owns an event loop while this context is active.
                 page.evaluate("SVLocalPlayback.close(document.querySelector('video'))")

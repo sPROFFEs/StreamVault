@@ -14,6 +14,7 @@ Endpoints:
 """
 
 import asyncio
+from fractions import Fraction
 from functools import lru_cache
 from hashlib import sha256
 import json
@@ -577,7 +578,10 @@ def _cached_media_tracks(media_path: str, size: int, mtime_ns: int) -> dict:
             result = subprocess.run(
                 [
                     "ffprobe", "-v", "error",
-                    "-show_entries", "format=duration:stream=index,codec_type,codec_name,pix_fmt,width,height:stream_tags=language,title",
+                    "-show_entries", (
+                        "format=duration:stream=index,codec_type,codec_name,pix_fmt,width,height,"
+                        "profile,level,bit_rate,avg_frame_rate,codec_tag_string,color_transfer:stream_tags=language,title"
+                    ),
                     "-of", "json", str(media_path),
                 ],
                 check=True, capture_output=True, text=True, timeout=8,
@@ -613,7 +617,35 @@ def _cached_media_tracks(media_path: str, size: int, mtime_ns: int) -> dict:
             tracks["video_pixel_format"] = stream.get("pix_fmt", "")
             tracks["video_width"] = stream.get("width", 0)
             tracks["video_height"] = stream.get("height", 0)
+            tracks["video_tag"] = stream.get("codec_tag_string", "")
+            if item["codec"] == "hevc":
+                tracks["hevc"] = _hevc_configuration(stream, size, duration)
     return tracks
+
+
+def _hevc_configuration(stream: dict, size: int, duration: float) -> dict | None:
+    """Only offer common HEVC profiles with enough metadata to check the decoder."""
+    profiles = {("Main", "yuv420p"): "1.6", ("Main 10", "yuv420p10le"): "2.4"}
+    profile = profiles.get((stream.get("profile"), stream.get("pix_fmt")))
+    if not profile or stream.get("codec_tag_string") in {"dvh1", "dvhe"}:
+        return None
+    try:
+        level = int(stream["level"])
+        width, height = int(stream["width"]), int(stream["height"])
+        framerate = float(Fraction(stream["avg_frame_rate"]))
+        bitrate = int(stream.get("bit_rate") or size * 8 / duration)
+    except (KeyError, TypeError, ValueError, ZeroDivisionError, OverflowError):
+        return None
+    if not (30 <= level <= 186 and width > 0 and height > 0 and 0 < framerate <= 240 and bitrate > 0):
+        return None
+    result = {
+        "contentType": f'video/mp4; codecs="hvc1.{profile}.L{level}.B0"',
+        "width": width, "height": height, "framerate": framerate, "bitrate": bitrate,
+    }
+    transfer = {"smpte2084": "pq", "arib-std-b67": "hlg"}.get(stream.get("color_transfer"))
+    if transfer:
+        result["transferFunction"] = transfer
+    return result
 
 
 TEXT_SUBTITLE_CODECS = {"ass", "mov_text", "ssa", "srt", "subrip", "text", "webvtt"}
@@ -662,6 +694,8 @@ async def match_downloaded_media(
     encoded = quote(relative)
     match["audio_tracks"] = tracks["audio"]
     match["duration_seconds"] = tracks["duration_seconds"]
+    if tracks.get("hevc"):
+        match["hevc"] = tracks["hevc"]
     match["subtitles"].extend({
         "language": track["language"],
         "label": track["title"] or track["language"].upper(),
@@ -686,9 +720,11 @@ async def _playable_path(path: str) -> Path:
     return media_path
 
 
-def _remux_cache_path(media_path: Path, audio_map: str) -> Path:
+def _remux_cache_path(media_path: Path, audio_map: str, *, hevc: bool = False) -> Path:
     stat = media_path.stat()
     fingerprint = f"v3|{media_path.resolve()}|{stat.st_size}|{stat.st_mtime_ns}|{audio_map}"
+    if hevc:
+        fingerprint += "|hevc"
     return Path(settings.MEDIA_STORAGE_PATH) / "remux" / f"{sha256(fingerprint.encode()).hexdigest()}.mp4"
 
 
@@ -702,14 +738,17 @@ def _audio_map(tracks: dict, audio: Optional[int]) -> str:
 
 @router.get("/files/playback")
 async def prepare_local_playback(path: str, audio: Optional[int] = None,
-                                 start: float = Query(0, ge=0, le=86400)):
+                                 start: float = Query(0, ge=0, le=86400), hevc: bool = False):
     """Choose an explicit playback mode so clients never guess from duration."""
     media_path = await _playable_path(path)
     tracks = await asyncio.to_thread(_probe_media_tracks, media_path)
+    hevc = hevc and bool(tracks.get("hevc"))
     audio_map = _audio_map(tracks, audio)
     primary_audio = tracks["audio"][0] if tracks["audio"] else None
     default_audio = audio is None or (primary_audio and audio == primary_audio["stream_index"])
-    native_mp4 = media_path.suffix.lower() in {".mp4", ".m4v", ".mov"} and _browser_h264(tracks)
+    native_mp4 = media_path.suffix.lower() in {".mp4", ".m4v", ".mov"} and (
+        _browser_h264(tracks) or hevc and tracks.get("video_tag") == "hvc1"
+    )
     native_webm = media_path.suffix.lower() == ".webm" and tracks.get("video_codec") in {"vp8", "vp9", "av1"}
     audio_ok = not primary_audio or primary_audio["codec"] in ({"opus", "vorbis"} if native_webm else {"aac", "mp3"})
     url = f"/api/downloads/files/stream?path={quote(path)}"
@@ -717,15 +756,20 @@ async def prepare_local_playback(path: str, audio: Optional[int] = None,
     if not (default_audio and audio_ok and (native_mp4 or native_webm)):
         if not shutil.which("ffmpeg"):
             raise HTTPException(503, "FFmpeg is required for this file")
-        cached = _remux_cache_path(media_path, audio_map)
+        cached = _remux_cache_path(media_path, audio_map, hevc=hevc)
         url = f"/api/downloads/files/remux?path={quote(path)}"
         if audio is not None:
             url += f"&audio={audio}"
+        if hevc:
+            url += "&hevc=true"
         if not await asyncio.to_thread(touch_cache, cached):
             mode, offset = "stream", start
             # Pin the mode even if the cache finishes before the video GET.
             url += f"&start={start}&force_stream=true"
-    return {"url": url, "mode": mode, "offset": offset, "duration_seconds": tracks["duration_seconds"]}
+    descriptor = {"url": url, "mode": mode, "offset": offset, "duration_seconds": tracks["duration_seconds"]}
+    if hevc:
+        descriptor["video_codec"] = "hevc"
+    return descriptor
 
 
 @router.get("/files/subtitle")
@@ -845,6 +889,7 @@ async def remux_downloaded_media(
     start: float = Query(0, ge=0, le=86400),
     force_stream: bool = False,
     request: Request = None,
+    hevc: bool = False,
 ):
     """Remux local video while converting unsupported audio to browser-safe AAC.
 
@@ -863,7 +908,8 @@ async def remux_downloaded_media(
 
     tracks = await asyncio.to_thread(_probe_media_tracks, media_path)
     audio_map = _audio_map(tracks, audio)
-    cached = _remux_cache_path(media_path, audio_map)
+    hevc = hevc and bool(tracks.get("hevc"))
+    cached = _remux_cache_path(media_path, audio_map, hevc=hevc)
 
     # Mode 1: cached file exists → serve it (full seeking via Range requests).
     with protect_cache(cached):
@@ -877,12 +923,14 @@ async def remux_downloaded_media(
         del response.headers['content-length']
         return response
 
-    # Jump close to the target using the input index, then discard at most
-    # fifteen seconds for frame-accurate output without transcoding the video.
-    fast_seek = max(0, start - 15)
+    # A transcoder can seek accurately using the input index alone. Stream
+    # copy still needs the output cut so earlier packets are not shown at start.
+    fast_seek = max(0, start - 15) if hevc or _browser_h264(tracks) else start
     accurate_seek = start - fast_seek
     input_seek_args = ["-ss", f"{fast_seek:.3f}"] if fast_seek > 0 else []
-    output_seek_args = ["-ss", f"{accurate_seek:.3f}"] if accurate_seek > 0 else []
+    # An AAC track can still be copied during video transcode. Drop its
+    # preroll too, or the muxer will shift the video to align with old audio.
+    output_seek_args = ["-ss", f"{accurate_seek:.3f}"] if start > 0 else []
     try:
         await asyncio.wait_for(_live_remux_slots.acquire(), timeout=2)
     except asyncio.TimeoutError:
@@ -904,7 +952,7 @@ async def remux_downloaded_media(
             _live_remux_slots.release()
         if (process is not None and not conversion_failed and not cached.is_file()
                 and (completed or bytes_sent >= 4 * 1024**2)):
-            _ensure_background_remux(media_path, audio_map, cached)
+            _ensure_background_remux(media_path, audio_map, cached, hevc)
 
     # A cache build started after a previous viewing must yield to this one.
     try:
@@ -919,10 +967,10 @@ async def remux_downloaded_media(
     async def output():
         nonlocal process, bytes_sent, completed, conversion_failed
         process = await asyncio.create_subprocess_exec(
-                "ffmpeg", "-nostdin", "-v", "error", "-threads", "4",
+                "ffmpeg", "-nostdin", "-v", "error", "-filter_threads", "2", "-threads", "4",
                 *input_seek_args, "-i", str(media_path), *output_seek_args,
                 "-map", "0:v:0", "-map", audio_map,
-                *_encoding_args(tracks, audio_map),
+                *_encoding_args(tracks, audio_map, live=True, hevc=hevc),
                 "-avoid_negative_ts", "make_zero",
                 "-movflags", "frag_keyframe+empty_moov+default_base_moof",
                 "-flush_packets", "1",
@@ -955,10 +1003,18 @@ _live_remux_slots = asyncio.Semaphore(settings.MAX_LIVE_REMUXES)
 _active_live_remuxes = 0
 
 
-def _encoding_args(tracks: dict, audio_map: str) -> list[str]:
-    video = ["-c:v", "copy"] if _browser_h264(tracks) else [
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p", "-threads:v", "4",
+def _encoding_args(tracks: dict, audio_map: str, *, live: bool = False, hevc: bool = False) -> list[str]:
+    copy_video = hevc or _browser_h264(tracks)
+    video = ["-c:v", "copy"] if copy_video else [
+        "-c:v", "libx264", "-preset", "superfast" if live else "veryfast",
+        "-crf", "23", "-pix_fmt", "yuv420p", "-threads:v", "4" if live else "2",
     ]
+    if hevc:
+        video += ["-tag:v", "hvc1"]
+    if live and not copy_video:
+        video += ["-tune", "zerolatency", "-maxrate", "6M", "-bufsize", "6M"]
+        if tracks.get("video_width", 0) > 1920 or tracks.get("video_height", 0) > 1080:
+            video += ["-vf", "scale=1920:1080:force_original_aspect_ratio=decrease:force_divisible_by=2"]
     selected = next((track for track in tracks["audio"] if f"0:{track['stream_index']}" == audio_map), None)
     audio = ["-c:a", "copy"] if selected and selected["codec"] == "aac" else [
         "-c:a", "aac", "-b:a", "192k", "-ac", "2", "-threads:a", "1",
@@ -970,7 +1026,7 @@ def _browser_h264(tracks: dict) -> bool:
     return tracks.get('video_codec') == 'h264' and tracks.get('video_pixel_format', '') in {'', 'yuv420p', 'yuvj420p'}
 
 
-def _ensure_background_remux(media_path: Path, audio_map: str, cached: Path) -> None:
+def _ensure_background_remux(media_path: Path, audio_map: str, cached: Path, hevc: bool = False) -> None:
     """Start a background pre-remux to a seekable faststart MP4 if not already running."""
     if not settings.AUTO_CACHE_ON_WATCH or _active_live_remuxes:
         return  # Foreground playback owns the CPU and disk budget.
@@ -981,18 +1037,21 @@ def _ensure_background_remux(media_path: Path, audio_map: str, cached: Path) -> 
     if len(_background_remux_tasks) >= 4:
         return  # Bound the pending queue as well as the active encoder.
 
-    task = asyncio.create_task(_run_background_remux(media_path, audio_map, cached))
+    task = asyncio.create_task(_run_background_remux(media_path, audio_map, cached, hevc))
     _background_remux_tasks[key] = task
     # Clean up the reference when done.
     task.add_done_callback(lambda t: _background_remux_tasks.pop(key, None))
 
 
-async def _run_background_remux(media_path: Path, audio_map: str, cached: Path) -> None:
+async def _run_background_remux(media_path: Path, audio_map: str, cached: Path, hevc: bool = False) -> None:
     async with _background_remux_slots:
-        await _build_remux_cache(media_path, audio_map, cached)
+        # Fast seeks and reconnections close the preceding HTTP stream.
+        # Give the next request time to arrive before starting a full encode.
+        await asyncio.sleep(5)
+        await _build_remux_cache(media_path, audio_map, cached, hevc)
 
 
-async def _build_remux_cache(media_path: Path, audio_map: str, cached: Path) -> None:
+async def _build_remux_cache(media_path: Path, audio_map: str, cached: Path, hevc: bool = False) -> None:
     """Pre-remux the full file to a seekable faststart MP4. Runs in the background."""
     temporary = cached.with_name(f"{cached.stem}.{uuid4().hex}.mp4")
     process = None
@@ -1012,7 +1071,7 @@ async def _build_remux_cache(media_path: Path, audio_map: str, cached: Path) -> 
                 *priority, "ffmpeg", "-nostdin", "-y", "-v", "error", "-threads", "2",
                 "-i", str(media_path),
                 "-map", "0:v:0", "-map", audio_map,
-                *_encoding_args(tracks, audio_map),
+                *_encoding_args(tracks, audio_map, hevc=hevc),
                 "-movflags", "+faststart",
                 str(temporary),
                 stdout=asyncio.subprocess.DEVNULL,

@@ -96,6 +96,7 @@ let descriptor = {mode: 'file', offset: 0, url: '/video', duration_seconds: 300}
 const video = {
   dataset: {}, currentTime: 0, readyState: 4, paused: true, playbackRate: 1.5,
   buffered: {length: 1, start: () => 0, end: () => 50},
+  get seekable() {return this.buffered;},
   pause() {this.paused = true;}, load() {}, removeAttribute() {}, removeEventListener() {},
   addEventListener(name, callback) {if (name === 'loadedmetadata') this.loadedmetadata = callback;},
   play: async function() {this.paused = false; plays++;},
@@ -219,6 +220,109 @@ __SCRIPT__
 })().catch(error => {console.error(error); process.exitCode = 1;});
 """.replace('__SCRIPT__', script).replace('SVLocalPlayback.', 'window.SVLocalPlayback.')
     result = subprocess.run(['node', '-e', probe], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+def test_local_player_retries_the_latest_seek_even_when_it_is_behind_the_resume_point():
+    script = (ASSETS / 'local-player.js').read_text()
+    probe = r"""
+const assert = require('node:assert/strict');
+global.window = {};
+const timers = new Map();
+let timerId = 0;
+global.setTimeout = (fn, ms) => {timers.set(++timerId, {fn, ms}); return timerId;};
+global.clearTimeout = id => timers.delete(id);
+class Video extends EventTarget {
+  dataset = {}; currentTime = 0; readyState = 4; paused = true; ended = false;
+  pause() {this.paused = true;}
+  async play() {this.paused = false;}
+  load() {this.currentTime = 0; this.readyState = 0;}
+  removeAttribute() {}
+  error = null;
+}
+const video = new Video(), requests = [];
+global.fetch = async url => {
+  requests.push(Number(new URL(url, 'https://example.test').searchParams.get('start')));
+  return {ok: true, json: async () => ({mode: 'file', offset: 0, url: '/video', duration_seconds: 300})};
+};
+__SCRIPT__
+(async () => {
+  const player = window.SVLocalPlayback, source = {relative_path: 'video.mp4'};
+  await player.open(video, source, {start: 100});
+  video.readyState = 4;
+  video.dispatchEvent(new Event('loadedmetadata'));
+  assert.equal(video.paused, false);
+  await player.seek(video, source, {start: 30});
+  video.dispatchEvent(new Event('seeked'));
+  video.currentTime = 31;
+  video.dispatchEvent(new Event('timeupdate'));
+  video.currentTime = 0; // A failed Range request can reset the media clock.
+  video.error = {code: 2};
+  video.dispatchEvent(new Event('error'));
+  assert.equal(player.currentTime(video), 31);
+  const retry = [...timers.values()].find(timer => timer.ms === 1500);
+  retry.fn();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(requests, [100, 31]);
+  player.close(video);
+})().catch(error => {console.error(error); process.exitCode = 1;});
+""".replace('__SCRIPT__', script)
+    result = subprocess.run(['node', '-e', probe], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+def test_local_hevc_can_fall_back_to_h264_without_losing_the_current_position():
+    script = (ASSETS / "local-player.js").read_text()
+    probe = r"""
+const assert = require('node:assert/strict');
+global.window = {navigator: {mediaCapabilities: {decodingInfo: async () => ({
+  supported: true, smooth: true, powerEfficient: true
+})}}};
+const timers = new Map();
+let timerId = 0;
+global.setTimeout = (fn, ms) => {timers.set(++timerId, {fn, ms}); return timerId;};
+global.clearTimeout = id => timers.delete(id);
+class Video extends EventTarget {
+  dataset = {}; currentTime = 0; readyState = 4; paused = true;
+  canPlayType() {return 'probably';}
+  pause() {this.paused = true;}
+  async play() {this.paused = false;}
+  load() {this.currentTime = 0;}
+  removeAttribute() {}
+}
+const video = new Video(), requests = [];
+global.fetch = async url => {
+  const query = new URL(url, 'https://example.test').searchParams;
+  requests.push(query);
+  return {ok: true, json: async () => ({mode: 'file', offset: 0, url: '/video',
+    duration_seconds: 300, video_codec: query.has('hevc') ? 'hevc' : 'h264'})};
+};
+__SCRIPT__
+(async () => {
+  const player = window.SVLocalPlayback;
+  const source = {relative_path: 'movie.mkv', hevc: {contentType: 'video/mp4; codecs="hvc1.2.4.L120.B0"',
+    width: 1920, height: 1080, bitrate: 5e6, framerate: 24}};
+  await player.open(video, source);
+  assert.equal(requests[0].get('hevc'), 'true');
+  video.dispatchEvent(new Event('loadedmetadata'));
+  video.currentTime = 42;
+  video.dispatchEvent(new Event('timeupdate'));
+  video.currentTime = 0;
+  video.error = {code: 3};
+  video.dispatchEvent(new Event('error'));
+  [...timers.values()].find(timer => timer.ms === 1500).fn();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].has('hevc'), false);
+  assert.equal(requests[1].get('start'), '42');
+  player.close(video);
+  window.navigator.connection = {downlink: 1};
+  await player.open(video, source);
+  assert.equal(requests[2].has('hevc'), false, 'A slow connection should keep the bounded H.264 path');
+  player.close(video);
+})().catch(error => {console.error(error); process.exitCode = 1;});
+""".replace("__SCRIPT__", script)
+    result = subprocess.run(["node", "-e", probe], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
 
 

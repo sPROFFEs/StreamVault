@@ -386,6 +386,37 @@ def test_streaming_playback_waits_for_two_and_a_half_seconds_of_reserve(player_p
     assert page.evaluate('playCalls') == 1
 
 
+def test_timeline_holds_latest_seek_and_pause_while_server_prepares_it(player_page):
+    page = player_page
+    page.evaluate('''() => {
+      const source = {relative_path: 'fixture.mkv', duration_seconds: 100};
+      video.load = () => { video.currentTime = 0; };
+      Object.defineProperty(video, 'src', {set() {}});
+      window.pendingSeeks = [];
+      window.fetch = (url, {signal}) => new Promise(resolve => {
+        pendingSeeks.push({resolve, signal});
+      });
+      SVInitCustomPlayer(video, document.querySelector('#player-container'), {
+        duration: 100, onSeek: start => SVLocalPlayback.seek(video, source, {start}),
+      });
+      video.play();
+    }''')
+    timeline = page.locator('#sv-seek')
+    timeline.fill('80')
+    timeline.fill('25')
+    expect(timeline).to_have_value('25')
+    expect(page.locator('#sv-time-current')).to_have_text('0:25')
+    assert page.evaluate('pendingSeeks.length === 2 && pendingSeeks[0].signal.aborted')
+    page.get_by_role('button', name='Pause', exact=True).click()
+    page.evaluate('''() => pendingSeeks[1].resolve({ok: true, json: async () => ({
+      mode: 'stream', offset: 25, duration_seconds: 100, url: '/fixture.mp4'
+    })})''')
+    page.wait_for_function("video.dataset.playbackOffset === '25'")
+    page.evaluate("video.dispatchEvent(new Event('loadedmetadata'))")
+    expect(timeline).to_have_value('25')
+    assert page.evaluate('video.paused && playCalls === 1')
+
+
 def test_async_local_seek_errors_and_stale_requests(player_page):
     page = player_page
     page.evaluate('''async () => {

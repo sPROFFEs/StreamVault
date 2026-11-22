@@ -757,16 +757,12 @@ async function loadLocalSource(source, selectedStreamIndex) {
     const resumeAt = savedResumePosition(source.duration_seconds);
 
     const dur = Number(source.duration_seconds || (state.item?.runtime ? state.item.runtime * 60 : 0));
-    const onSeek = (targetTime) => {
-        const localVideo = el.playerContainer.querySelector("video");
-        if (!localVideo) return;
-        return window.SVLocalPlayback.seek(localVideo, source, {
-            audio: chosen,
-            start: targetTime,
-            onOffset: (offset) => { state.localPlaybackOffset = offset; },
-            onError: (error) => showToast(T.sourceLoadError, error.message, "error"),
-        });
+    const playbackOptions = {
+        audio: chosen,
+        onOffset: (offset) => { state.localPlaybackOffset = offset; },
+        onError: (error) => showToast(T.sourceLoadError, error.message, "error"),
     };
+    const onSeek = (start) => window.SVLocalPlayback.seek(video, source, {...playbackOptions, start});
 
     if (window.SVInitCustomPlayer) {
         let displayTitle = state.item?.title || state.item?.name || "Video";
@@ -802,16 +798,10 @@ async function loadLocalSource(source, selectedStreamIndex) {
     attachProgressTracking(video, source.duration_seconds, () => Number(video.dataset.playbackOffset || 0));
     try {
         await window.SVLocalPlayback.open(video, source, {
-            audio: chosen, start: resumeAt,
-            onOffset: (offset) => { state.localPlaybackOffset = offset; },
-            onError: (error) => {
-                showToast(T.sourceLoadError, error.message, "error");
-                tryNextSource("local-error");
-            },
+            ...playbackOptions, start: resumeAt,
         });
     } catch (error) {
-        showToast(T.sourceLoadError, error.message, "error");
-        tryNextSource("local-exception");
+        playbackOptions.onError(error);
     }
 }
 
@@ -1456,6 +1446,7 @@ function attachProgressTracking(video, knownDuration = 0, resumeOffset = 0) {
         state.progressTimer = setTimeout(() => {
             state.progressTimer = null;
             const duration = Number(knownDuration || video.duration || 0);
+            if (video._playbackRequest?.pendingPosition != null || video.error) return;
             const offset = typeof resumeOffset === "function" ? resumeOffset() : resumeOffset;
             const absoluteTime = offset + video.currentTime;
             const done = duration ? absoluteTime >= duration * 0.9 : false;

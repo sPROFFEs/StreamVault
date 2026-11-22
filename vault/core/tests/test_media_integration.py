@@ -45,23 +45,59 @@ def test_real_video_conversion_and_seekable_cache(tmp_path, monkeypatch, video_a
 
 
 @pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"), reason="FFmpeg tools required")
-def test_live_conversion_produces_decodable_fragments(tmp_path, monkeypatch):
+@pytest.mark.parametrize("audio_codec", ["ac3", "aac"])
+def test_live_conversion_produces_decodable_fragments(tmp_path, monkeypatch, audio_codec):
     source = tmp_path / 'sample.mkv'
     subprocess.run([
-        'ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=160x90:rate=10',
+        'ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=2048x1152:rate=10',
         '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000', '-t', '4',
-        '-c:v', 'mpeg4', '-threads', '1', '-c:a', 'ac3', str(source),
+        '-c:v', 'mpeg4', '-threads', '1', '-c:a', audio_codec, str(source),
     ], check=True, capture_output=True, timeout=15)
     monkeypatch.setattr(downloads.settings, 'DOWNLOADS_ROOT', str(tmp_path))
     monkeypatch.setattr(downloads.settings, 'MEDIA_STORAGE_PATH', str(tmp_path / 'cache'))
     monkeypatch.setattr(downloads, '_ensure_background_remux', lambda *_: None)
     async def stream():
-        response = await downloads.remux_downloaded_media('sample.mkv', start=0, force_stream=True)
+        response = await downloads.remux_downloaded_media('sample.mkv', start=1.5, force_stream=True)
         return b''.join([chunk async for chunk in response.body_iterator])
     output = tmp_path / 'fragments.mp4'
     output.write_bytes(asyncio.run(stream()))
+    tracks = downloads._probe_media_tracks(output)
+    assert (tracks['video_width'], tracks['video_height']) == (1920, 1080)
+    assert 2.4 <= tracks['duration_seconds'] <= 2.7
     subprocess.run(['ffmpeg', '-v', 'error', '-i', str(output), '-f', 'null', '-'],
                    check=True, capture_output=True, timeout=15)
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"), reason="FFmpeg tools required")
+def test_hevc_capable_client_can_play_mkv_without_reencoding_video(tmp_path, monkeypatch):
+    source = tmp_path / "movie.mkv"
+    subprocess.run([
+        "ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=24",
+        "-t", "3", "-an", "-c:v", "libx265", "-pix_fmt", "yuv420p10le",
+        "-x265-params", "pools=1:frame-threads=1:log-level=error", str(source),
+    ], check=True, capture_output=True, timeout=20)
+    monkeypatch.setattr(downloads.settings, "DOWNLOADS_ROOT", str(tmp_path))
+    monkeypatch.setattr(downloads.settings, "MEDIA_STORAGE_PATH", str(tmp_path / "cache"))
+    monkeypatch.setattr(downloads, "_ensure_background_remux", lambda *args, **kwargs: None)
+
+    async def stream():
+        match = (await downloads.match_downloaded_media("", path=source.name))["match"]
+        assert 'hvc1.2.4.' in match["hevc"]["contentType"]
+        default = await downloads.prepare_local_playback(source.name, start=0)
+        assert "hevc=true" not in default["url"]
+        descriptor = await downloads.prepare_local_playback(source.name, start=0, hevc=True)
+        assert descriptor["video_codec"] == "hevc"
+        assert "hevc=true" in descriptor["url"]
+        response = await downloads.remux_downloaded_media(source.name, start=0, force_stream=True, hevc=True)
+        return b"".join([chunk async for chunk in response.body_iterator])
+
+    output = tmp_path / "copied.mp4"
+    output.write_bytes(asyncio.run(stream()))
+    tracks = downloads._probe_media_tracks(output)
+    assert (tracks["video_codec"], tracks["video_pixel_format"], tracks["video_tag"]) == ("hevc", "yuv420p10le", "hvc1")
+    assert 2.9 <= tracks["duration_seconds"] <= 3.2
+    normal = downloads._remux_cache_path(source, "0:a:0?")
+    assert downloads._remux_cache_path(source, "0:a:0?", hevc=True) != normal
 
 
 def _bencode(value):

@@ -108,6 +108,7 @@ const el = {
     playerOverlay: document.getElementById("local-player-overlay"),
     player: document.getElementById("local-player"),
     playerTitle: document.getElementById("local-player-title"),
+    playerRetry: document.getElementById("local-player-retry"),
     playerClose: document.getElementById("local-player-close"),
     playerAudioWrapper: document.getElementById("local-player-audio-wrapper"),
     playerAudio: document.getElementById("local-player-audio"),
@@ -153,6 +154,11 @@ async function boot() {
         el.confirmOverlay.style.display = "none";
     });
     el.playerClose.addEventListener("click", closeLocalPlayer);
+    el.playerRetry?.addEventListener("click", () => {
+        el.playerRetry.hidden = true;
+        el.playerTitle.textContent = el.player.dataset.title;
+        window.SVLocalPlayback.retry(el.player)?.catch(showLocalPlaybackError);
+    });
     el.playerAudio.addEventListener("change", () => {
         const file = state.files.find((item) => item.relative_path === el.player.dataset.path);
         if (file) openLocalPlayer(file, Number(el.playerAudio.value));
@@ -632,6 +638,7 @@ async function openLocalPlayer(file, selectedStreamIndex) {
     const start = el.player.dataset.path === file.relative_path ? window.SVLocalPlayback.currentTime(el.player) : 0;
     const attempt = (state.playerAttempt || 0) + 1;
     state.playerAttempt = attempt;
+    if (el.playerRetry) el.playerRetry.hidden = true;
     window.SVLocalPlayback.close(el.player);
     const params = new URLSearchParams({ title: file.title, media_type: file.media_type, path: file.relative_path });
     if (file.media_type === "series") {
@@ -658,6 +665,7 @@ async function openLocalPlayer(file, selectedStreamIndex) {
     const chosen = Number.isFinite(selectedStreamIndex) ? selectedStreamIndex : audioTracks[0]?.stream_index;
 
     el.playerTitle.textContent = file.title || file.name;
+    el.player.dataset.title = el.playerTitle.textContent;
     el.player.dataset.path = file.relative_path;
     el.player.innerHTML = "";
     (source?.subtitles || []).forEach((subtitle) => {
@@ -676,11 +684,16 @@ async function openLocalPlayer(file, selectedStreamIndex) {
     try {
         await window.SVLocalPlayback.open(el.player, source, {
             audio: chosen, start,
-            onError: (error) => { el.playerTitle.textContent = error.message; },
+            onError: showLocalPlaybackError,
         });
     } catch (error) {
-        el.playerTitle.textContent = error.message;
+        showLocalPlaybackError(error);
     }
+}
+
+function showLocalPlaybackError(error) {
+    el.playerTitle.textContent = error.message;
+    if (el.playerRetry) el.playerRetry.hidden = false;
 }
 
 function closeLocalPlayer() {

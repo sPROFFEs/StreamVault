@@ -211,11 +211,14 @@
         }
 
         function getEffectiveCurrentTime() {
+            if (video._playbackRequest && window.SVLocalPlayback) return window.SVLocalPlayback.currentTime(video);
             return Number(video.dataset.playbackOffset || 0) + Number(video.currentTime || 0);
         }
 
         function updatePlayState() {
-            const paused = video.paused || video.ended;
+            const request = video._playbackRequest;
+            const pending = request?.starting || video._playbackRetryTimer;
+            const paused = pending ? !request.autoplay : video.paused || video.ended;
             // SVG elements do not reflect the HTMLElement.hidden property.
             iconPlay.toggleAttribute("hidden", !paused);
             iconPause.toggleAttribute("hidden", paused);
@@ -257,7 +260,7 @@
             volSlider.setAttribute("aria-valuetext", `${Math.round(volSlider.value * 100)}%`);
         }
 
-        ["play", "pause", "ended"].forEach(name => listen(video, name, updatePlayState));
+        ["play", "pause", "ended", "sv-playback-position"].forEach(name => listen(video, name, updatePlayState));
         listen(video, "play", () => {
             lastProgressTime = Date.now();
             lastCurrentTime = Number(video.currentTime || 0);
@@ -271,7 +274,7 @@
             isRecovering = false;
             setStatus("");
         });
-        ["timeupdate", "progress", "loadedmetadata", "durationchange", "seeked"].forEach(name => listen(video, name, () => {
+        ["timeupdate", "progress", "loadedmetadata", "durationchange", "seeked", "sv-playback-position"].forEach(name => listen(video, name, () => {
             updateTimeAndProgress();
             checkStall();
         }));
@@ -335,6 +338,9 @@
 
         async function togglePlay() {
             try {
+                const retry = window.SVLocalPlayback?.retry?.(video);
+                if (retry) { await retry; return; }
+                if (window.SVLocalPlayback?.togglePendingPlay?.(video)) return;
                 if (video.paused || video.ended) await video.play();
                 else video.pause();
             } catch (error) {
