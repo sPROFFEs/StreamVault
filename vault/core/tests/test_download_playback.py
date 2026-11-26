@@ -414,6 +414,34 @@ def test_disconnect_before_first_body_chunk_releases_remux_slot(tmp_path, monkey
     asyncio.run(scenario())
 
 
+def test_disconnect_while_waiting_for_first_body_chunk_closes_stream():
+    from services.streaming_response import ClosingStreamingResponse
+
+    async def scenario():
+        reading = asyncio.Event()
+        cleanup = AsyncMock()
+
+        async def content():
+            reading.set()
+            await asyncio.Event().wait()
+            yield b"body"
+
+        async def receive():
+            await reading.wait()
+            return {"type": "http.disconnect"}
+
+        response = ClosingStreamingResponse(content(), cleanup=cleanup)
+        send = AsyncMock()
+        await asyncio.wait_for(
+            response({"type": "http", "asgi": {"spec_version": "2.4"}}, receive, send),
+            timeout=1,
+        )
+        cleanup.assert_awaited_once()
+        assert [call.args[0]["type"] for call in send.await_args_list] == ["http.response.start"]
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("process_exit", [0, 1])
 def test_live_playback_defers_cache_encoding_until_stream_closes(tmp_path, monkeypatch, process_exit):
     async def scenario():
@@ -460,13 +488,50 @@ def test_new_playback_stops_existing_background_encoder(tmp_path, monkeypatch):
                 stopped.set()
 
         task = asyncio.create_task(encode())
-        monkeypatch.setattr(downloads, "_background_remux_tasks", {"old": task})
+        queued = asyncio.create_task(asyncio.Event().wait())
+        monkeypatch.setattr(downloads, "_background_remux_tasks", {"old": task, "queued": queued})
+        monkeypatch.setattr(downloads, "_active_background_remux", task)
         await asyncio.sleep(0)
         response = await downloads.remux_downloaded_media("video.mkv", start=0)
         try:
             assert stopped.is_set(), "Background encoding must not compete with playback"
+            assert not queued.done(), "Unstarted cache work should keep its place"
         finally:
             await response.aclose()
             task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+            queued.cancel()
+            await asyncio.gather(task, queued, return_exceptions=True)
+    asyncio.run(scenario())
+
+
+def test_queued_background_remux_waits_until_playback_closes(tmp_path, monkeypatch):
+    async def scenario():
+        media = tmp_path / "video.mkv"
+        media.write_bytes(b"video")
+        cache = tmp_path / "cache"
+        monkeypatch.setattr(downloads.settings, "DOWNLOADS_ROOT", str(tmp_path))
+        monkeypatch.setattr(downloads.settings, "MEDIA_STORAGE_PATH", str(cache))
+        monkeypatch.setattr(downloads, "_probe_media_tracks", lambda _: {"audio": []})
+        monkeypatch.setattr(downloads.shutil, "which", lambda _: "ffmpeg")
+        monkeypatch.setattr(downloads, "_live_remux_slots", asyncio.Semaphore(1))
+        monkeypatch.setattr(downloads, "_background_remux_slots", asyncio.Semaphore(1))
+        monkeypatch.setattr(downloads, "_live_remux_finished", None)
+        build = AsyncMock()
+        monkeypatch.setattr(downloads, "_build_remux_cache", build)
+
+        response = await downloads.remux_downloaded_media("video.mkv", start=0)
+        yield_to_queue = asyncio.sleep
+        monkeypatch.setattr(downloads.asyncio, "sleep", AsyncMock())
+        queued = asyncio.create_task(downloads._run_background_remux(media, "0:a:0?", cache / "video.mp4"))
+        try:
+            await yield_to_queue(0)
+            build.assert_not_called()
+            await response.aclose()
+            await asyncio.wait_for(queued, timeout=1)
+            build.assert_awaited_once()
+        finally:
+            await response.aclose()
+            queued.cancel()
+            await asyncio.gather(queued, return_exceptions=True)
+
     asyncio.run(scenario())

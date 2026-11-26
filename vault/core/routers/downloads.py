@@ -14,6 +14,7 @@ Endpoints:
 """
 
 import asyncio
+from contextlib import ExitStack
 from fractions import Fraction
 from functools import lru_cache
 from hashlib import sha256
@@ -912,12 +913,18 @@ async def remux_downloaded_media(
     cached = _remux_cache_path(media_path, audio_map, hevc=hevc)
 
     # Mode 1: cached file exists → serve it (full seeking via Range requests).
-    with protect_cache(cached):
-        if not force_stream and cached.is_file() and cached.stat().st_size > 0:
-            file_response = PlaybackFileResponse(cached, media_type="video/mp4", headers={"Cache-Control": "private, no-store"})
-            file_response.headers["Accept-Ranges"] = "bytes"
-            file_response.headers["X-Accel-Buffering"] = "no"
-            return file_response
+    try:
+        if not force_stream and cached.is_file():
+            with protect_cache(cached):
+                if cached.stat().st_size > 0:
+                    file_response = PlaybackFileResponse(cached, media_type="video/mp4", headers={"Cache-Control": "private, no-store"})
+                    file_response.headers["Accept-Ranges"] = "bytes"
+                    file_response.headers["X-Accel-Buffering"] = "no"
+                    return file_response
+    except OSError:
+        # A read-only/full cache or an eviction before lease acquisition
+        # should not prevent streaming from the original.
+        logger.debug("Playback cache unavailable")
     if request is not None and request.method == 'HEAD':
         response = Response(media_type='video/mp4', headers={'Cache-Control': 'private, no-store'})
         del response.headers['content-length']
@@ -936,7 +943,9 @@ async def remux_downloaded_media(
     except asyncio.TimeoutError:
         raise HTTPException(503, "Playback is busy. Try again shortly.", headers={"Retry-After": "3"})
 
-    global _active_live_remuxes
+    global _active_live_remuxes, _live_remux_finished
+    if not _active_live_remuxes:
+        _live_remux_finished = asyncio.Event()
     _active_live_remuxes += 1
     process = None
     bytes_sent = 0
@@ -949,6 +958,8 @@ async def remux_downloaded_media(
             await stop_process(process)
         finally:
             _active_live_remuxes -= 1
+            if not _active_live_remuxes:
+                _live_remux_finished.set()
             _live_remux_slots.release()
         if (process is not None and not conversion_failed and not cached.is_file()
                 and (completed or bytes_sent >= 4 * 1024**2)):
@@ -956,10 +967,11 @@ async def remux_downloaded_media(
 
     # A cache build started after a previous viewing must yield to this one.
     try:
-        tasks = list(_background_remux_tasks.values())
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        task = _active_background_remux
+        if task is not None:
+            if not task.cancelling():
+                task.cancel()
+            await asyncio.shield(asyncio.gather(task, return_exceptions=True))
     except BaseException:
         await cleanup()
         raise
@@ -1001,6 +1013,8 @@ _background_remux_tasks: dict[str, asyncio.Task] = {}
 _background_remux_slots = asyncio.Semaphore(1)
 _live_remux_slots = asyncio.Semaphore(settings.MAX_LIVE_REMUXES)
 _active_live_remuxes = 0
+_live_remux_finished: asyncio.Event | None = None
+_active_background_remux: asyncio.Task | None = None
 
 
 def _encoding_args(tracks: dict, audio_map: str, *, live: bool = False, hevc: bool = False) -> list[str]:
@@ -1044,11 +1058,22 @@ def _ensure_background_remux(media_path: Path, audio_map: str, cached: Path, hev
 
 
 async def _run_background_remux(media_path: Path, audio_map: str, cached: Path, hevc: bool = False) -> None:
+    global _active_background_remux
     async with _background_remux_slots:
         # Fast seeks and reconnections close the preceding HTTP stream.
         # Give the next request time to arrive before starting a full encode.
-        await asyncio.sleep(5)
-        await _build_remux_cache(media_path, audio_map, cached, hevc)
+        while True:
+            idle = _live_remux_finished
+            if idle is not None:
+                await idle.wait()
+            await asyncio.sleep(5)
+            if idle is _live_remux_finished:
+                break
+        _active_background_remux = asyncio.current_task()
+        try:
+            await _build_remux_cache(media_path, audio_map, cached, hevc)
+        finally:
+            _active_background_remux = None
 
 
 async def _build_remux_cache(media_path: Path, audio_map: str, cached: Path, hevc: bool = False) -> None:
@@ -1056,9 +1081,9 @@ async def _build_remux_cache(media_path: Path, audio_map: str, cached: Path, hev
     temporary = cached.with_name(f"{cached.stem}.{uuid4().hex}.mp4")
     process = None
     waiter = None
-    lease = protect_cache(cached, temporary)
-    lease.__enter__()
+    leases = ExitStack()
     try:
+        leases.enter_context(protect_cache(cached, temporary))
         cached.parent.mkdir(parents=True, exist_ok=True)
         # A faststart copy temporarily needs another file's worth of space.
         required = media_path.stat().st_size * 2
@@ -1091,12 +1116,12 @@ async def _build_remux_cache(media_path: Path, audio_map: str, cached: Path, hev
                 if not await asyncio.to_thread(reserve_cache_space, 0):
                     raise OSError('Playback cache budget exhausted')
         if process.returncode or not temporary.is_file() or temporary.stat().st_size == 0:
-            logger.warning("Background remux failed for %s (exit %s)", media_path, process.returncode)
+            logger.warning("Background remux failed (exit %s)", process.returncode)
             return
         os.replace(temporary, cached)
-        logger.info("Background remux complete: %s", cached.name)
-    except Exception:
-        logger.exception("Background remux crashed for %s", media_path)
+        logger.info("Background remux complete")
+    except Exception as exc:
+        logger.warning("Background remux failed (%s)", type(exc).__name__)
     finally:
         try:
             await stop_process(process)
@@ -1107,7 +1132,7 @@ async def _build_remux_cache(media_path: Path, audio_map: str, cached: Path, hev
             from services.storage_policy import invalidate_path_size
             invalidate_path_size(settings.MEDIA_STORAGE_PATH)
         finally:
-            lease.__exit__(None, None, None)
+            leases.close()
 
 
 async def close_playback_tasks():
@@ -1117,7 +1142,8 @@ async def close_playback_tasks():
         tasks.append(_downloader_listener_task)
         _downloader_listener_task = None
     for task in tasks:
-        task.cancel()
+        if not task.cancelling():
+            task.cancel()
     await asyncio.gather(*tasks, return_exceptions=True)
 
 

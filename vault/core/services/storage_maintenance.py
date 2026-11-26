@@ -1,6 +1,8 @@
 """Bounded maintenance of disposable playback copies, never original media."""
 import asyncio
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
+import fcntl
+import hashlib
 import logging
 import os
 from pathlib import Path
@@ -23,21 +25,50 @@ _FINAL = re.compile(r"[a-f0-9]{64}\.(?:mp4|vtt)$")
 _TEMP = re.compile(r"[a-f0-9]{64}(?:\.vtt)?\.[a-f0-9]{32}\.(?:mp4|tmp)$")
 
 
+def _lease_bucket(path, root):
+    relative = path.relative_to(root).as_posix()
+    return hashlib.sha256(os.fsencode(relative)).hexdigest()[:2]
+
+
 @contextmanager
-def protect_cache(*paths):
-    keys = [str(Path(path).resolve()) for path in paths]
-    with _LOCK:
-        for key in keys:
-            _ACTIVE[key] = _ACTIVE.get(key, 0) + 1
+def _cache_lock(root, bucket, flags):
+    # A fixed number of lock files bounds disk usage. Never unlink them:
+    # another process can already have the existing inode open.
+    directory = root / ".leases"
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
+        fd = os.open(bucket, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600, dir_fd=directory_fd)
+    finally:
+        os.close(directory_fd)
+    try:
+        fcntl.flock(fd, flags)
         yield
     finally:
+        os.close(fd)
+
+
+@contextmanager
+def protect_cache(*paths):
+    root = Path(settings.MEDIA_STORAGE_PATH).resolve()
+    resolved = {Path(path).resolve() for path in paths}
+    buckets = sorted({_lease_bucket(path, root) for path in resolved})
+    keys = [str(path) for path in resolved]
+    with ExitStack() as leases:
+        for bucket in buckets:
+            leases.enter_context(_cache_lock(root, bucket, fcntl.LOCK_SH))
         with _LOCK:
             for key in keys:
-                if _ACTIVE.get(key, 0) <= 1:
-                    _ACTIVE.pop(key, None)
-                else:
-                    _ACTIVE[key] -= 1
+                _ACTIVE[key] = _ACTIVE.get(key, 0) + 1
+        try:
+            yield
+        finally:
+            with _LOCK:
+                for key in keys:
+                    if _ACTIVE[key] == 1:
+                        del _ACTIVE[key]
+                    else:
+                        _ACTIVE[key] -= 1
 
 
 class PlaybackFileResponse(FileResponse):
@@ -91,7 +122,7 @@ def _candidate(path, stat, now):
 
 
 def cache_inventory() -> dict:
-    root = Path(settings.MEDIA_STORAGE_PATH)
+    root = Path(settings.MEDIA_STORAGE_PATH).resolve()
     items = []
     now = time.time()
     for folder in (root / 'remux', root / 'subtitles'):
@@ -99,12 +130,14 @@ def cache_inventory() -> dict:
             continue
         for path in folder.iterdir():
             try:
-                item = _candidate(path, path.lstat(), now)
+                if _candidate(path, path.lstat(), now):
+                    with _cache_lock(root, _lease_bucket(path, root), fcntl.LOCK_EX | fcntl.LOCK_NB):
+                        item = _candidate(path, path.lstat(), now)
+                        if item:
+                            item['relative_path'] = path.relative_to(root).as_posix()
+                            items.append(item)
             except OSError:
                 continue
-            if item:
-                item['relative_path'] = path.relative_to(root).as_posix()
-                items.append(item)
     items.sort(key=lambda item: item['modified_at'])
     used = get_path_size_bytes(str(root))
     reclaimable = sum(item['size_bytes'] for item in items)
@@ -113,24 +146,26 @@ def cache_inventory() -> dict:
 
 
 def cleanup_cache(paths=None) -> dict:
-    root = Path(settings.MEDIA_STORAGE_PATH)
+    root = Path(settings.MEDIA_STORAGE_PATH).resolve()
     allowed = {item['relative_path']: item for item in cache_inventory()['items']}
     selected = list(allowed) if paths is None else list(dict.fromkeys(paths))
     deleted, errors, freed = [], [], 0
     for relative in selected:
-        with _LOCK:
-            path = root / relative
-            try:
-                if relative not in allowed or path.parent.is_symlink():
-                    raise ValueError("Not an idle playback cache candidate")
+        path = root / relative
+        try:
+            if relative not in allowed or path.parent.is_symlink():
+                raise ValueError("Not an idle playback cache candidate")
+            with _cache_lock(root, _lease_bucket(path, root), fcntl.LOCK_EX | fcntl.LOCK_NB):
                 stat = path.lstat()
                 if not _candidate(path, stat, time.time()):
                     raise ValueError("File is now in use or has changed")
                 path.unlink()
                 freed += stat.st_size
                 deleted.append(relative)
-            except (ValueError, OSError) as error:
-                errors.append({"relative_path": relative, "error": str(error)})
+        except BlockingIOError:
+            errors.append({"relative_path": relative, "error": "File is now in use"})
+        except (ValueError, OSError) as error:
+            errors.append({"relative_path": relative, "error": str(error)})
     if deleted:
         invalidate_path_size(root)
     return {"deleted": deleted, "errors": errors, "freed_bytes": freed}

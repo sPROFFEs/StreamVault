@@ -1,4 +1,8 @@
 import os
+import select
+import signal
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -50,6 +54,37 @@ def test_cache_maintenance_expires_old_copies_but_retains_recent_and_playing(cac
     assert result['freed_bytes'] == 16
     assert not old.exists()
     assert recent.exists() and playing.exists()
+
+
+def test_cache_cleaner_respects_leases_in_another_process(cache):
+    old = cache_file(cache)
+    relative = old.relative_to(cache).as_posix()
+    script = """
+import sys
+from services.storage_maintenance import protect_cache
+with protect_cache(sys.argv[1]):
+    print('ready', flush=True)
+    sys.stdin.read()
+"""
+    core = Path(maintenance.__file__).resolve().parents[1]
+    with subprocess.Popen(
+        [sys.executable, "-c", script, str(old)], cwd=core,
+        env={**os.environ, "MEDIA_STORAGE_PATH": str(cache)},
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+    ) as worker:
+        try:
+            assert select.select([worker.stdout], [], [], 10)[0]
+            assert worker.stdout.readline().strip() == "ready"
+            assert maintenance.cache_inventory()["items"] == []
+            assert maintenance.cleanup_cache([relative])["deleted"] == []
+            assert old.is_file()
+        finally:
+            worker.kill()
+            worker.stdin.close()
+            worker.wait(timeout=10)
+
+    assert worker.returncode == -signal.SIGKILL
+    assert maintenance.cleanup_cache([relative])["deleted"] == [relative]
 
 
 def test_low_disk_space_reclaims_oldest_idle_copy_only(cache, monkeypatch):
