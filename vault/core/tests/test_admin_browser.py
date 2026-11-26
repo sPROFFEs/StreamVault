@@ -22,6 +22,8 @@ def test_admin_tabs_and_folder_navigation(tmp_path, width):
     (folder / 'Episode 2 & notes.txt').write_text("A subtitle <not HTML>")
     assets = Path(__file__).resolve().parents[2] / "assets"
     errors, scans = [], []
+    identity = {"title": "Mr. Robot", "media_type": "series", "season_number": 1,
+                "episode_numbers": [2], "identification_status": "review"}
     fail_listing = False
     cleanup_items = [{"name": "old.part", "relative_path": "old.part", "kind": "orphan", "is_directory": False, "size_label": "12 B"}, {"name": "empty", "relative_path": "empty", "kind": "empty_directory", "is_directory": True, "size_label": "0 B"}]
     cleanup_items.append({'name': 'partial.mkv', 'relative_path': 'old-job/partial.mkv', 'kind': 'orphan',
@@ -51,6 +53,13 @@ def test_admin_tabs_and_folder_navigation(tmp_path, width):
             ))
         if url.path == "/api/downloads/files/preview":
             return route.fulfill(content_type="text/plain", body="A subtitle <not HTML>")
+        if url.path == "/admin/api/downloads/identification":
+            assert param("relative_path") == "Mr. Robot/Season 1/Episode 2.mkv"
+            if route.request.method == "PUT":
+                identity.update(route.request.post_data_json, identification_status="manual")
+            elif route.request.method == "DELETE":
+                identity.update(title="Mr. Robot", episode_numbers=[2], identification_status="review")
+            return route.fulfill(json=identity)
         if url.path == "/admin/downloads/delete":
             (tmp_path / param("relative_path")).unlink()
             return route.fulfill(json={"success": True})
@@ -118,6 +127,21 @@ def test_admin_tabs_and_folder_navigation(tmp_path, width):
             page.locator("#fm-refresh").click()
             expect(page.locator("#fm-list")).to_contain_text("Episode 2.mkv")
             expect(page.locator("#fm-select-all")).to_be_enabled()
+            edit = page.get_by_role("button", name="Identificar Episode 2.mkv", exact=True)
+            dialog = page.locator("#fm-identity")
+            expect(dialog).to_be_hidden()
+            edit.click()
+            expect(dialog).to_be_visible()
+            expect(page.locator("#fm-identity-status")).to_have_text("Pendiente de revisión")
+            page.locator("#fm-id-episode_numbers").fill("2, 3")
+            page.locator("#fm-identity-save").click()
+            expect(dialog).to_be_hidden()
+            assert identity["episode_numbers"] == [2, 3]
+            edit.click()
+            expect(page.locator("#fm-id-episode_numbers")).to_have_value("2,3")
+            page.locator("#fm-identity-reset").click()
+            expect(dialog).to_be_hidden()
+            assert identity["episode_numbers"] == [2]
             page.locator("#fm-cleaner").click()
             expect(page.locator("#fm-cleaner-overlay")).to_be_visible()
             expect(page.locator("#fm-cleaner-summary")).to_contain_text("3 candidatos")

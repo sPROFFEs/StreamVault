@@ -1,6 +1,7 @@
 """Client for communicating with the isolated StreamVault Downloader container."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 try:
@@ -10,7 +11,7 @@ except ImportError:
 
 from config import settings
 from services.download_service import DownloadService
-from services.media_library import _invalidate_scan_cache
+from services.media_library import sync_completed_job
 from services.torrent_service import torrent_service, TorrentService
 
 logger = logging.getLogger(__name__)
@@ -109,10 +110,8 @@ class DownloaderClient:
                             for job in jobs.get(kind, [])
                             if job.get("status") == "completed"
                         }
-                        # The downloader's in-memory cache is separate from
-                        # core's. Invalidate before the UI reloads the library.
-                        if completed - self._completed_remote_jobs:
-                            _invalidate_scan_cache(settings.DOWNLOADS_ROOT)
+                        for _, job_id in completed - self._completed_remote_jobs:
+                            await asyncio.to_thread(sync_completed_job, settings.DOWNLOADS_ROOT, job_id)
                         self._completed_remote_jobs = completed
                         return jobs
             except Exception as exc:

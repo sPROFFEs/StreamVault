@@ -24,8 +24,9 @@ from urllib.parse import parse_qs, urlsplit
 
 from config import settings
 from services.download_limits import download_slots, download_rate_per_job, stop_process
-from services.media_library import VIDEO_EXTENSIONS, INCOMPLETE_MARKER, _invalidate_scan_cache
+from services.media_library import VIDEO_EXTENSIONS, INCOMPLETE_MARKER, sync_library_paths
 from services.storage_policy import ensure_download_space
+from services.storage_reservations import download_window, reserve_space_async
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +119,7 @@ class TorrentJob:
         self.error_msg = ""
         self.created_at = datetime.now()
         self._process: Optional[asyncio.subprocess.Process] = None
+        self._reservation = None
 
     def to_dict(self) -> dict:
         return {
@@ -248,13 +250,17 @@ class TorrentService:
     async def _run(self, job: TorrentJob):
         try:
             async with download_slots:
-                try:
-                    if job.status != "cancelled":
-                        await asyncio.to_thread(ensure_download_space, DOWNLOADS_DIR, job.size_bytes or 0)
-                        await self._download(job)
-                finally:
-                    # Keep the slot until the old process has really stopped.
-                    await stop_process(job._process)
+                if job.status != "cancelled":
+                    window = download_window(download_rate_per_job())
+                    async with reserve_space_async(DOWNLOADS_DIR, "downloads", job.size_bytes or window,
+                                                   job_id=job.id) as reservation:
+                        job._reservation = reservation
+                        try:
+                            await self._download(job)
+                        finally:
+                            # The bytes stay reserved while aria2 can still write.
+                            await stop_process(job._process)
+                            job._reservation = None
         except asyncio.CancelledError:
             job.status = "cancelled"
             raise
@@ -369,14 +375,10 @@ class TorrentService:
             line = raw.decode(errors="ignore").strip()
             if not line:
                 continue
-            if time.monotonic() - last_space_check >= 5:
-                await asyncio.to_thread(ensure_download_space, DOWNLOADS_DIR)
-                last_space_check = time.monotonic()
+            previous_size = job.size_bytes
             if "[METADATA]" in line:
                 job.status = "connecting"
-                continue
-
-            m = pattern.search(line)
+            m = pattern.search(line) if "[METADATA]" not in line else None
             if m:
                 job.status = "downloading"
                 try:
@@ -414,6 +416,14 @@ class TorrentService:
                 tail.append(line)
                 if len(tail) > 40:
                     del tail[:-40]
+            if job.size_bytes != previous_size or time.monotonic() - last_space_check >= 5:
+                if job._reservation:
+                    remaining = (max(0, job.size_bytes - job.downloaded_bytes)
+                                 if job.size_bytes else download_window(download_rate_per_job()))
+                    await asyncio.to_thread(job._reservation.resize, remaining)
+                else:
+                    await asyncio.to_thread(ensure_download_space, DOWNLOADS_DIR)
+                last_space_check = time.monotonic()
 
     async def _capture_stderr(self, proc: asyncio.subprocess.Process,
                               tail: list[str]):
@@ -449,7 +459,7 @@ class TorrentService:
                 "the selected Torrentio file index may be invalid"
             )
         marker.unlink(missing_ok=True)
-        _invalidate_scan_cache(DOWNLOADS_DIR)
+        sync_library_paths(DOWNLOADS_DIR, paths)
         return paths
 
     def _archive(self, job: TorrentJob):

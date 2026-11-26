@@ -20,6 +20,7 @@
             video: '<rect x="3" y="3" width="18" height="18" rx="3"/><path d="M10 8l6 4-6 4z"/>',
             file: '<path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8zM14 2v6h6M8 13h8M8 17h5"/>',
             download: '<path d="M12 3v12m-5-5l5 5 5-5M4 17v4h16v-4"/>',
+            edit: '<path d="M4 20l4-.8L20 7l-3-3L5 16l-1 4zM14 7l3 3"/>',
             trash: '<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/>',
         };
         const icon = kind => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">${icons[kind] || icons.file}</svg>`;
@@ -122,6 +123,7 @@
                     <span class="admin-explorer__size">${escape(item.size_label)}</span>
                     <time class="admin-explorer__modified">${escape(item.modified_label)}</time>
                     <div class="admin-explorer__actions">${item.is_directory ? "" : `
+                        ${item.kind === "video" ? `<button class="admin-explorer__action" type="button" data-identify-file="${path}" aria-label="${escape(t("Identify ", "Identificar ") + item.name)}" title="${t("Edit identification", "Editar identificación")}">${icon("edit")}</button>` : ""}
                         <a class="admin-explorer__action" href="/admin/api/downloads/file?relative_path=${encodeURIComponent(item.relative_path)}" download title="${t("Download", "Descargar")}" aria-label="${escape(t("Download ", "Descargar ") + item.name)}">${icon("download")}</a>
                         <button class="admin-explorer__action admin-explorer__action--danger" type="button" data-delete-file="${path}" title="${t("Delete", "Eliminar")}" aria-label="${escape(t("Delete ", "Eliminar ") + item.name)}">${icon("trash")}</button>`}</div>
                 </article>`;
@@ -180,8 +182,8 @@
             }
             const storage = cleanerData?.storage;
             $("fm-cleaner-storage").textContent = storage
-                ? t(`Free disk: ${fmtBytes(storage.disk_free_bytes)} · Playback cache: ${fmtBytes(storage.cache_bytes)} · Reserved: ${fmtBytes(storage.reserve_bytes)}`,
-                    `Disco libre: ${fmtBytes(storage.disk_free_bytes)} · Caché de reproducción: ${fmtBytes(storage.cache_bytes)} · Reserva: ${fmtBytes(storage.reserve_bytes)}`)
+                ? t(`Free disk ${fmtBytes(storage.disk_free_bytes)} · Playback cache ${fmtBytes(storage.cache_bytes)} · Disk reserve ${fmtBytes(storage.reserve_bytes)} · Active reservations ${fmtBytes(storage.reserved_bytes)}`,
+                    `Disco libre ${fmtBytes(storage.disk_free_bytes)} · Caché de reproducción ${fmtBytes(storage.cache_bytes)} · Reserva del sistema ${fmtBytes(storage.reserve_bytes)} · Reservas de trabajos ${fmtBytes(storage.reserved_bytes)}`)
                 : "";
             $("fm-cleaner-list").innerHTML = items.length ? items.map(item => {
                 const path = escape(item.relative_path);
@@ -321,6 +323,66 @@
             } catch (error) { if (!current.signal.aborted) $("preview-body").textContent = error.message; }
         }
 
+        const identityDialog = $("fm-identity");
+        const identityFields = ["title", "original_title", "localized_title", "year", "tmdb_id",
+            "imdb_id", "media_type", "season_number", "episode_numbers"];
+        let identityPath = "";
+        const identityUrl = () => `/admin/api/downloads/identification?relative_path=${encodeURIComponent(identityPath)}`;
+        const identityField = name => $(`fm-id-${name}`);
+        function updateIdentityType() {
+            const series = identityField("media_type").value === "series";
+            $("fm-id-series").hidden = !series;
+            for (const field of ["season_number", "episode_numbers"]) {
+                identityField(field).disabled = !series;
+                identityField(field).required = series;
+            }
+        }
+        async function loadIdentity(path) {
+            identityPath = path;
+            $("fm-identity-file").textContent = path;
+            $("fm-identity-form").reset();
+            $("fm-identity-status").textContent = t("Loading…", "Cargando…");
+            $("fm-identity-save").disabled = $("fm-identity-reset").disabled = true;
+            identityDialog.showModal();
+            try {
+                const response = await fetch(identityUrl());
+                if (!response.ok) throw new Error();
+                const item = await response.json();
+                if (path !== identityPath || !identityDialog.open) return;
+                for (const name of identityFields) identityField(name).value = item[name] ?? "";
+                updateIdentityType();
+                $("fm-identity-status").textContent = item.identification_status === "review"
+                    ? t("Needs review", "Pendiente de revisión") : "";
+                $("fm-identity-save").disabled = false;
+                $("fm-identity-reset").disabled = item.identification_status !== "manual";
+            } catch (_) {
+                if (path === identityPath) $("fm-identity-status").textContent = t("Video unavailable.", "Vídeo no disponible.");
+            }
+        }
+        async function saveIdentity(reset) {
+            const path = identityPath;
+            const data = Object.fromEntries(identityFields.map(name => [name, identityField(name).value || null]));
+            for (const name of ["year", "tmdb_id", "season_number"]) data[name] = data[name] === null ? null : Number(data[name]);
+            data.episode_numbers = data.episode_numbers && data.media_type === "series"
+                ? data.episode_numbers.split(",").map(value => Number(value.trim())) : [];
+            $("fm-identity-save").disabled = $("fm-identity-reset").disabled = true;
+            try {
+                const response = await fetch(identityUrl(), reset ? {method: "DELETE"} : {
+                    method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify(data),
+                });
+                if (!response.ok) throw new Error();
+                if (path === identityPath && identityDialog.open) identityDialog.close();
+            } catch (_) {
+                if (path !== identityPath) return;
+                $("fm-identity-status").textContent = t("Identification could not be saved.", "No se pudo guardar la identificación.");
+                $("fm-identity-save").disabled = $("fm-identity-reset").disabled = false;
+            }
+        }
+        identityField("media_type").onchange = updateIdentityType;
+        $("fm-identity-close").onclick = () => identityDialog.close();
+        $("fm-identity-reset").onclick = () => void saveIdentity(true);
+        $("fm-identity-form").onsubmit = event => { event.preventDefault(); void saveIdentity(false); };
+
         function cleanupPreview() {
             previewController?.abort();
             $("preview-overlay").hidden = true;
@@ -341,6 +403,8 @@
             if (viewButton) return setView(viewButton.dataset.fmView);
             const remove = event.target.closest("[data-delete-file]");
             if (remove) return void deleteFiles([remove.dataset.deleteFile]);
+            const identify = event.target.closest("[data-identify-file]");
+            if (identify) return void loadIdentity(identify.dataset.identifyFile);
             const file = event.target.closest("[data-open-file]");
             if (file) {
                 const item = data.items.find(entry => entry.relative_path === file.dataset.openFile);

@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 from config import settings
 from services.download_service import DownloadService
 from services.torrent_service import TorrentService, torrent_service
-from services.media_library import _invalidate_scan_cache, classify_video
+from services.media_library import identify_video
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,6 @@ async def _broadcast_notification(event: dict):
 
 
 async def _on_torrent_done(job_dict: dict):
-    _invalidate_scan_cache(settings.DOWNLOADS_ROOT)
     await _broadcast_notification({
         "type": "download_complete",
         "title": job_dict.get("title", "Descarga"),
@@ -57,7 +56,10 @@ async def _on_torrent_done(job_dict: dict):
 async def _auto_fetch_subtitles(local_path: str, title: str):
     from services.subtitles_service import SubtitlesService
     try:
-        info = classify_video(os.path.basename(local_path))
+        relative = os.path.relpath(local_path, settings.DOWNLOADS_ROOT)
+        info = identify_video(os.path.basename(local_path), relative)
+        if info["identification_status"] != "parsed":
+            return
         media_type = "tv" if info.get("media_type") == "series" else "movie"
         sub_service = SubtitlesService()
         result = await sub_service.search(

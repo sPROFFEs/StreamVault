@@ -33,14 +33,13 @@ def test_ytdlp_download_owns_a_marked_directory_until_completion(tmp_path, monke
 
 def test_download_worker_rechecks_disk_before_writing_queued_job(tmp_path, monkeypatch):
     import services.torrent_service as module
+    from services import storage_policy
     monkeypatch.setattr(module, 'DOWNLOADS_DIR', str(tmp_path))
     monkeypatch.setattr(module, '_aria2c_available', lambda: True)
     service = TorrentService()
     launch = AsyncMock()
     monkeypatch.setattr(asyncio, 'create_subprocess_exec', launch)
-    def full_disk(*args, **kwargs):
-        raise ValueError('Insufficient disk space')
-    monkeypatch.setattr(module, 'ensure_download_space', full_disk, raising=False)
+    monkeypatch.setattr(storage_policy, 'disk_free_bytes', lambda _: 0)
     async def scenario():
         job_id = service.start_torrent_download('Movie', 'magnet:?xt=urn:btih:abc')
         await service._bg_tasks[job_id]
@@ -64,7 +63,6 @@ def test_downloader_client_remote_delegation():
 
 def test_remote_completion_refreshes_core_library_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "DOWNLOADS_ROOT", str(tmp_path))
-    monkeypatch.setattr(media_library, "_SCAN_CACHE_TTL", 600)
     job_id = "3c79b5ee-80fe-4bc3-ad87-5ef97e1e301c"
     job = tmp_path / job_id
     season = job / "Show.S01"
@@ -84,8 +82,7 @@ def test_remote_completion_refreshes_core_library_cache(tmp_path, monkeypatch):
                 is_success=True, json=lambda: payload,
             )
             await client.get_jobs()
-            # Simulate completion in the other container, which cannot clear
-            # this process's filesystem cache directly.
+            # A legacy downloader does not publish any SQLite rows.
             marker.unlink()
             payload["torrent"][0]["status"] = "completed"
             await client.get_jobs()

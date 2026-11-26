@@ -28,6 +28,7 @@ def test_download_recovery_does_not_block_application_startup(monkeypatch):
     try:
         assert [coroutine.cr_code.co_name for coroutine in scheduled] == [
             "_recover_downloads_background", "_update_checks_background", "background_loop", "background_loop",
+            "reconcile_loop",
         ]
     finally:
         for coroutine in scheduled:

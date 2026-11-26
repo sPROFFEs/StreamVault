@@ -63,6 +63,36 @@
     </div>
 </section>
 
+<dialog id="fm-identity" class="preview-panel admin-cleaner-panel" aria-labelledby="fm-identity-heading">
+    <form id="fm-identity-form" class="settings-form">
+        <h2 id="fm-identity-heading" class="preview-panel__title">{{ 'Media identification' if lang == 'en' else 'Identificación del vídeo' }}</h2>
+        <p id="fm-identity-file" class="panel__subtle"></p>
+        {% for field, en, es, attributes in [
+            ('title', 'Title', 'Título', 'required maxlength=255'),
+            ('original_title', 'Original title', 'Título original', 'maxlength=255'),
+            ('localized_title', 'Localized title', 'Título localizado', 'maxlength=255'),
+            ('year', 'Release year', 'Año de estreno', 'type=number min=1888 max=2200'),
+            ('tmdb_id', 'TMDB ID', 'ID de TMDB', 'type=number min=1 max=9007199254740991'),
+            ('imdb_id', 'IMDb ID', 'ID de IMDb', 'placeholder=tt1234567 pattern=tt[0-9]{7,12}')
+        ] %}
+        <label class="field"><span>{{ en if lang == 'en' else es }}</span><input class="filter-input" id="fm-id-{{ field }}" {{ attributes }}></label>
+        {% endfor %}
+        <label class="field"><span>{{ 'Type' if lang == 'en' else 'Tipo' }}</span>
+            <select class="filter-input" id="fm-id-media_type"><option value="movie">{{ 'Movie' if lang == 'en' else 'Película' }}</option><option value="series">{{ 'Series' if lang == 'en' else 'Serie' }}</option></select>
+        </label>
+        <div id="fm-id-series">
+            <label class="field"><span>{{ 'Season' if lang == 'en' else 'Temporada' }}</span><input class="filter-input" id="fm-id-season_number" type="number" min="0" max="999"></label>
+            <label class="field"><span>{{ 'Episodes, separated by commas' if lang == 'en' else 'Episodios separados por comas' }}</span><input class="filter-input" id="fm-id-episode_numbers" placeholder="1, 2, 3" pattern="[0-9]+( *, *[0-9]+)*"></label>
+        </div>
+        <p id="fm-identity-status" role="status" aria-live="polite"></p>
+        <div class="admin-section-heading__actions">
+            <button id="fm-identity-reset" class="button button--ghost" type="button">{{ 'Use filename' if lang == 'en' else 'Usar nombre de archivo' }}</button>
+            <button id="fm-identity-close" class="button button--ghost" type="button">{{ 'Close' if lang == 'en' else 'Cerrar' }}</button>
+            <button id="fm-identity-save" class="button" type="submit">{{ 'Save identification' if lang == 'en' else 'Guardar identificación' }}</button>
+        </div>
+    </form>
+</dialog>
+
 <div id="fm-cleaner-overlay" class="preview-overlay" role="dialog" aria-modal="true" aria-labelledby="fm-cleaner-title" hidden>
     <div class="preview-panel admin-cleaner-panel">
         <div class="preview-panel__header">

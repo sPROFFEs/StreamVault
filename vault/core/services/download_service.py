@@ -2,6 +2,7 @@ import os
 import uuid
 import logging
 import asyncio
+import threading
 import time
 from pathlib import Path
 try:
@@ -12,9 +13,10 @@ from typing import Dict, List, Optional
 from datetime import datetime
 
 from config import settings
-from services.storage_policy import ensure_download_space
+from services.storage_policy import ensure_download_space, get_path_size_bytes
 from services.download_limits import download_slots, download_rate_per_job
-from services.media_library import _invalidate_scan_cache, INCOMPLETE_MARKER
+from services.storage_reservations import download_window, reserve_space_async
+from services.media_library import sync_library_paths, INCOMPLETE_MARKER, VIDEO_EXTENSIONS
 
 logger = logging.getLogger(__name__)
 
@@ -119,11 +121,23 @@ class DownloadService:
         logger.info("Starting download: %s", job.id)
         marker = Path(job.download_dir) / INCOMPLETE_MARKER
         last_space_check = 0.0
+        cancellation = threading.Event()
+        window = download_window(download_rate_per_job())
+        expected = 0
+        reservation = None
 
         def progress_hook(d):
-            nonlocal last_space_check
-            if time.monotonic() - last_space_check >= 5:
-                ensure_download_space(DOWNLOADS_DIR)
+            nonlocal last_space_check, expected
+            if cancellation.is_set():
+                raise RuntimeError("Download cancelled")
+            estimated = d.get("total_bytes") or d.get("total_bytes_estimate")
+            new_size = isinstance(estimated, int) and estimated * 2 > expected
+            if new_size or time.monotonic() - last_space_check >= 5 or d["status"] == "finished":
+                written = get_path_size_bytes(job.download_dir, max_age=0)
+                if new_size:
+                    expected = max(expected, 2 * (max(0, written - (d.get("downloaded_bytes") or 0)) + estimated))
+                # Merging tracks can momentarily require a second copy.
+                reservation.resize(max(window, expected - written, written))
                 last_space_check = time.monotonic()
             if d['status'] == 'downloading':
                 try:
@@ -168,19 +182,28 @@ class DownloadService:
         try:
             # Recheck after queueing: another transfer or conversion may have
             # consumed the available space while this job waited for its slot.
-            await asyncio.to_thread(ensure_download_space, DOWNLOADS_DIR)
-            await asyncio.to_thread(Path(job.download_dir).mkdir, parents=True, exist_ok=True)
-            await asyncio.to_thread(marker.touch)
-            # Offload blocking yt-dlp to thread
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, self._run_yt_dlp, ydl_opts, job.url)
-            await asyncio.to_thread(marker.unlink, missing_ok=True)
-            job.status = "completed"
-            _invalidate_scan_cache(DOWNLOADS_DIR)
-            self._archive(job)
+            async with reserve_space_async(DOWNLOADS_DIR, "downloads", window, job_id=job.id) as reservation:
+                await asyncio.to_thread(Path(job.download_dir).mkdir, parents=True, exist_ok=True)
+                await asyncio.to_thread(marker.touch)
+                loop = asyncio.get_running_loop()
+                worker = loop.run_in_executor(None, self._run_yt_dlp, ydl_opts, job.url)
+                try:
+                    await asyncio.shield(worker)
+                except asyncio.CancelledError:
+                    cancellation.set()
+                    await asyncio.gather(worker, return_exceptions=True)
+                    raise
+                await asyncio.to_thread(marker.unlink, missing_ok=True)
+                await asyncio.to_thread(self._index_download, job.download_dir)
+                job.status = "completed"
+                self._archive(job)
 
+        except asyncio.CancelledError:
+            job.status = "cancelled"
+            self._archive(job)
+            raise
         except Exception as e:
-            logger.error(f"Download failed {job.id}: {e}")
+            logger.warning("Download failed %s (%s)", job.id, type(e).__name__)
             job.status = "error"
             job.error_msg = str(e)
             self._archive(job)
@@ -190,3 +213,8 @@ class DownloadService:
             raise RuntimeError("yt-dlp is not installed")
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.download([url])
+
+    @staticmethod
+    def _index_download(directory):
+        paths = [path for path in Path(directory).rglob("*") if path.suffix.lower() in VIDEO_EXTENSIONS]
+        sync_library_paths(DOWNLOADS_DIR, paths)

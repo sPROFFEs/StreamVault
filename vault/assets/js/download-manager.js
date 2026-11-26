@@ -523,6 +523,14 @@ function buildLibrarySection(title, files) {
 
 /** Group series episodes by title → season → episodes and render as
  *  collapsible show rows. Clicking a show expands to reveal its seasons. */
+function episodeNumbers(file) {
+    return (file.episode_numbers?.length ? file.episode_numbers : [file.episode_number]).filter(Number.isInteger);
+}
+
+function episodeCount(files) {
+    return new Set(files.flatMap(episodeNumbers)).size;
+}
+
 function buildSeriesSection(title, files) {
     if (!files.length) {
         return `
@@ -552,11 +560,12 @@ function buildSeriesSection(title, files) {
         }
     }
 
-    const totalEpisodes = files.length;
+    let totalEpisodes = 0;
     const cards = showList.map(show => {
         const open = state.openShows.has(show.title);
         const seasonNums = Object.keys(show.seasons).map(Number).sort((a, b) => a - b);
-        const epCount = seasonNums.reduce((sum, sn) => sum + show.seasons[sn].length, 0);
+        const epCount = seasonNums.reduce((sum, sn) => sum + episodeCount(show.seasons[sn]), 0);
+        totalEpisodes += epCount;
 
         // Build season rows with episode lists.
         const seasonRows = seasonNums.map(sn => {
@@ -566,7 +575,7 @@ function buildSeriesSection(title, files) {
                 <div class="series-group__season">
                     <div class="series-group__season-header">
                         <span>${LANG === "es" ? "Temporada" : "Season"} ${sn}</span>
-                        <span class="badge badge--neutral">${eps.length}</span>
+                        <span class="badge badge--neutral">${episodeCount(eps)}</span>
                     </div>
                     <div class="fm-list series-group__episodes">${epRows}</div>
                 </div>`;
@@ -598,11 +607,18 @@ function buildFileRow(file) {
     const name = file.name;
     const size = formatBytes(file.size_bytes);
     const date = new Date(file.modified_at * 1000).toLocaleDateString();
-    const episode = file.media_type === "series"
-        ? `S${String(file.season_number).padStart(2, "0")}E${String(file.episode_number).padStart(2, "0")}` : "";
+    const numbers = episodeNumbers(file);
+    const episodeCode = number => `E${String(number).padStart(2, "0")}`;
+    let episode = "";
+    if (file.media_type === "series" && Number.isInteger(file.season_number) && numbers.length) {
+        const continuous = numbers.length > 1 && numbers.every((number, index) => number === numbers[0] + index);
+        const codes = continuous ? `${episodeCode(numbers[0])}–${episodeCode(numbers[numbers.length - 1])}`
+            : numbers.slice(0, 4).map(episodeCode).join(", ") + (numbers.length > 4 ? ` +${numbers.length - 4}` : "");
+        episode = `S${String(file.season_number).padStart(2, "0")}${codes}`;
+    }
     const ext = (file.name.split(".").pop() || "").toLowerCase();
     const remote = file.origin === "federation";
-    const isVideo = remote || ["mp4", "mkv", "avi", "mov", "ts", "webm", "m4v"].includes(ext);
+    const isVideo = remote || ["mp4", "mkv", "avi", "mov", "ts", "webm", "m4v", "m2ts", "mpg", "mpeg"].includes(ext);
     const isImage = !remote && ["jpg", "jpeg", "png", "webp", "gif", "bmp"].includes(ext);
     const isText = !remote && ["txt", "srt", "vtt", "nfo", "json", "ass", "ssa", "sub"].includes(ext);
     const kindClass = isVideo ? "video" : isImage ? "image" : isText ? "subtitle" : "other";

@@ -474,6 +474,9 @@ async function findLocalSource(signal) {
     const title = state.item?.title || state.item?.name;
     if (!title) return null;
     const params = new URLSearchParams({ title, media_type: MTYPE });
+    const originalTitle = state.item?.original_title || state.item?.original_name;
+    if (originalTitle) params.set("original_title", originalTitle);
+    if (/^\d+$/.test(TMDB_ID)) params.set("tmdb_id", TMDB_ID);
     if (MTYPE === "tv") {
         params.set("season", el.seasonSelect.value || "1");
         params.set("episode", el.episodeSelect.value || "1");

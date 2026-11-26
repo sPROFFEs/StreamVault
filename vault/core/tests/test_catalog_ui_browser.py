@@ -102,7 +102,7 @@ def test_download_filters_search_url_reset_empty_and_expand(ui_page):
     queries = []
     delayed = []
     movie = {"title": "Example", "name": "Example.mp4", "media_type": "movie", "relative_path": "Example.mp4", "size_bytes": 42, "modified_at": 1}
-    episode = {"title": "The Bear", "name": "01.mkv", "media_type": "series", "relative_path": "The Bear/Season 03/01.mkv", "size_bytes": 80, "modified_at": 2, "season_number": 3, "episode_number": 1}
+    episode = {"title": "The Bear", "name": "01.mkv", "media_type": "series", "relative_path": "The Bear/Season 03/01.mkv", "size_bytes": 80, "modified_at": 2, "season_number": 3, "episode_number": 1, "episode_numbers": [1, 2]}
 
     def route_request(route):
         url = urlsplit(route.request.url)
@@ -137,6 +137,8 @@ def test_download_filters_search_url_reset_empty_and_expand(ui_page):
     show.click()
     expect(show).to_have_attribute("aria-expanded", "true")
     expect(page.locator(".series-group__body")).to_be_visible()
+    expect(show).to_contain_text("2 episodios")
+    expect(page.locator(".series-group__episodes")).to_contain_text("S03E01–E02")
     page.locator("#refresh-btn").click()
     expect(show).to_have_attribute("aria-expanded", "true")
     expect(page.locator(".series-group__body")).to_be_visible()

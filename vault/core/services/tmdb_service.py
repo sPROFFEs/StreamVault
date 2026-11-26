@@ -11,6 +11,8 @@ import threading
 import time
 from typing import Optional, Dict, List, Any, Tuple
 
+from services.media_identity import choose_tmdb_candidate
+
 logger = logging.getLogger(__name__)
 
 # Intentar importar tmdbsimple, fallback si no está
@@ -229,6 +231,7 @@ class TMDBService:
         year: int = None,
         media_type: str = 'movie',
         language: str = "en-US",
+        duration_minutes: float | None = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Busca y devuelve metadatos enriquecidos para una película/serie.
@@ -245,11 +248,10 @@ class TMDBService:
         else:
             results = self.search_tv(title, language=language)
 
-        if not results:
-            logger.info(f"No se encontraron resultados para '{title}'")
+        best_match = choose_tmdb_candidate(results, title, year, duration_minutes)
+        if not best_match:
             return None
 
-        best_match = results[0]
         tmdb_id = best_match['id']
 
         # Obtener detalles completos

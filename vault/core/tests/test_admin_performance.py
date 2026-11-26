@@ -53,6 +53,27 @@ def test_admin_file_endpoints_require_authentication():
     with TestClient(app) as client:
         assert client.get("/admin/api/downloads/list").status_code == 401
         assert client.get("/admin/api/downloads/file?relative_path=video.mp4").status_code == 401
+        assert client.get("/admin/api/downloads/identification?relative_path=video.mp4").status_code == 401
+
+
+def test_admin_identification_validates_and_updates_the_index(tmp_path, monkeypatch):
+    monkeypatch.setattr(admin.settings, "DOWNLOADS_ROOT", str(tmp_path))
+    (tmp_path / "0001.mkv").write_bytes(b"episode")
+    app = FastAPI()
+    app.include_router(admin.router)
+    app.dependency_overrides[admin.get_current_admin] = lambda: SimpleNamespace(is_admin=True)
+    with TestClient(app) as client:
+        url = "/admin/api/downloads/identification?relative_path=0001.mkv"
+        assert client.get(url).json()["identification_status"] == "review"
+        data = {"title": "Corrected", "media_type": "series", "season_number": 0}
+        assert client.put(url, json=data).status_code == 422
+        data["episode_numbers"] = [2, 1, 2]
+        edited = client.put(url, json=data).json()
+        assert edited["identification_status"] == "manual"
+        assert edited["episode_numbers"] == [1, 2]
+        assert client.get(url).json()["title"] == "Corrected"
+        assert client.get(url.replace("0001.mkv", "../video.mkv")).status_code == 403
+        assert client.delete(url).json()["identification_status"] == "review"
 
 
 def test_cleanup_endpoint_previews_and_removes_only_safe_candidates(tmp_path, monkeypatch):

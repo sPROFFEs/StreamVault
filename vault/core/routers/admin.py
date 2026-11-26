@@ -10,7 +10,8 @@ import shutil
 import subprocess
 import os
 from pathlib import Path
-from pydantic import BaseModel, Field
+from typing import Annotated, Literal
+from pydantic import BaseModel, Field, model_validator
 import httpx
 from config import settings
 from services.updater_service import UpdateError, UpdateManager
@@ -21,9 +22,11 @@ from services.admin_download_library import (
     scan_download_cleanup,
     scan_download_library,
 )
-from services.media_library import resolve_library_path, _invalidate_scan_cache, INCOMPLETE_MARKER
+from services.media_library import resolve_library_path, sync_library_paths, INCOMPLETE_MARKER
+from services.media_index import get_index
 from services import storage_maintenance
 from services.storage_policy import disk_free_bytes
+from services.storage_reservations import reservation_totals
 
 cloudflared_manager = CloudflaredManager(
     settings.DATA_ROOT,
@@ -423,6 +426,58 @@ async def preview_download_cleanup(admin: database.User = Depends(get_current_ad
     return await asyncio.to_thread(_storage_cleanup_preview, active_job_ids)
 
 
+class IdentificationEdit(BaseModel):
+    title: str = Field(min_length=1, max_length=255)
+    original_title: str | None = Field(default=None, max_length=255)
+    localized_title: str | None = Field(default=None, max_length=255)
+    media_type: Literal["movie", "series"]
+    year: int | None = Field(default=None, ge=1888, le=2200)
+    season_number: int | None = Field(default=None, ge=0, le=999)
+    episode_numbers: list[Annotated[int, Field(ge=0, le=9999)]] = Field(default_factory=list, max_length=1000)
+    tmdb_id: int | None = Field(default=None, gt=0, le=2**63 - 1)
+    imdb_id: str | None = Field(default=None, pattern=r"^tt\d{7,12}$")
+
+    @model_validator(mode="after")
+    def validate_media_identity(self):
+        self.title = self.title.strip()
+        if not self.title:
+            raise ValueError("Title is required")
+        if self.media_type == "series" and (self.season_number is None or not self.episode_numbers):
+            raise ValueError("Series require a season and at least one episode")
+        if self.media_type == "movie":
+            self.season_number, self.episode_numbers = None, []
+        return self
+
+
+@router.get("/api/downloads/identification")
+def get_identification(relative_path: str, admin=Depends(get_current_admin)):
+    try:
+        return get_index(settings.DOWNLOADS_ROOT).describe(relative_path)
+    except ValueError as exc:
+        raise HTTPException(403, "Invalid file path") from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "Completed video not found") from exc
+
+
+@router.put("/api/downloads/identification")
+def edit_identification(relative_path: str, payload: IdentificationEdit, admin=Depends(get_current_admin)):
+    return _write_identification(relative_path, payload.model_dump())
+
+
+@router.delete("/api/downloads/identification")
+def reset_identification(relative_path: str, admin=Depends(get_current_admin)):
+    return _write_identification(relative_path, None)
+
+
+def _write_identification(relative_path, data):
+    try:
+        return get_index(settings.DOWNLOADS_ROOT).set_override(relative_path, data)
+    except ValueError as exc:
+        raise HTTPException(403, "Invalid file path") from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "Completed video not found") from exc
+
+
 def _storage_cleanup_preview(active_job_ids):
     preview = scan_download_cleanup(settings.DOWNLOADS_ROOT, active_job_ids)
     cache = storage_maintenance.cache_inventory()
@@ -443,6 +498,8 @@ def _storage_cleanup_preview(active_job_ids):
             'storage': {'disk_free_bytes': disk_free_bytes(settings.DOWNLOADS_ROOT),
                         'reserve_bytes': int(settings.MIN_FREE_DISK_GB * 1024**3),
                         'cache_bytes': cache['used_bytes'],
+                        'reserved_bytes': sum(reservation_totals(settings.DOWNLOADS_ROOT).values()),
+                        'profile': settings.STORAGE_PROFILE,
                         'download_bytes': get_path_size_bytes(settings.DOWNLOADS_ROOT)}}
 
 
@@ -501,7 +558,7 @@ async def delete_download(
 
     try:
         target.unlink()
-        _invalidate_scan_cache(settings.DOWNLOADS_ROOT)
+        await asyncio.to_thread(sync_library_paths, settings.DOWNLOADS_ROOT, [relative_path])
         return RedirectResponse(f"/admin?msg=File deleted: {relative_path}", status_code=303)
     except Exception as exc:
         return RedirectResponse(f"/admin?error=Could not delete file: {exc}", status_code=303)
@@ -524,7 +581,7 @@ async def delete_download_api(
         raise HTTPException(404, "File not found")
     try:
         target.unlink()
-        _invalidate_scan_cache(settings.DOWNLOADS_ROOT)
+        await asyncio.to_thread(sync_library_paths, settings.DOWNLOADS_ROOT, [relative_path])
         return {"success": True, "relative_path": relative_path}
     except OSError as exc:
         raise HTTPException(500, f"Could not delete file: {exc}")

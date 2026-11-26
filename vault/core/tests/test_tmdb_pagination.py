@@ -41,3 +41,16 @@ def test_tmdb_memory_cache_evicts_least_used_entry_while_all_entries_are_fresh(m
     assert TMDBService._cache_get(("new",)) == []
     now += TMDBService._CACHE_TTL
     assert TMDBService._cache_get(("popular",)) is None
+
+
+def test_tmdb_enrichment_prefers_exact_year_and_refuses_ambiguous_remakes(monkeypatch):
+    service = TMDBService()
+    service.enabled = True
+    candidates = [
+        {"id": 10, "title": "Recuerdos", "release_date": "2022-01-01"},
+        {"id": 20, "title": "Memories", "original_title": "Recuerdos", "release_date": "2023-01-01"},
+    ]
+    monkeypatch.setattr(service, "search_movie", lambda *args, **kwargs: candidates)
+    monkeypatch.setattr(service, "get_movie_details", lambda *args, **kwargs: None)
+    assert service.enrich_media("Recuerdos", 2023)["tmdb_id"] == 20
+    assert service.enrich_media("Recuerdos") is None

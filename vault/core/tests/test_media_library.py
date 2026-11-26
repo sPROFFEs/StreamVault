@@ -270,3 +270,115 @@ def test_scan_groups_numeric_whole_season_under_the_show_not_the_job_id(tmp_path
 
     assert [(item["title"], item["season_number"], item["episode_number"])
             for item in series] == [("The Bear", 3, 3), ("The Bear", 3, 2), ("The Bear", 3, 1)]
+
+
+def test_identification_preserves_numeric_titles_and_handles_specials_and_ranges(tmp_path):
+    from services.media_library import identify_video
+
+    assert classify_video("1917.2019.1080p.mkv")["title"] == "1917"
+    assert classify_video("2001.Una.odisea.del.espacio.1968.mkv")["title"] == "2001 Una odisea del espacio"
+    info = identify_video("01.mkv", "Águila/Temporada 00/01.mkv")
+    assert (info["title"], info["season_number"], info["episode_numbers"]) == ("Águila", 0, [1])
+    assert classify_video("S00E02.mkv", "Águila/Temporada 00/S00E02.mkv")["title"] == "Águila"
+    info = identify_video("Águila.T01E02-E04.2160p.Dolby.Vision.Directors.Cut.mkv")
+    assert info["episode_numbers"] == [2, 3, 4]
+    assert info["resolution"] == "2160p"
+    assert info["dynamic_range"] == "dolby_vision"
+    assert info["edition"] == "director_cut"
+    (tmp_path / "Águila.T01E02-E04.mkv").write_bytes(b"episodes")
+    assert find_matching_media(tmp_path, "Aguila", "tv", season=1, episode=3)["episode_number"] == 3
+
+
+def test_local_match_leaves_remakes_ambiguous_and_hides_extras(tmp_path):
+    for name in ("Memories.2022.mkv", "Memories.2023.mkv", "Memories.2023.sample.mkv"):
+        (tmp_path / name).write_bytes(b"media")
+
+    assert find_matching_media(tmp_path, "Memories", "movie") is None
+    assert find_matching_media(tmp_path, "Memories", "movie", year=2023)["name"] == "Memories.2023.mkv"
+    assert len(scan_media_library(tmp_path)["movies"]) == 2
+
+
+def test_opaque_names_and_absolute_episodes_do_not_guess_the_media_identity():
+    from services.media_library import identify_video
+
+    assert identify_video("0001.mp4")["identification_status"] == "review"
+    number = identify_video("[Group] 作品 - 123 [1080p].mkv")
+    assert number["absolute_episode"] == 123
+    assert number["identification_status"] == "review"
+
+
+def test_persistent_index_reopens_without_walking_and_updates_only_changed_files(tmp_path, monkeypatch):
+    from services import media_library
+    from services.media_index import LibraryIndex
+
+    root = tmp_path / "downloads"
+    root.mkdir()
+    (root / "A.mkv").write_bytes(b"first")
+    (root / "B.mp4").write_bytes(b"second")
+    index = LibraryIndex(root, tmp_path / "index.sqlite3")
+    index.reconcile()
+
+    classify = media_library.identify_video
+    calls = []
+    def record(name, relative_path):
+        calls.append(name)
+        return classify(name, relative_path)
+    monkeypatch.setattr(media_library, "identify_video", record)
+    reopened = LibraryIndex(root, index.path)
+    assert reopened.page("A", "movie", "title", 1, 10)[3] == 1
+    assert calls == []
+    (root / "A.mkv").write_bytes(b"changed size")
+    (root / "B.mp4").unlink()
+    reopened.reconcile()
+    assert calls == ["A.mkv"]
+    assert reopened.page("", "movie", "title", 1, 10)[3] == 1
+
+
+def test_manual_identification_survives_reconcile_and_matches_original_title(tmp_path):
+    from services.media_index import LibraryIndex
+
+    root = tmp_path / "downloads"
+    root.mkdir()
+    (root / "0001.mkv").write_bytes(b"series")
+    index = LibraryIndex(root, tmp_path / "index.sqlite3")
+    index.set_override("0001.mkv", {"title": "Recuérdame", "original_title": "Remember Me",
+                     "tmdb_id": 10, "media_type": "series", "season_number": 0, "episode_numbers": [1, 2]})
+    index.reconcile()
+    reopened = LibraryIndex(root, index.path)
+    entry = reopened.candidates(["Remember Me"], "series", None)[0]
+    assert entry["episode_numbers"] == [1, 2]
+    assert entry["identification_status"] == "manual"
+    assert reopened.candidates([], "series", 10) == [entry]
+    reopened.set_override("0001.mkv", None)
+    assert reopened.candidates(["Remember Me"], "series", None) == []
+
+
+def test_library_index_paginates_grouped_shows_without_splitting_episodes(tmp_path):
+    from services.media_index import LibraryIndex
+
+    root = tmp_path / "downloads"
+    root.mkdir()
+    for name in ("A.S01E01.mkv", "A.S01E02.mkv", "B.S02E01.mkv", "C.2025.mkv"):
+        (root / name).write_bytes(b"media")
+    index = LibraryIndex(root, tmp_path / "index.sqlite3")
+    index.reconcile()
+    items, page, pages, total = index.page("", "all", "title", 1, 1)
+    assert (page, pages, total) == (1, 3, 4)
+    assert {item["episode_number"] for item in items} == {1, 2}
+
+
+def test_startup_recovery_preserves_a_job_with_a_live_disk_reservation(tmp_path, monkeypatch):
+    from config import settings
+    from services.storage_reservations import reserve_space
+
+    monkeypatch.setattr(settings, "DATA_ROOT", str(tmp_path / "data"))
+    root = tmp_path / "downloads"
+    job_id = "7987d205-0d7e-46e8-bf68-2e2fc3c32570"
+    with reserve_space(root, "downloads", 1024, job_id=job_id):
+        job = root / job_id
+        job.mkdir(parents=True)
+        marker = job / ".streamvault-incomplete"
+        marker.touch()
+        (job / "Video.mkv").write_bytes(b"in progress")
+        assert recover_completed_downloads(root) == []
+        assert marker.exists()

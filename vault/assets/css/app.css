@@ -3740,6 +3740,17 @@ kbd {
     display: flex;
     flex-direction: column;
 }
+#fm-identity:not([open]) { display: none; }
+#fm-identity {
+    width: min(36rem, calc(100% - 2rem));
+    margin: auto;
+    padding: 1.25rem;
+    color: inherit;
+    overflow: auto;
+}
+#fm-identity::backdrop { background: rgba(0, 0, 0, .75); }
+#fm-identity .filter-input { width: 100%; }
+#fm-identity-file { overflow-wrap: anywhere; }
 .preview-panel__header {
     display: flex;
     align-items: center;

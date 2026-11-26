@@ -1,12 +1,15 @@
 """Build a compact, searchable inventory of the shared download pool."""
 
+from contextlib import ExitStack
 from datetime import datetime
 from math import ceil
 from pathlib import Path
 import os
 import re
+from stat import S_ISDIR, S_ISREG
 import time
 
+from config import settings
 from services.media_library import INCOMPLETE_MARKER, resolve_library_path
 
 
@@ -15,7 +18,10 @@ SUBTITLE_EXTENSIONS = {".ass", ".srt", ".ssa", ".sub", ".vtt"}
 METADATA_EXTENSIONS = {".jpg", ".jpeg", ".json", ".nfo", ".png", ".txt", ".webp"}
 VALID_KINDS = {"all", "video", "subtitle", "metadata", "other"}
 _ORPHAN_SUFFIXES = {".aria2", ".part", ".partial", ".tmp", ".temp", ".crdownload", ".ytdl", ".downloading"}
-_STALE_MARKER_SECONDS = 3600  # 1 hour (was 7 days)
+
+
+def _abandoned_age_seconds():
+    return settings.ABANDONED_DOWNLOAD_TTL_HOURS * 3600
 
 
 def _kind_for(path: Path) -> str:
@@ -124,7 +130,7 @@ def _is_orphan_artifact(path: Path) -> bool:
 def _is_stale_marker(marker: Path) -> bool:
     """Only classify an old marker-only job directory as abandoned."""
     try:
-        if time.time() - marker.stat().st_mtime < _STALE_MARKER_SECONDS:
+        if time.time() - marker.stat().st_mtime < _abandoned_age_seconds():
             return False
         entries = [entry for entry in marker.parent.iterdir() if entry.name != INCOMPLETE_MARKER]
         return all(_is_orphan_artifact(entry) for entry in entries)
@@ -144,7 +150,7 @@ def _is_abandoned_marker(marker: Path, root: Path, active_job_ids: set[str] | No
         # video merely by deleting its marker. Old UUID-owned partial jobs can
         # instead be offered as a whole, explicitly in the cleaner preview.
         owned_job = bool(re.fullmatch(r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}", job_id))
-        return _is_stale_marker(marker) or (owned_job and time.time() - marker.stat().st_mtime >= _STALE_MARKER_SECONDS)
+        return _is_stale_marker(marker) or (owned_job and time.time() - marker.stat().st_mtime >= _abandoned_age_seconds())
     except (OSError, ValueError, IndexError):
         return False
 
@@ -164,6 +170,10 @@ def scan_download_cleanup(
         return {"items": [], "total_files": 0, "total_directories": 0,
                 "total_bytes": 0, "total_bytes_label": _human_size(0)}
 
+    from services.storage_reservations import active_download_job_ids
+
+    jobs_with_reservations = active_download_job_ids(base)
+    protected_jobs = (active_job_ids or set()) | jobs_with_reservations
     active_roots: list[Path] = []
     abandoned_roots: list[Path] = []
     review_jobs: set[str] = set()
@@ -176,7 +186,7 @@ def scan_download_cleanup(
             folders[:] = [name for name in folders if not (current / name).is_symlink()]
             directories.append(current)
             relative_parts = current.relative_to(base).parts
-            if active_job_ids and relative_parts and relative_parts[0] in active_job_ids:
+            if relative_parts and relative_parts[0] in protected_jobs:
                 active_roots.append(current)
                 folders[:] = []
                 continue
@@ -200,11 +210,13 @@ def scan_download_cleanup(
                     stat = path.stat()
                 except OSError:
                     continue
-                if not abandoned and active_job_ids is None and time.time() - stat.st_mtime < _STALE_MARKER_SECONDS:
+                if not abandoned and active_job_ids is None and time.time() - stat.st_mtime < _abandoned_age_seconds():
                     continue
                 if path.name == INCOMPLETE_MARKER and path not in stale_markers:
                     continue
                 if abandoned and not _is_orphan_artifact(path):
+                    review_jobs.add(path.relative_to(base).parts[0])
+                if path.suffix.lower() == ".aria2" and path.with_suffix("").exists():
                     review_jobs.add(path.relative_to(base).parts[0])
                 candidates.append({
                     "name": path.name,
@@ -283,24 +295,31 @@ def cleanup_download_library(
             errors.append({"relative_path": relative, "error": "Not a cleanup candidate"})
             continue
         try:
-            target = resolve_library_path(base, relative)
-            if target.is_symlink() or not target.exists():
-                raise OSError("Path changed or is unavailable")
-            if item["is_directory"]:
-                target.rmdir()
-            else:
-                if target.name == INCOMPLETE_MARKER and any(entry != target for entry in target.parent.iterdir()):
-                    raise ValueError("Incomplete media remains; keep its marker until all selected partial files are removed")
-                size = target.stat().st_size
-                target.unlink()
-                freed += size
+            with ExitStack() as descriptors:
+                flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                parent = os.open(base, flags)
+                descriptors.callback(os.close, parent)
+                target = Path(relative)
+                for part in target.parts[:-1]:
+                    parent = os.open(part, flags, dir_fd=parent)
+                    descriptors.callback(os.close, parent)
+                stat = os.stat(target.name, dir_fd=parent, follow_symlinks=False)
+                if item["is_directory"] and S_ISDIR(stat.st_mode):
+                    os.rmdir(target.name, dir_fd=parent)
+                elif not item["is_directory"] and S_ISREG(stat.st_mode):
+                    if target.name == INCOMPLETE_MARKER and any(name != target.name for name in os.listdir(parent)):
+                        raise ValueError("Incomplete media remains; keep its marker until all selected partial files are removed")
+                    os.unlink(target.name, dir_fd=parent)
+                    freed += stat.st_size
+                else:
+                    raise OSError("Path changed or is unavailable")
             deleted.append(relative)
         except (OSError, ValueError) as exc:
             errors.append({"relative_path": relative, "error": str(exc)})
     if deleted:
         # Keep library and admin inventory caches coherent after cleanup.
-        from services.media_library import _invalidate_scan_cache
-        _invalidate_scan_cache(base)
+        from services.media_library import sync_library_paths
+        sync_library_paths(base, deleted)
     remaining = scan_download_cleanup(base, active_job_ids)
     return {"deleted": deleted, "errors": errors, "freed_bytes": freed, "remaining": remaining}
 

@@ -1,23 +1,27 @@
 """Filesystem-backed local video library helpers."""
 from __future__ import annotations
 
-import re
-import time
+import logging
 import os
-from copy import deepcopy
+import re
+import sqlite3
 from pathlib import Path
+from stat import S_ISREG
 from urllib.parse import quote
 
+from services.media_identity import normalized_title as _normalized_title, release_year
 
-VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".mov", ".ts", ".webm", ".m4v"}
+logger = logging.getLogger(__name__)
+
+
+VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".mov", ".ts", ".webm", ".m4v", ".m2ts", ".mpg", ".mpeg"}
 SUBTITLE_EXTENSIONS = {".srt", ".vtt"}
 INCOMPLETE_MARKER = ".streamvault-incomplete"
 
-_YEAR_REGEX = re.compile(r"\b(19\d{2}|20\d{2})\b")
+_TRAILING_YEAR = re.compile(r"[ ._\-\[(]+([12]\d{3})[)\]]?\s*$")
 
 _RELEASE_TOKEN = re.compile(
-    r"(?i)\b(?:19|20)\d{2}\b|"
-    r"\b(?:480|576|720|1080|2160)p\b|"
+    r"(?i)\b(?:480|576|720|1080|2160)p\b|"
     r"\b(?:2k|4k|8k|uhd|fhd|hd|sd)\b|"
     r"\b(?:x264|x265|h264|h265|hevc|avc|av1|xvid|divx|10bit|8bit|hi10p)\b|"
     r"\b(?:hdr10\+?|hdr|dovi|dv|dolby[ ._-]*vision)\b|"
@@ -30,42 +34,44 @@ _PREFIX_TAGS = re.compile(r"^\[[^\]]+\]\s*|^\([^\)]+\)\s*")
 _SUFFIX_TAGS = re.compile(r"(?i)\s*\[[^\]]+\]|\s*\([^\)]+\)|\s*-[A-Za-z0-9_]+$")
 
 # 1. Standard S01E02 / S1E2 / S01.E02 / S01_E02 / S01E02E03 / S01E01-E02 / S01-E02
-_EP_SXEX = re.compile(r"(?i)(?:^|[\b._\s-])S(\d{1,2})[ ._-]*E(\d{1,3})(?:[ ._x-]*(?:E|EP)?\d{1,3})*(?:$|[\b._\s-])")
+_EP_SXEX = re.compile(r"(?i)(?:^|[._\s-])[ST](\d{1,2})[ ._-]*E(\d{1,3})((?:[ ._]*E\d{1,3}|-(?:E)?\d{1,3})*)(?=$|[._\s-])")
 # 2. 1x02 / 01x02 / 1x01-02
-_EP_NXN = re.compile(r"(?i)(?:^|[\b._\s-])(\d{1,2})x(\d{1,3})(?:-\d{1,3})*(?:$|[\b._\s-])")
+_EP_NXN = re.compile(r"(?i)(?:^|[._\s-])(\d{1,2})x(\d{1,3})((?:-\d{1,3})*)(?=$|[._\s-])")
 # 3. Season 1 Episode 2 / Temporada 1 Capitulo 2 / Saison 1 Episode 2 / Temp 1 Ep 2
-_EP_WORD = re.compile(r"(?i)\b(?:season|temporada|saison|staffel|temp\.?|temp)[ ._-]*(\d{1,2})[ ._/-]*(?:episode|episodio|capitulo|folge|ep\.?|ep|e)[ ._-]*(\d{1,3})\b")
-# 4. T01E02 / T1E2
-_EP_TXEX = re.compile(r"(?i)(?:^|[\b._\s-])T(\d{1,2})[ ._-]*E(\d{1,3})(?:$|[\b._\s-])")
+_EP_WORD = re.compile(r"(?i)\b(?:season|temporada|saison|staffel|temp\.?|temp)[ ._-]*(\d{1,2})[ ._/-]*(?:episode|episodio|cap[ií]tulo|folge|ep\.?|ep|e)[ ._-]*(\d{1,3})\b")
 # 5. Season 1 - 02 / Temporada 1 - 02
 _EP_SEASON_DASH_EP = re.compile(r"(?i)\b(?:season|temporada|saison|staffel|temp\.?|temp)[ ._-]*(\d{1,2})[ ._-]*[-_][ ._-]*(\d{1,3})\b")
 # 6. Anime style: Title - 02 / Title - 002 (with optional group prefix)
 _EP_ANIME_DASH = re.compile(r"^(?:\[[^\]]+\]\s*)?(.+?)\s+-\s+(\d{1,3})(?:v\d+)?(?:\s*\[|\s*\(|\s*\.|\s*$)")
 # 7. Standalone Ep 02 / Episode 02 / Ep.02
-_EP_STANDALONE = re.compile(r"(?i)\b(?:episode|episodio|capitulo|folge|ep\.?|ep)\s*(\d{1,3})\b")
+_EP_STANDALONE = re.compile(r"(?i)\b(?:episode|episodio|cap[ií]tulo|folge|ep\.?|ep)\s*(\d{1,3})\b")
 
 _FOLDER_SEASON = re.compile(r"(?i)\b(?:season|temporada|saison|staffel|temp\.?|temp|s)[ ._-]*(\d{1,2})\b")
 _TORRENT_JOB_DIRECTORY = re.compile(
     r"(?i)^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$|^[0-9a-f]{32}$"
 )
 
-# TTL cache for scan_media_library: prevents redundant filesystem scans when
-# multiple API endpoints are called in rapid succession (downloads page loads,
-# admin refresh, browse page). Cache is invalidated by library_updated SSE.
-_SCAN_CACHE: dict[str, tuple[float, dict]] = {}
-_SCAN_CACHE_TTL = 5.0  # seconds
+
+def _title_year(raw: str) -> tuple[str, int | None]:
+    raw = _PREFIX_TAGS.sub("", raw)
+    tags = _RELEASE_TOKEN.search(raw.replace("_", " "))
+    if tags:
+        raw = raw[:tags.start()].rstrip(" ._-")
+    raw = raw.rstrip()
+    tagged_year = _TRAILING_YEAR.search(raw)
+    year = release_year(tagged_year[1]) if tagged_year else None
+    if tagged_year and year and raw[:tagged_year.start()].strip(" ._-"):
+        raw = raw[:tagged_year.start()]
+    else:
+        year = None
+    cleaned = _SUFFIX_TAGS.sub("", raw)
+    cleaned = re.sub(r"[._]+", " ", cleaned)
+    cleaned = re.sub(r"[\(\[\{\)\]\}]+", " ", cleaned)
+    return re.sub(r"\s+", " ", cleaned).strip(" -_"), year
 
 
 def _clean_title(raw: str) -> str:
-    cleaned = _PREFIX_TAGS.sub("", raw)
-    rel_match = _RELEASE_TOKEN.search(cleaned)
-    if rel_match:
-        cleaned = cleaned[:rel_match.start()]
-    cleaned = _SUFFIX_TAGS.sub("", cleaned)
-    cleaned = re.sub(r"[._]+", " ", cleaned)
-    cleaned = re.sub(r"[\(\[\{\)\]\}]+", " ", cleaned)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip(" -_")
-    return cleaned
+    return _title_year(raw)[0]
 
 
 def _show_folder(parts: tuple[str, ...], season_parent: str, season_match) -> str:
@@ -84,38 +90,24 @@ def _show_folder(parts: tuple[str, ...], season_parent: str, season_match) -> st
 
 def classify_video(filename: str, relative_path: str = "") -> dict:
     stem = Path(filename).stem
-    year_match = _YEAR_REGEX.search(stem) or (_YEAR_REGEX.search(relative_path) if relative_path else None)
-    year = int(year_match.group(1)) if year_match else None
+    year = None
 
-    # 1. Direct SxEx (S01E02)
-    m = _EP_SXEX.search(stem)
-    if m:
-        title = _clean_title(stem[:m.start()]) or stem
-        return {"title": title, "media_type": "series", "season_number": int(m.group(1)), "episode_number": int(m.group(2)), "year": year}
-
-    # 2. Direct NxN (1x02)
-    m = _EP_NXN.search(stem)
-    if m:
-        title = _clean_title(stem[:m.start()]) or stem
-        return {"title": title, "media_type": "series", "season_number": int(m.group(1)), "episode_number": int(m.group(2)), "year": year}
-
-    # 3. Season X Episode Y
-    m = _EP_WORD.search(stem)
-    if m:
-        title = _clean_title(stem[:m.start()]) or stem
-        return {"title": title, "media_type": "series", "season_number": int(m.group(1)), "episode_number": int(m.group(2)), "year": year}
-
-    # 4. TxEx
-    m = _EP_TXEX.search(stem)
-    if m:
-        title = _clean_title(stem[:m.start()]) or stem
-        return {"title": title, "media_type": "series", "season_number": int(m.group(1)), "episode_number": int(m.group(2)), "year": year}
-
-    # 5. Season X - Y
-    m = _EP_SEASON_DASH_EP.search(stem)
-    if m:
-        title = _clean_title(stem[:m.start()]) or stem
-        return {"title": title, "media_type": "series", "season_number": int(m.group(1)), "episode_number": int(m.group(2)), "year": year}
+    for pattern in (_EP_SXEX, _EP_NXN, _EP_WORD, _EP_SEASON_DASH_EP):
+        match = pattern.search(stem)
+        if not match:
+            continue
+        title, year = _title_year(stem[:match.start()])
+        if not title:
+            parts = Path(relative_path).parts
+            if len(parts) >= 2:
+                parent = parts[-2]
+                season = _FOLDER_SEASON.search(parent)
+                if season:
+                    title = _show_folder(parts, parent, season)
+                elif not _TORRENT_JOB_DIRECTORY.fullmatch(parent):
+                    title = _clean_title(parent)
+        return {"title": title or stem, "media_type": "series", "season_number": int(match[1]),
+                "episode_number": int(match[2]), "year": year}
 
     # 6. Anime / Dash notation: Title - 05
     m = _EP_ANIME_DASH.search(stem)
@@ -137,8 +129,14 @@ def classify_video(filename: str, relative_path: str = "") -> dict:
     # 7. Standalone Ep 02
     m = _EP_STANDALONE.search(stem)
     if m:
-        title = _clean_title(stem[:m.start()]) or stem
-        return {"title": title, "media_type": "series", "season_number": 1, "episode_number": int(m.group(1)), "year": year}
+        title, year = _title_year(stem[:m.start()])
+        parts = Path(relative_path).parts
+        parent = parts[-2] if len(parts) >= 2 else ""
+        season = _FOLDER_SEASON.search(parent)
+        if season:
+            title = title or _show_folder(parts, parent, season)
+        return {"title": title or stem, "media_type": "series", "season_number": int(season[1]) if season else 1,
+                "episode_number": int(m[1]), "year": year}
 
     # 8. Check folder context if provided
     if relative_path:
@@ -147,15 +145,15 @@ def classify_video(filename: str, relative_path: str = "") -> dict:
             parent = parts[-2]
             sm = _FOLDER_SEASON.search(parent)
             season_num = int(sm.group(1)) if sm else None
-            num_match = re.search(r"^\s*(\d{1,3})\b", stem) or re.search(r"\b(?:ep\.?|e)?(\d{1,3})\b", stem)
-            if season_num and num_match:
+            num_match = re.match(r"(?i)^\s*(?:ep?\.?\s*)?(\d{1,3})(?=$|[ ._-])", stem)
+            if season_num is not None and num_match:
                 show_title = _show_folder(parts, parent, sm)
                 return {"title": show_title or stem, "media_type": "series", "season_number": season_num, "episode_number": int(num_match.group(1)), "year": year}
 
     # Fallback to movie
-    title = _clean_title(stem) or stem
+    title, year = _title_year(stem)
     return {
-        "title": title,
+        "title": title or stem,
         "media_type": "movie",
         "season_number": None,
         "episode_number": None,
@@ -171,6 +169,65 @@ def resolve_library_path(root: str | Path, relative_path: str) -> Path:
     except ValueError as exc:
         raise ValueError("Path is outside the media library") from exc
     return candidate
+
+
+def identify_video(filename: str, relative_path: str = "") -> dict:
+    info = classify_video(filename, relative_path)
+    stem = Path(filename).stem
+    tags = re.sub(r"[._]+", " ", stem.casefold())
+    explicit = _EP_SXEX.search(stem) or _EP_NXN.search(stem)
+    episodes = [info["episode_number"]] if info["episode_number"] is not None else []
+    if explicit:
+        for separator, number in re.findall(r"(-?)\s*E?(\d{1,3})", explicit[3], re.I):
+            end = int(number)
+            if separator and end > episodes[-1]:
+                episodes.extend(range(episodes[-1] + 1, end + 1))
+            else:
+                episodes.append(end)
+
+    absolute = None
+    anime = _EP_ANIME_DASH.search(stem)
+    if anime and not explicit and int(anime[2]) >= 100 and not _FOLDER_SEASON.search(anime[1]):
+        absolute = int(anime[2])
+    tags_for_media = {
+        "resolution": r"\b(?:480|576|720|1080|1440|2160|4320)p\b",
+        "video_codec_hint": r"\b(?:x26[45]|h26[45]|hevc|avc|av1|vp9|xvid)\b",
+        "audio_codec_hint": r"\b(?:aac|eac3|ac3|ddp|dts|truehd|opus|flac)\b",
+    }
+    for key, pattern in tags_for_media.items():
+        match = re.search(pattern, tags)
+        info[key] = match[0] if match else None
+    edition = None
+    for label, pattern in (
+        ("director_cut", r"\bdirector'?s[ -]+cut\b"),
+        ("extended", r"\bextended\b"), ("remastered", r"\bremaster(?:ed)?\b"),
+        ("unrated", r"\bunrated\b"),
+    ):
+        if re.search(pattern, tags):
+            edition = label
+            break
+    dolby = re.search(r"\b(?:dolby[ -]+vision|dovi|dv)\b", tags)
+    hdr = re.search(r"\b(?:hdr10\+?|hdr|hlg)\b", tags)
+    imdb = re.search(r"\btt\d{7,12}\b", tags)
+    tmdb = re.search(r"\btmdb[ -]+(\d+)\b", tags)
+    extra = any(part.casefold() in {"sample", "samples", "extras", "featurettes", "trailers", "bonus"}
+                for part in Path(relative_path).parts[:-1]) or bool(
+        re.search(r"(?:^|[._-])(?:sample|trailer|featurette|behind[._ -]+the[._ -]+scenes)(?:$|[._-])", stem, re.I)
+    )
+    opaque = not any(char.isalpha() for char in info["title"]) and (
+        not re.fullmatch(r"[0-9]{4}", info["title"]) or info["title"].startswith("0")
+    )
+    opaque |= bool(re.fullmatch(r"[a-f0-9]{20,}", info["title"], re.I))
+    opaque |= bool(explicit and explicit.start() == 0 and info["title"] == stem)
+    status = "extra" if extra else "review" if opaque or absolute is not None else "parsed"
+    info.update(filename_title=stem, original_title=None, localized_title=None,
+                episode_numbers=sorted(set(episodes)), absolute_episode=absolute, edition=edition,
+                dynamic_range="dolby_vision" if dolby else hdr[0] if hdr else None,
+                language_hints=sorted(set(re.findall(
+                    r"\b(?:eng|spa|ita|jpn|castellano|latino|french|german|dual|multi)\b", tags))),
+                imdb_id=imdb[0] if imdb else None, tmdb_id=int(tmdb[1]) if tmdb else None,
+                identification_status=status, identification_confidence=.9 if status == "parsed" else 0)
+    return info
 
 
 def _is_completed_torrent_job(path: Path, root: Path) -> bool:
@@ -205,18 +262,25 @@ def is_incomplete_media(path: Path, root: str | Path) -> bool:
     return True  # Outside the library.
 
 
-def _invalidate_scan_cache(root: str | Path = None) -> None:
-    """Clear the scan cache so the next call re-reads the disk.
-
-    Called when files are deleted, downloaded, or the library_updated SSE fires.
-    """
+def sync_library_paths(root, paths):
     from services.storage_policy import invalidate_path_size
+    from services.media_index import get_index
+
     invalidate_path_size(root)
-    if root is None:
-        _SCAN_CACHE.clear()
-    else:
-        key = str(Path(root).resolve())
-        _SCAN_CACHE.pop(key, None)
+    try:
+        get_index(root).sync_paths(paths)
+    except (OSError, sqlite3.Error):
+        logger.warning("A scoped library update failed; periodic reconciliation will retry")
+
+
+def sync_completed_job(root, job_id):
+    """Support completion events from a downloader deployed before the index."""
+    if not isinstance(job_id, str) or not _TORRENT_JOB_DIRECTORY.fullmatch(job_id):
+        return
+    directory = Path(root) / job_id
+    if directory.is_symlink() or not directory.is_dir():
+        return
+    sync_library_paths(root, [path for path in directory.rglob("*") if path.suffix.lower() in VIDEO_EXTENSIONS])
 
 
 def recover_completed_downloads(root: str | Path) -> list[str]:
@@ -230,6 +294,9 @@ def recover_completed_downloads(root: str | Path) -> list[str]:
     if not base.exists():
         return []
 
+    from services.storage_reservations import active_download_job_ids
+
+    active_jobs = active_download_job_ids(base)
     recovered: list[str] = []
     try:
         # TorrentService always creates one direct child directory per job.
@@ -245,7 +312,11 @@ def recover_completed_downloads(root: str | Path) -> list[str]:
     for marker in markers:
         directory = marker.parent
         try:
-            if any(directory.rglob("*.aria2")):
+            if directory != base and directory.name in active_jobs:
+                continue
+            if directory.is_symlink() or marker.is_symlink():
+                continue
+            if any(next(directory.rglob(f"*{suffix}"), None) for suffix in (".aria2", ".part", ".ytdl")):
                 continue
             videos = sorted(
                 path for path in directory.rglob("*")
@@ -261,73 +332,59 @@ def recover_completed_downloads(root: str | Path) -> list[str]:
             continue
 
     if recovered:
-        _invalidate_scan_cache(base)
+        sync_library_paths(base, recovered)
     return recovered
 
 
-def scan_media_library(root: str | Path) -> dict:
-    base = Path(root)
-    if not base.exists():
-        return {"files": [], "movies": [], "series": []}
+def iter_library_entries(root):
+    """Enumerate without following links. A failed traversal retains the last snapshot."""
+    def fail(error):
+        raise error
 
-    # TTL cache: avoid redundant filesystem scans within a short window.
-    cache_key = str(base.resolve())
-    now = time.monotonic()
-    cached = _SCAN_CACHE.get(cache_key)
-    if cached and (now - cached[0]) < _SCAN_CACHE_TTL:
-        return deepcopy(cached[1])
-
-    files = []
-    for directory, folders, names in os.walk(base):
+    if not root.exists():
+        return
+    for directory, folders, names in os.walk(root, followlinks=False, onerror=fail):
         parent = Path(directory)
-        completed_job = _is_completed_torrent_job(parent, base)
-        if (parent / INCOMPLETE_MARKER).exists() or (
-            not completed_job and Path(f"{parent}.aria2").exists()
-        ):
-            folders[:] = []
-            continue
+        completed_job = _is_completed_torrent_job(parent, root)
+        folder_has_control = not completed_job and any(
+            Path(f"{part}.aria2").exists() for part in (parent, *parent.parents) if part == root or part.is_relative_to(root)
+        )
+        incomplete = folder_has_control or any(
+            (part / INCOMPLETE_MARKER).exists() for part in (parent, *parent.parents) if part == root or part.is_relative_to(root)
+        )
         name_set = set(names)
         for name in names:
             path = parent / name
-            if path.suffix.lower() not in VIDEO_EXTENSIONS or path.is_symlink():
+            if path.suffix.lower() not in VIDEO_EXTENSIONS:
                 continue
             try:
-                stat = path.stat()
-            except OSError:
+                stat = path.stat(follow_symlinks=False)
+            except FileNotFoundError:
                 continue
-            if stat.st_size <= 0 or (not completed_job and f"{name}.aria2" in name_set):
-                continue
-            rel_path = path.relative_to(base).as_posix()
-            files.append({
-                "name": name,
-                "relative_path": rel_path,
-                "size_bytes": stat.st_size,
-                "modified_at": stat.st_mtime,
-                **classify_video(name, relative_path=rel_path),
-            })
+            if stat.st_size > 0 and S_ISREG(stat.st_mode):
+                status = "incomplete" if incomplete or (not completed_job and f"{name}.aria2" in name_set) else None
+                yield path.relative_to(root).as_posix(), stat, status
 
-    files.sort(key=lambda item: item["modified_at"], reverse=True)
-    result = {
+
+def scan_media_library(root: str | Path) -> dict:
+    from services.media_index import get_index
+
+    files = get_index(root).all()
+    return {
         "files": files,
         "movies": [item for item in files if item["media_type"] == "movie"],
         "series": [item for item in files if item["media_type"] == "series"],
     }
-    _SCAN_CACHE[cache_key] = (now, result)
-    return deepcopy(result)
-
-
-def _normalized_title(value: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "", value.casefold())
 
 
 def _sidecar_subtitles(path: Path, root: Path) -> list[dict]:
     stem = path.stem.casefold()
     subtitles = []
     for candidate in path.parent.iterdir():
-        if not candidate.is_file() or candidate.suffix.lower() not in SUBTITLE_EXTENSIONS:
+        if candidate.is_symlink() or not candidate.is_file() or candidate.suffix.lower() not in SUBTITLE_EXTENSIONS:
             continue
         candidate_stem = candidate.stem.casefold()
-        if not (candidate_stem.startswith(stem) or stem.startswith(candidate_stem)):
+        if candidate_stem != stem and not any(candidate_stem.startswith(stem + separator) for separator in ". _-"):
             continue
         suffix = candidate_stem[len(stem):].strip(" ._-")
         language = suffix.split(".")[-1] if suffix else "und"
@@ -347,17 +404,21 @@ def find_matching_media(
     season: int | None = None,
     episode: int | None = None,
     year: int | None = None,
+    original_title: str | None = None,
+    tmdb_id: int | None = None,
 ) -> dict | None:
     base = Path(root)
-    target = _normalized_title(title)
-    library = scan_media_library(base)
-    group = "series" if media_type in {"tv", "series"} else "movies"
+    from services.media_index import get_index
+
+    group = "series" if media_type in {"tv", "series"} else "movie"
+    entries = get_index(base).candidates((title, original_title), group, tmdb_id)
     candidates = []
-    for item in library[group]:
-        if _normalized_title(item["title"]) != target:
+    for item in entries:
+        item_id = item.get("tmdb_id")
+        if tmdb_id and item_id and tmdb_id != item_id:
             continue
         if group == "series" and (
-            item["season_number"] != season or item["episode_number"] != episode
+            item["season_number"] != season or episode not in item["episode_numbers"]
         ):
             continue
         candidates.append(item)
@@ -365,25 +426,27 @@ def find_matching_media(
     if not candidates:
         return None
 
-    if group == "movies" and year is not None:
-        # 1. Exact or near match on year (allow ±1 year for international release differences)
-        year_match = next((item for item in candidates if item.get("year") is not None and abs(item["year"] - year) <= 1), None)
-        if year_match:
-            path = base / year_match["relative_path"]
-            return {**year_match, "subtitles": _sidecar_subtitles(path, base)}
-
-        # 2. Match untagged file (no year in filename) as fallback
-        untagged_match = next((item for item in candidates if item.get("year") is None), None)
-        if untagged_match:
-            path = base / untagged_match["relative_path"]
-            return {**untagged_match, "subtitles": _sidecar_subtitles(path, base)}
-
-        # 3. All files on disk belong to different years (e.g. 2026 vs 2002) -> Do not match!
+    id_matches = [item for item in candidates if tmdb_id and item.get("tmdb_id") == tmdb_id]
+    if id_matches:
+        candidates = id_matches
+    elif year is not None:
+        for distance in (0, 1, None):
+            matches = [item for item in candidates
+                       if (abs(item["year"] - year) if item["year"] is not None else None) == distance]
+            if matches:
+                candidates = matches
+                break
+        else:
+            return None
+    if len({item["year"] for item in candidates if item["year"] is not None}) > 1 and not id_matches:
         return None
 
-    selected = candidates[0]
-    path = base / selected["relative_path"]
-    return {**selected, "subtitles": _sidecar_subtitles(path, base)}
+    for selected in candidates:
+        path = base / selected["relative_path"]
+        if path.is_file() and not path.is_symlink() and not is_incomplete_media(path, base):
+            return {**selected, "episode_number": episode if group == "series" else None,
+                    "subtitles": _sidecar_subtitles(path, base)}
+    return None
 
 
 def srt_to_vtt(content: str) -> str:

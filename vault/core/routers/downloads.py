@@ -14,7 +14,7 @@ Endpoints:
 """
 
 import asyncio
-from contextlib import ExitStack
+from contextlib import AsyncExitStack
 from fractions import Fraction
 from functools import lru_cache
 from hashlib import sha256
@@ -24,6 +24,7 @@ import math
 import os
 from pathlib import Path
 import shutil
+import sqlite3
 import subprocess
 import threading
 from uuid import uuid4
@@ -39,16 +40,19 @@ from services.torrent_service import torrent_service
 from services.download_client import downloader_client
 from services.download_limits import stop_process
 from services.streaming_response import ClosingStreamingResponse
-from services.storage_policy import get_global_download_quota_gb, get_path_size_bytes
+from services.storage_policy import get_global_download_quota_gb, get_path_size_bytes, invalidate_path_size
 from services.storage_policy import ensure_download_space
 from services.storage_maintenance import PlaybackFileResponse, protect_cache, reserve_cache_space, touch_cache
+from services.storage_reservations import reserve_space_async
+from services.media_index import get_index
 from services.media_response import media_file_response
 from services.subtitle_content import subtitle_bytes_to_vtt as _subtitle_bytes_to_vtt, download_subtitle, MAX_SUBTITLE_BYTES, SubtitleTooLarge
 from services.media_library import (
     find_matching_media,
     resolve_library_path,
     scan_media_library,
-    _invalidate_scan_cache,
+    sync_library_paths,
+    sync_completed_job,
     is_incomplete_media,
     classify_video,
     _sidecar_subtitles,
@@ -94,8 +98,10 @@ async def _listen_downloader_events():
                             raw = line[6:].strip()
                             try:
                                 event = json.loads(raw)
-                                if event.get("type") in ("download_complete", "library_updated"):
-                                    _invalidate_scan_cache(settings.DOWNLOADS_ROOT)
+                                if event.get("type") == "download_complete":
+                                    await asyncio.to_thread(sync_completed_job, settings.DOWNLOADS_ROOT, event.get("job_id"))
+                                elif event.get("type") == "library_updated":
+                                    invalidate_path_size(settings.DOWNLOADS_ROOT)
                                 await _broadcast_notification(event)
                             except Exception:
                                 pass
@@ -130,7 +136,7 @@ async def _broadcast_notification(event: dict):
 
 
 async def _on_torrent_done(job_dict: dict):
-    _invalidate_scan_cache(settings.DOWNLOADS_ROOT)
+    invalidate_path_size(settings.DOWNLOADS_ROOT)
     await _broadcast_notification({
         "type": "download_complete",
         "title": job_dict.get("title", "Descarga"),
@@ -493,30 +499,32 @@ async def list_downloaded_files(
 ):
     """List downloaded movies and series, with server-side search and pagination (#3, #4)."""
     downloads_dir = settings.DOWNLOADS_ROOT
-    library, used_bytes = await asyncio.gather(
-        asyncio.to_thread(scan_media_library, downloads_dir),
-        asyncio.to_thread(get_path_size_bytes, downloads_dir),
-    )
     quota_bytes = get_global_download_quota_gb() * (1024 ** 3)
 
     # Pagination is by logical library entry, not individual file. A season
     # must remain together; otherwise its episodes disappear onto arbitrary
     # pages before the UI gets a chance to group them.
-    items = library["files"] if origin in {"local", "all"} else []
     nodes = None
-    if origin != "local":
+    if origin == "local":
+        def local_page():
+            return get_index(downloads_dir).page(q, media_type, sort, page, page_size)
+        (paginated, safe_page, pages, total), used_bytes = await asyncio.gather(
+            asyncio.to_thread(local_page), asyncio.to_thread(get_path_size_bytes, downloads_dir, max_age=60)
+        )
+    else:
+        items = (await asyncio.to_thread(scan_media_library, downloads_dir))["files"] if origin == "all" else []
         from services import federation_service
         remote_items = await asyncio.to_thread(federation_service.library_items)
         nodes = list({item["peer_id"]: {"id": item["peer_id"], "name": item["peer_name"]}
                       for item in remote_items}.values())
         if origin.startswith("peer:"):
             remote_items = [item for item in remote_items if item["peer_id"] == int(origin[5:])]
-        items = [*items, *remote_items]
-    matching_items = _filter_library_items(items, q)
-    if media_type != "all":
-        matching_items = [item for item in matching_items if item["media_type"] == media_type]
-    total = len(matching_items)
-    paginated, safe_page, pages = _paginate_library_items(matching_items, page, page_size, sort)
+        matching_items = _filter_library_items([*items, *remote_items], q)
+        if media_type != "all":
+            matching_items = [item for item in matching_items if item["media_type"] == media_type]
+        total = len(matching_items)
+        paginated, safe_page, pages = _paginate_library_items(matching_items, page, page_size, sort)
+        used_bytes = await asyncio.to_thread(get_path_size_bytes, downloads_dir, max_age=60)
 
     paginated = ([item for item in paginated if item["media_type"] == "movie"] +
                  [item for item in paginated if item["media_type"] == "series"])
@@ -550,12 +558,29 @@ async def stream_downloaded_file(path: str, request: Request = None):
 def _probe_media_tracks(media_path) -> dict:
     media_path = Path(media_path)
     stat = media_path.stat()
-    identity = (str(media_path.resolve()), stat.st_size, stat.st_mtime_ns)
+    resolved = media_path.resolve()
+    identity = (str(resolved), stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
     with _media_probe_lock(identity):
+        index = None
         try:
-            return _cached_media_tracks(*identity)
+            relative = resolved.relative_to(Path(settings.DOWNLOADS_ROOT).resolve()).as_posix()
+            index = get_index(settings.DOWNLOADS_ROOT)
+            persisted = index.get_tracks(relative, *identity[1:], _MEDIA_PROBE_VERSION)
+            if persisted is not None:
+                index.touch(relative)
+                return persisted
+        except (OSError, sqlite3.Error, ValueError):
+            index = None
+        try:
+            tracks = _cached_media_tracks(*identity)
         except MediaProbeUnavailable:
             return {"audio": [], "subtitles": [], "duration_seconds": 0}
+        if index is not None and tracks.get("video_codec"):
+            try:
+                index.save_tracks(relative, *identity[1:], _MEDIA_PROBE_VERSION, tracks)
+            except (OSError, sqlite3.Error):
+                pass
+        return tracks
 
 
 class MediaProbeUnavailable(RuntimeError):
@@ -568,10 +593,11 @@ def _media_probe_lock(identity):
 
 
 _media_probe_slots = threading.BoundedSemaphore(4)
+_MEDIA_PROBE_VERSION = 1
 
 
 @lru_cache(maxsize=256)
-def _cached_media_tracks(media_path: str, size: int, mtime_ns: int) -> dict:
+def _cached_media_tracks(media_path: str, size: int, mtime_ns: int, ctime_ns: int) -> dict:
     if not shutil.which("ffprobe"):
         return {"audio": [], "subtitles": [], "duration_seconds": 0}
     try:
@@ -672,20 +698,26 @@ async def match_downloaded_media(
     episode: Optional[int] = None,
     year: Optional[int] = None,
     path: Optional[str] = None,
+    original_title: Optional[str] = None,
+    tmdb_id: Optional[int] = None,
 ):
     if path is not None:
         media_path = await _playable_path(path)
+        def indexed_entry():
+            return get_index(settings.DOWNLOADS_ROOT).get_file(path)
+        entry = await asyncio.to_thread(indexed_entry)
         match = {
             "relative_path": path, "name": media_path.name,
             # Preserve season/show context for numeric episode files nested in
             # TorrentService's per-job download directory.
-            **classify_video(media_path.name, relative_path=path),
+            **(entry or classify_video(media_path.name, relative_path=path)),
             "subtitles": await asyncio.to_thread(_sidecar_subtitles, media_path, Path(settings.DOWNLOADS_ROOT)),
         }
     else:
         match = await asyncio.to_thread(
             find_matching_media,
             settings.DOWNLOADS_ROOT, title, media_type, season=season, episode=episode, year=year,
+            original_title=original_title, tmdb_id=tmdb_id,
         )
     if not match:
         return {"match": None}
@@ -856,10 +888,13 @@ async def serve_embedded_subtitle(path: str, stream: int = Query(..., ge=0)):
 async def _extract_embedded_subtitle(media_path, stream, cached):
     temporary = cached.with_name(f"{cached.name}.{uuid4().hex}.tmp")
     process = None
-    with protect_cache(cached, temporary):
+    async with AsyncExitStack() as resources:
+        resources.enter_context(protect_cache(cached, temporary))
         try:
-            if not await asyncio.to_thread(reserve_cache_space, 2 * MAX_SUBTITLE_BYTES):
+            required = 2 * MAX_SUBTITLE_BYTES
+            if not await asyncio.to_thread(reserve_cache_space, required):
                 raise HTTPException(507, 'Insufficient disk space for subtitles')
+            await resources.enter_async_context(reserve_space_async(settings.MEDIA_STORAGE_PATH, "cache", required))
             priority = ['nice', '-n', '10'] if shutil.which('nice') else []
             process = await asyncio.create_subprocess_exec(
                 *priority, 'ffmpeg', '-nostdin', '-v', 'error', '-threads', '1', '-i', str(media_path),
@@ -874,6 +909,8 @@ async def _extract_embedded_subtitle(media_path, stream, cached):
             os.replace(temporary, cached)
         except asyncio.TimeoutError as exc:
             raise HTTPException(504, 'Subtitle extraction timed out') from exc
+        except ValueError as exc:
+            raise HTTPException(507, str(exc)) from exc
         except OSError as exc:
             raise HTTPException(422, 'Subtitle conversion failed') from exc
         finally:
@@ -1042,7 +1079,7 @@ def _browser_h264(tracks: dict) -> bool:
 
 def _ensure_background_remux(media_path: Path, audio_map: str, cached: Path, hevc: bool = False) -> None:
     """Start a background pre-remux to a seekable faststart MP4 if not already running."""
-    if not settings.AUTO_CACHE_ON_WATCH or _active_live_remuxes:
+    if not settings.AUTO_CACHE_ON_WATCH or settings.STORAGE_PROFILE == "minimal" or _active_live_remuxes:
         return  # Foreground playback owns the CPU and disk budget.
     key = str(cached)
     existing = _background_remux_tasks.get(key)
@@ -1081,15 +1118,18 @@ async def _build_remux_cache(media_path: Path, audio_map: str, cached: Path, hev
     temporary = cached.with_name(f"{cached.stem}.{uuid4().hex}.mp4")
     process = None
     waiter = None
-    leases = ExitStack()
+    resources = AsyncExitStack()
     try:
-        leases.enter_context(protect_cache(cached, temporary))
+        resources.enter_context(protect_cache(cached, temporary))
         cached.parent.mkdir(parents=True, exist_ok=True)
         # A faststart copy temporarily needs another file's worth of space.
         required = media_path.stat().st_size * 2
         if not await asyncio.to_thread(reserve_cache_space, required):
             logger.info("Skipping remux cache: insufficient cache space")
             return
+        reservation = await resources.enter_async_context(
+            reserve_space_async(settings.MEDIA_STORAGE_PATH, "cache", required)
+        )
         tracks = await asyncio.to_thread(_probe_media_tracks, media_path)
         priority = ["nice", "-n", "10"] if shutil.which("nice") else []
         process = await asyncio.create_subprocess_exec(
@@ -1113,8 +1153,10 @@ async def _build_remux_cache(media_path: Path, audio_map: str, cached: Path, hev
                     raise TimeoutError('Background video conversion timed out')
                 # Encoded H.264 can grow beyond the source estimate. Stop a
                 # writer before it consumes space needed by the server itself.
-                if not await asyncio.to_thread(reserve_cache_space, 0):
-                    raise OSError('Playback cache budget exhausted')
+                written = temporary.stat().st_size if temporary.exists() else 0
+                # Keep room for FFmpeg's final faststart pass and extend the
+                # lease if a conversion is larger than its source estimate.
+                await asyncio.to_thread(reservation.resize, max(required - written, written))
         if process.returncode or not temporary.is_file() or temporary.stat().st_size == 0:
             logger.warning("Background remux failed (exit %s)", process.returncode)
             return
@@ -1132,7 +1174,7 @@ async def _build_remux_cache(media_path: Path, audio_map: str, cached: Path, hev
             from services.storage_policy import invalidate_path_size
             invalidate_path_size(settings.MEDIA_STORAGE_PATH)
         finally:
-            leases.close()
+            await resources.aclose()
 
 
 async def close_playback_tasks():
@@ -1163,7 +1205,7 @@ async def delete_downloaded_file(
         raise HTTPException(404, "Archivo no encontrado")
     try:
         media_path.unlink()
-        _invalidate_scan_cache(settings.DOWNLOADS_ROOT)
+        await asyncio.to_thread(sync_library_paths, settings.DOWNLOADS_ROOT, [path])
         return {"success": True}
     except OSError as e:
         raise HTTPException(500, f"Error eliminando archivo: {e}")

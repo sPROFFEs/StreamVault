@@ -1,4 +1,5 @@
 import asyncio
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -156,14 +157,14 @@ def test_library_filters_before_paginating_and_keeps_series_together(client, tmp
     ("recent", ["Beta", "Zeta", "Alpha"]),
     ("size", ["Zeta", "Alpha", "Beta"]),
 ])
-def test_library_sorts_logical_entries_before_pagination(client, monkeypatch, sort, expected):
-    files = [
-        {"title": "Zeta", "name": "Zeta.mkv", "media_type": "movie", "relative_path": "Zeta.mkv", "modified_at": 2, "size_bytes": 20},
-        {"title": "Alpha", "name": "Alpha.S01E01.mkv", "media_type": "series", "relative_path": "a1.mkv", "modified_at": 1, "size_bytes": 6},
-        {"title": "Alpha", "name": "Alpha.S01E02.mkv", "media_type": "series", "relative_path": "a2.mkv", "modified_at": 1, "size_bytes": 6},
-        {"title": "Beta", "name": "Beta.mkv", "media_type": "movie", "relative_path": "Beta.mkv", "modified_at": 3, "size_bytes": 10},
-    ]
-    monkeypatch.setattr(downloads, "scan_media_library", lambda _: {"files": files})
+def test_library_sorts_logical_entries_before_pagination(client, tmp_path, sort, expected):
+    for name, modified, size in [
+        ("Zeta.mkv", 2, 20), ("Alpha.S01E01.mkv", 1, 6),
+        ("Alpha.S01E02.mkv", 1, 6), ("Beta.mkv", 3, 10),
+    ]:
+        path = tmp_path / name
+        path.write_bytes(b"x" * size)
+        os.utime(path, (modified, modified))
     titles = []
     for page in range(1, 4):
         result = client.get("/api/downloads/library", params={"sort": sort, "page": page, "page_size": 1}).json()
@@ -267,6 +268,28 @@ def test_media_probe_is_cached_by_file_identity(tmp_path, monkeypatch):
     file.write_bytes(b"changed video")
     downloads._probe_media_tracks(file)
     assert probe.call_count == 2
+
+
+def test_media_probe_reuses_the_persisted_tracks_after_memory_cache_is_cleared(client, tmp_path, monkeypatch):
+    file = tmp_path / "video.mkv"
+    file.write_bytes(b"video")
+    downloads.get_index(tmp_path).sync_paths([file])
+    probe = Mock(return_value=SimpleNamespace(
+        stdout='{"streams": [{"index": 0, "codec_type": "video", "codec_name": "h264"}], "format": {"duration": "10"}}'
+    ))
+    monkeypatch.setattr(downloads.shutil, "which", lambda _: "ffprobe")
+    monkeypatch.setattr(downloads.subprocess, "run", probe)
+    try:
+        assert downloads._probe_media_tracks(file)["video_codec"] == "h264"
+        downloads._cached_media_tracks.cache_clear()
+        assert downloads._probe_media_tracks(file)["duration_seconds"] == 10
+        assert probe.call_count == 1
+        file.write_bytes(b"replacement")
+        downloads.get_index(tmp_path).sync_paths([file])
+        downloads._probe_media_tracks(file)
+        assert probe.call_count == 2
+    finally:
+        downloads._cached_media_tracks.cache_clear()
 
 
 def test_concurrent_metadata_requests_share_one_probe(tmp_path, monkeypatch):
