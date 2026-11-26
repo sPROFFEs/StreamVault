@@ -77,6 +77,7 @@ node_modules/
 .ruff_cache/
 .mypy_cache/
 /AGENTS.md
+/no-upload-to-github/
 /PLAN.md
 /docs/FINAL_AUDIT.md
 /docs/CLEANUP.md

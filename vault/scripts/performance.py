@@ -16,6 +16,7 @@ import statistics
 import subprocess
 import tempfile
 import threading
+import time
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
@@ -34,6 +35,7 @@ ROUTES = {
     "settings": ("/settings", "settings.html", ".accent-swatch", 6),
     "admin": ("/admin?tab=overview", "admin.html", "input[name=storage_limit]", 1),
     "detail": ("/media/7?type=movie", "media_detail.html", "#detail-title", 1),
+    "local_detail": ("/media/7?type=movie&fixture=local", "media_detail.html", "#source-select option", 1),
 }
 MOVIES = [{"id": i, "title": f"Fixture movie {i}", "name": f"Fixture series {i}",
            "media_type": "movie", "release_date": "2024-01-01", "vote_average": 8,
@@ -44,7 +46,7 @@ PREFS = {"accent": "red", "font_size": "normal", "home_visibility": {},
 
 
 @contextmanager
-def fixture_server(root, vendor):
+def fixture_server(root, vendor, peer_delay_ms):
     environment = Environment(loader=FileSystemLoader(root / "vault/core/templates"),
                               autoescape=select_autoescape(["html"]))
     environment.globals["_"] = lambda value: value
@@ -82,7 +84,9 @@ def fixture_server(root, vendor):
                 html = re.sub(r"https://cdn\.jsdelivr\.net/npm/[^\"]+/webtorrent\.min\.js", "/vendor/webtorrent.min.js", html)
                 mime, body = "text/html", html.encode()
             else:
-                count = int(parse_qs(urlsplit(self.headers.get("Referer", "")).query).get("fixture_size", [20])[0])
+                page_query = parse_qs(urlsplit(self.headers.get("Referer", "")).query)
+                count = int(page_query.get("fixture_size", [20])[0])
+                local = page_query.get("fixture") == ["local"]
                 payload = {}
                 if url.path == "/api/preferences":
                     payload = PREFS
@@ -98,6 +102,14 @@ def fixture_server(root, vendor):
                     payload = {"movies": [], "series": []}
                 elif url.path == "/admin/system/update/status":
                     payload = {"state": "current", "message": "Fixture is current"}
+                elif url.path == "/api/downloads/files/match" and local:
+                    payload = {"match": {"relative_path": "Fixture.mp4", "url": "/fixture.mp4",
+                                         "duration_seconds": 120, "audio_tracks": [], "subtitles": []}}
+                elif url.path == "/api/federation/sources/7" and local:
+                    time.sleep(peer_delay_ms / 1000)
+                    payload = []
+                elif url.path.startswith("/api/stream/resolve/"):
+                    payload = []
                 elif url.path.startswith("/api/streams/"):
                     payload = {"streams": []}
                 elif url.path.startswith("/api/subtitles/"):
@@ -203,6 +215,8 @@ def measure(browser, origin, name, viewport, args):
       const ready = () => {{
         if (document.querySelectorAll({json.dumps(selector)}).length < {count}) return;
         if ({json.dumps(name)} === 'detail' && document.querySelector('#detail-title').textContent !== 'Fixture movie 7') return;
+        if ({json.dumps(name)} === 'local_detail' && !Array.from(document.querySelectorAll('#source-select option'))
+            .some(option => option.textContent.includes('This server'))) return;
         window.contentReady = performance.now(); observer.disconnect();
       }};
       const observer = new MutationObserver(ready);
@@ -235,19 +249,21 @@ def main():
     parser.add_argument("--rtt", type=float, default=150)
     parser.add_argument("--mbps", type=float, default=1.6)
     parser.add_argument("--cpu", type=float, default=4)
+    parser.add_argument("--peer-delay-ms", type=int, default=1500, help="Federation fixture delay on local_detail")
     parser.add_argument("--routes", nargs="+", choices=list(ROUTES), default=list(ROUTES))
     args = parser.parse_args()
     report = {"label": args.label, "conditions": {"runs": args.runs, "rtt_ms": args.rtt,
               "download_mbps": args.mbps, "cpu_slowdown": args.cpu, "artwork": "absent",
-              "cache": "cold", "apis": "offline fixtures", "compression": "real nginx; vendored CDN gzip"},
+              "cache": "cold", "apis": "offline fixtures", "compression": "real nginx; vendored CDN gzip",
+              "peer_delay_ms": args.peer_delay_ms},
               "results": {}}
     if args.resume and args.output.exists():
         previous = json.loads(args.output.read_text())
         if previous['label'] != report['label'] or previous['conditions'] != report['conditions']:
             parser.error('Existing report uses a different revision or conditions')
         report = previous
-    with fixture_server(args.root.resolve(), args.vendor.resolve()) as upstream, deployment_proxy(args.root.resolve(), upstream, args.nginx.resolve()) as origin, sync_playwright() as playwright:
-        browser = playwright.chromium.launch()
+    with fixture_server(args.root.resolve(), args.vendor.resolve(), args.peer_delay_ms) as upstream, deployment_proxy(args.root.resolve(), upstream, args.nginx.resolve()) as origin, sync_playwright() as playwright:
+        browser = playwright.chromium.launch(args=["--disable-dev-shm-usage", "--use-gl=disabled"])
         report["chromium"] = browser.version
         try:
             for viewport, dimensions in VIEWPORTS.items():
