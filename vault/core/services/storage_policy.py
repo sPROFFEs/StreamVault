@@ -2,6 +2,7 @@ import json
 import os
 import shutil
 import threading
+from tempfile import NamedTemporaryFile
 from pathlib import Path
 from typing import Optional
 
@@ -14,6 +15,22 @@ POLICY_FILE = POLICY_DIR / "storage_policy.json"
 def _default_quota_gb() -> int:
     return max(1, int(settings.MAX_CACHE_SIZE_GB))
 
+
+
+def cache_limit_bytes() -> int:
+    limit = settings.MAX_CACHE_SIZE_GB
+    if settings.STORAGE_PROFILE == "minimal":
+        limit = min(limit, 10)
+    return int(limit * 1024**3)
+
+
+def cache_retention_hours() -> float:
+    retention = settings.PLAYBACK_CACHE_RETENTION_HOURS
+    if settings.STORAGE_PROFILE == "minimal":
+        return min(retention, 24)
+    if settings.STORAGE_PROFILE == "performance":
+        return max(retention, 336)
+    return retention
 
 def get_global_download_quota_gb() -> int:
     if POLICY_FILE.exists():
@@ -29,10 +46,15 @@ def get_global_download_quota_gb() -> int:
 def set_global_download_quota_gb(value: int) -> int:
     quota = max(1, int(value))
     POLICY_DIR.mkdir(parents=True, exist_ok=True)
-    POLICY_FILE.write_text(
-        json.dumps({"global_download_quota_gb": quota}, ensure_ascii=True, indent=2),
-        encoding="utf-8",
-    )
+    with NamedTemporaryFile(mode="w", encoding="utf-8", dir=POLICY_DIR, delete=False) as handle:
+        temporary = Path(handle.name)
+        try:
+            json.dump({"global_download_quota_gb": quota}, handle, ensure_ascii=True, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+            os.replace(temporary, POLICY_FILE)
+        finally:
+            temporary.unlink(missing_ok=True)
     return quota
 
 
@@ -45,19 +67,19 @@ _SIZE_SCAN_LOCK = threading.Lock()
 _SIZE_GENERATION = 0
 
 
-def get_path_size_bytes(path: str) -> int:
+def get_path_size_bytes(path: str, *, max_age: float = _PATH_SIZE_TTL) -> int:
     resolved = str(Path(path).resolve())
     # Concurrent library requests share one bounded scan, rather than all
     # walking the same mounted disk when the five-second cache expires.
     with _SIZE_LOCK:
         now = time.monotonic()
         cached = _PATH_SIZE_CACHE.get(resolved)
-        if cached and (now - cached[0]) < _PATH_SIZE_TTL:
+        if cached and (now - cached[0]) < max_age:
             return cached[1]
     with _SIZE_SCAN_LOCK:
         with _SIZE_LOCK:
             cached = _PATH_SIZE_CACHE.get(resolved)
-            if cached and time.monotonic() - cached[0] < _PATH_SIZE_TTL:
+            if cached and time.monotonic() - cached[0] < max_age:
                 return cached[1]
             generation = _SIZE_GENERATION
         total = 0

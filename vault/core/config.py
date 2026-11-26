@@ -28,7 +28,7 @@ except ImportError:
         def decorator(f):
             return f
         return decorator
-from typing import List, Union
+from typing import List, Literal, Union
 import os
 from pathlib import Path
 import json
@@ -57,6 +57,8 @@ class Settings(BaseSettings):
     
     # Streaming Settings
     MAX_CACHE_SIZE_GB: int = 100  # Maximum cache storage in GB
+    STORAGE_PROFILE: Literal["minimal", "balanced", "performance"] = "balanced"
+    ABANDONED_DOWNLOAD_TTL_HOURS: int = Field(1, ge=1, le=8760)
     DEFAULT_QUALITY: str = "1080p"  # Default streaming quality
     STREAM_BUFFER_SIZE: int = 65536  # Chunk size for streaming (bytes)
     AUTO_CACHE_ON_WATCH: bool = True  # Cache content while streaming

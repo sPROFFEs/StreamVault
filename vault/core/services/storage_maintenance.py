@@ -14,7 +14,7 @@ import time
 from fastapi.responses import FileResponse
 
 from config import settings
-from services.storage_policy import disk_free_bytes, get_path_size_bytes, invalidate_path_size
+from services.storage_policy import cache_limit_bytes, cache_retention_hours, disk_free_bytes, get_path_size_bytes, invalidate_path_size
 from services.admin_download_library import _human_size
 
 logger = logging.getLogger(__name__)
@@ -183,13 +183,13 @@ def maintain_cache(required_bytes=0) -> dict:
     root = Path(settings.MEDIA_STORAGE_PATH)
     inventory = cache_inventory()
     used, free = inventory['used_bytes'], disk_free_bytes(root)
-    limit = settings.MAX_CACHE_SIZE_GB * 1024**3
+    limit = cache_limit_bytes()
     reserve = int(settings.MIN_FREE_DISK_GB * 1024**3)
     estimated, selected = 0, []
     now = time.time()
     for item in inventory['items']:
         expired = (item['kind'] == 'cache_temporary' or
-                   now - item['modified_at'] >= settings.PLAYBACK_CACHE_RETENTION_HOURS * 3600)
+                   now - item['modified_at'] >= cache_retention_hours() * 3600)
         if not expired and used - estimated + required_bytes <= limit and free + estimated - required_bytes >= reserve:
             continue
         selected.append(item['relative_path'])
@@ -200,7 +200,7 @@ def maintain_cache(required_bytes=0) -> dict:
 def reserve_cache_space(required_bytes) -> bool:
     maintain_cache(required_bytes)
     root = settings.MEDIA_STORAGE_PATH
-    return (get_path_size_bytes(root) + required_bytes <= settings.MAX_CACHE_SIZE_GB * 1024**3
+    return (get_path_size_bytes(root) + required_bytes <= cache_limit_bytes()
             and disk_free_bytes(root) - required_bytes >= int(settings.MIN_FREE_DISK_GB * 1024**3))
 
 

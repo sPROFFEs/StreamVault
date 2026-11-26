@@ -1,5 +1,7 @@
 """Updater regressions use disposable Git repositories and a mocked daemon."""
 import subprocess
+import os
+import time
 
 import pytest
 
@@ -33,6 +35,20 @@ def advance(upstream, path="code.py"):
     git(upstream, "add", path)
     git(upstream, "commit", "-m", "update")
     return git(upstream, "rev-parse", "HEAD")
+
+
+def test_backup_retention_keeps_three_recent_archives_and_unmanaged_files(checkout, monkeypatch):
+    manager, _, _ = checkout
+    folder = manager.directory / "backups"
+    monkeypatch.setenv("BACKUP_RETENTION_DAYS", "0")
+    backups = [manager.backup()["name"] for _ in range(4)]
+    old = time.time() - 120 * 86400
+    for offset, name in enumerate(backups):
+        os.utime(folder / name, (old + offset, old + offset))
+    (folder / "copied-manually.zip").touch()
+    monkeypatch.setenv("BACKUP_RETENTION_DAYS", "30")
+    new = manager.backup()["name"]
+    assert {item["name"] for item in manager.backups()} == {new, *backups[2:], "copied-manually.zip"}
 
 
 def test_uses_configured_tracking_remote_and_full_commit(checkout):

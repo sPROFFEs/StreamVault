@@ -126,6 +126,61 @@ def test_download_budget_preserves_physical_disk_reserve(tmp_path, monkeypatch):
         storage_policy.ensure_download_space(tmp_path, 101)
 
 
+def test_disk_reservation_coordinates_downloads_and_cache_on_same_volume(tmp_path, monkeypatch):
+    from services import storage_policy
+    from services.storage_reservations import reserve_space, reservation_totals
+
+    monkeypatch.setattr(storage_policy.settings, "DATA_ROOT", str(tmp_path))
+    monkeypatch.setattr(storage_policy.settings, "MIN_FREE_DISK_GB", 0)
+    monkeypatch.setattr(storage_policy, "disk_free_bytes", lambda _: 100)
+    downloads, cache = tmp_path / "downloads", tmp_path / "cache"
+    with reserve_space(downloads, "downloads", 70) as lease:
+        assert reservation_totals(downloads) == {"downloads": 70, "cache": 0}
+        with pytest.raises(ValueError, match="disk space"):
+            with reserve_space(cache, "cache", 60):
+                pass
+        lease.resize(40)
+        with reserve_space(cache, "cache", 60):
+            assert reservation_totals(cache) == {"downloads": 40, "cache": 60}
+    assert reservation_totals(downloads) == {"downloads": 0, "cache": 0}
+
+
+def test_disk_reservation_reclaims_capacity_after_worker_crashes(tmp_path, monkeypatch):
+    from services import storage_policy
+    from services.storage_reservations import reserve_space
+
+    monkeypatch.setattr(storage_policy.settings, "DATA_ROOT", str(tmp_path))
+    monkeypatch.setattr(storage_policy.settings, "MIN_FREE_DISK_GB", 0)
+    monkeypatch.setattr(storage_policy, "disk_free_bytes", lambda _: 100)
+    script = """
+import sys
+from services.storage_reservations import reserve_space
+with reserve_space(sys.argv[1], 'downloads', 80):
+    print('ready', flush=True)
+    sys.stdin.read()
+"""
+    core = Path(maintenance.__file__).resolve().parents[1]
+    root = tmp_path / "downloads"
+    with subprocess.Popen(
+        [sys.executable, "-c", script, str(root)], cwd=core,
+        env={**os.environ, "DATA_ROOT": str(tmp_path), "MIN_FREE_DISK_GB": "0"},
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+    ) as worker:
+        try:
+            assert select.select([worker.stdout], [], [], 10)[0]
+            assert worker.stdout.readline().strip() == "ready"
+            with pytest.raises(ValueError, match="disk space"):
+                with reserve_space(root, "downloads", 30):
+                    pass
+        finally:
+            worker.kill()
+            worker.stdin.close()
+            worker.wait(timeout=10)
+
+    with reserve_space(root, "downloads", 100):
+        assert worker.returncode == -signal.SIGKILL
+
+
 def test_size_accounting_does_not_follow_external_symlinks(tmp_path):
     from services.storage_policy import get_path_size_bytes
     root = tmp_path / 'downloads'

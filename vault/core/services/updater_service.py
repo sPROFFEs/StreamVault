@@ -8,6 +8,7 @@ from contextlib import contextmanager
 import fcntl
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -19,6 +20,9 @@ from urllib.parse import urlsplit, urlunsplit, quote
 from urllib.request import Request, build_opener, HTTPRedirectHandler, ProxyHandler
 import uuid
 import zipfile
+
+logger = logging.getLogger(__name__)
+_BACKUP_NAME = re.compile(r"\d{8}-\d{6}-[0-9a-f]{8}\.zip")
 
 
 class UpdateError(RuntimeError):
@@ -34,6 +38,8 @@ class UpdateManager:
                    "CHECK_INTERVAL_MINUTES", "CONCURRENT_DOWNLOADS", "DOWNLOAD_RATE_LIMIT",
                    "TORRENT_UPLOAD_RATE_LIMIT", "MAX_LIVE_REMUXES", "TMDB_API_KEY", "TMDB_TOKEN",
                    "OPENSUBTITLES_API_KEY", "OPENSUBTITLES_USER_AGENT", "UPDATE_REMOTE", "UPDATE_BRANCH",
+                   "MAX_CACHE_SIZE_GB", "STORAGE_PROFILE", "MIN_FREE_DISK_GB", "AUTO_CACHE_ON_WATCH",
+                   "PLAYBACK_CACHE_RETENTION_HOURS", "ABANDONED_DOWNLOAD_TTL_HOURS", "BACKUP_RETENTION_DAYS",
                    "UPDATE_MODE", "UPDATE_PROVIDER", "UPDATE_API_URL", "UPDATE_REPOSITORY", "UPDATE_CHECK_INTERVAL_HOURS"}
 
     def __init__(self, workspace, data_root, remote="", branch="", *, mode="branch", provider="auto",
@@ -201,10 +207,39 @@ class UpdateManager:
                         archive.write(path, "data/config/" + path.relative_to(config).as_posix())
                 if self.config_path.is_file():
                     archive.write(self.config_path, "data/config/updater/source.json")
-            return {"name": name, "size_bytes": destination.stat().st_size, "created_at": destination.stat().st_mtime}
+            result = {"name": name, "size_bytes": destination.stat().st_size, "created_at": destination.stat().st_mtime}
         except Exception as exc:
             destination.unlink(missing_ok=True)
             raise UpdateError("Pre-update database/configuration backup failed; no update was applied.", 500) from exc
+        self._prune_backups(destination)
+        return result
+
+    def _prune_backups(self, current):
+        try:
+            days = int(os.getenv("BACKUP_RETENTION_DAYS", "0"))
+            if days <= 0:
+                return
+            cutoff = time.time() - days * 86400
+            valid = []
+            for path in current.parent.iterdir():
+                if not _BACKUP_NAME.fullmatch(path.name) or path.is_symlink() or not path.is_file():
+                    continue
+                try:
+                    with zipfile.ZipFile(path) as archive:
+                        if archive.getinfo("manifest.json").file_size > 16 * 1024:
+                            continue
+                        manifest = json.loads(archive.read("manifest.json"))
+                    if isinstance(manifest, dict) and manifest.get("schema") == 1:
+                        valid.append((path.stat().st_mtime, path))
+                except (OSError, KeyError, ValueError, zipfile.BadZipFile):
+                    continue
+            # Keep at least three valid StreamVault snapshots, including the one
+            # just created. Foreign archives and symlinks are administrator-owned.
+            for modified, path in sorted(valid, reverse=True)[3:]:
+                if modified < cutoff and path != current:
+                    path.unlink(missing_ok=True)
+        except (OSError, ValueError):
+            logger.warning("Backup retention could not finish")
 
     @contextmanager
     def lock(self, blocking=False):
