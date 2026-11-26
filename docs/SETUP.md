@@ -205,6 +205,7 @@ Configure these in `vault/.env`:
 | `MAX_CACHE_SIZE_GB` | `100` | Maximum playback/cache storage, independent of the shared-download quota |
 | `PLAYBACK_CACHE_RETENTION_HOURS` | `168` | Expire unused playback copies after seven days |
 | `AUTO_CACHE_ON_WATCH` | `true` | Prepare a seekable copy after meaningful converted playback closes; disable to save disk/CPU |
+| `MAX_LIVE_REMUXES` | `2` | Concurrent live conversions per core process; consider `1` on a small server |
 | `MEDIA_ACCEL_REDIRECT` | `true` in Compose | Use the bundled nginx's private read-only file location |
 
 Queued downloads recheck their space budget when starting; transfers and cache
@@ -229,6 +230,11 @@ space is needed. Complete copies have a ten-minute idle grace period; partial
 conversion files have a one-hour grace period. Source downloads, user metadata
 and unrecognized cache files remain under administrator control. Core, nginx,
 downloader and tunnel Docker logs are limited to three 10 MiB files each.
+
+Core processes sharing a writable cache volume coordinate cleanup through the
+hidden `.leases` directory in that volume. A new live conversion interrupts an
+active background conversion and leaves queued cache work waiting for playback
+to finish. Workers sharing the volume should run the same StreamVault version.
 
 H.264/AAC files take the direct path when compatible. H.264 10-bit and other
 unsupported video formats use the existing bounded conversion slots; these

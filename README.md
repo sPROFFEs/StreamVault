@@ -125,6 +125,7 @@ self-hosters discover it.
 - [Releases, signing, backups and updates](docs/RELEASES.md)
 - [Deployment services and configuration](vault/README.md)
 - [Regression and browser tests](vault/core/tests/README.md)
+- [Technical audit and performance roadmap](docs/OPTIMIZATION_ROADMAP.md)
 
 StreamVault includes no media, accounts or provider credentials. Only access and
 share content you have the right to use. TMDB, subtitles, IPTV and other external
