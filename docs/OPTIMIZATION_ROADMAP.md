@@ -12,10 +12,10 @@ el APK siguen siendo la base de la transición.
 | 2 · Trabajos | La primera entrega separa el codificador activo de la cola de remux. Extender la coordinación con límites globales por tipo, single-flight, timeouts y recuperación. Registrar el tipo de fallo y el código de salida sin registrar URL, argumentos ni rutas privadas. | Concurrencia entre varios espectadores, descargas y limpieza. Verificar cancelación del proceso, continuidad de la cola y límites de memoria. |
 | 3 · Fuentes | Contrato de fuente para biblioteca propia, nodos autorizados e integraciones permitidas. Incluir identidad, capacidades, idiomas, coste, expiración y disponibilidad. Aislar proveedores con TTL, healthchecks, límites, circuit breaker, backoff con jitter y respeto de Retry-After. | Fuente local disponible con nodos y proveedores bloqueados. Fallback acotado que conserva posición. Pruebas de autorización, deduplicación y preferencias. |
 | 4 · Transporte | Gestionar clientes por ciclo de vida, origen y destino validado. Aplicar backpressure, timeouts diferenciados y límites de conexiones. Conservar Range y descarga por nginx. El cierre ante desconexión ya está cubierto en el primer tramo. | Red lenta, apertura/cierre y seek repetidos, desconexión antes del primer byte y concurrencia mientras descarga el servidor. Correlacionar con nginx y el túnel. |
-| 5 · Identificación | Analizar archivos por componentes y puntuar candidatos por título original y localizado, año, episodio, duración e identificadores. Evaluar GuessIt y RapidFuzz. Conservar correcciones manuales y presentar coincidencias ambiguas al administrador. | Fixtures con años en títulos, temporadas completas, capítulos múltiples y ediciones distintas. Verificar que se preservan las rutas originales. |
-| 6 · Índice | Índice SQLite incremental por ruta y huella de tamaño/mtime. Reconciliar cambios externos y procesar eventos de importación, borrado y finalización. Evaluar FTS5. | Buscar y paginar bibliotecas de miles de archivos. Mantener disponibilidad durante reconciliación y reutilizar FFprobe para archivos sin cambios. |
+| 5 · Identificación | El segundo tramo incorpora análisis estructurado, coincidencias por título original, localizado, año e ID, y correcciones manuales desde el explorador. Los casos sin referencias fiables quedan en revisión. | Títulos numéricos, variantes Unicode, remakes, temporadas, rangos, especiales y correcciones sin mover archivos. |
+| 6 · Índice | El segundo tramo introduce SQLite incremental por ruta y huella de archivo, consultas y paginación local, reconciliación de cambios externos y persistencia de FFprobe. | Archivo agregado, modificado y borrado, reinicio y biblioteca de 5.000 títulos. |
 | 7 · TMDB | El límite de entradas de la LRU ya se aplica. Añadir límite de bytes, TTL por recurso, persistencia y actualización asíncrona. Reutilizar conexiones y servir datos previos ante fallos. | Caché saturada, peticiones simultáneas, latencia, 429 y 5xx. Los archivos locales siguen disponibles con TMDB caído. |
-| 8 · Disco | Clasificar originales, parciales recuperables, caché, pistas, segmentos, backups y logs. Introducir reservas compartidas y perfiles Minimal, Balanced y Performance. Mantener vista previa y aplicar TTL/LRU solo a categorías previstas. | Dos escritores con el disco limitado, recuperación de un proceso terminado y limpieza concurrente. El primer tramo protege copias en uso entre procesos. |
+| 8 · Disco | El segundo tramo incorpora reservas compartidas, perfiles Minimal, Balanced y Performance, revisión de parciales recuperables y retención opcional de backups. La caché regenerable conserva TTL y LRU. | Dos escritores con presupuesto compartido, liberación tras caída, revisión de parciales y protección de activos. |
 | 9 · Descargas | Persistir cola y transiciones idempotentes. Validar TLS, reanudar cuando sea compatible, comprobar integridad y publicar archivos completos de forma atómica. | Cancelación efectiva y reinicio en cada estado. Una temporada interrumpida conserva los episodios completos y los parciales recuperables. |
 | 10 · Web | Mostrar fuentes locales temprano, abortar peticiones obsoletas y conservar la sesión de reproducción al añadir fuentes. Separar módulos, liberar listeners, temporizadores y Blob URLs y medir carga de imágenes, DOM, paginación y virtualización. | Chromium móvil, escritorio y TV, navegación por mando, offline, cambio de episodio y posición preservada ante actualizaciones secundarias. |
 | 11 · SQLite | Medir consultas, añadir índices según planes de ejecución, agrupar progreso, acortar transacciones y coordinar tareas periódicas. | Migraciones compatibles, contención controlada, copia consistente y apagado ordenado durante reproducción o descarga. |
@@ -55,3 +55,19 @@ Para revertir, volver a la imagen anterior del core y conservar los volúmenes,
 el directorio de caché y la configuración existente. Antes de migraciones
 posteriores, comprobar backup y restauración en una réplica y documentar si la
 imagen anterior puede abrir el esquema nuevo.
+
+## Migración y rollback del segundo tramo
+
+Core y downloader deben compartir `DATA_ROOT` y usar el mismo punto de montaje
+para descargas. Actualizar ambos juntos. Al arrancar, el core construye el
+índice de biblioteca en segundo plano. Se crea `library-*.db` al lado de las
+demás bases de datos. El actualizador incluye este archivo mediante una
+instantánea SQLite consistente. Las correcciones se conservan por raíz y ruta
+relativa. Si se renombra un archivo externamente, la reconciliación registra
+la nueva ruta. Volver a aplicar la corrección cuando corresponda.
+
+Para revertir, volver a las imágenes anteriores de core y downloader y
+conservar el volumen de datos. Las versiones anteriores usan su escaneo
+habitual y las correcciones del índice quedan disponibles para otra
+actualización. Conservar `library-*.db` en los backups. El directorio
+`runtime/space-reservations` contiene el registro auxiliar de trabajos en vivo.

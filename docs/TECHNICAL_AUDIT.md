@@ -30,12 +30,12 @@ P2 requiere cambios planificados y P3 recoge deuda de mantenimiento.
 | P0 · corregido | [Mantenimiento](../vault/core/services/storage_maintenance.py#L53) solo registraba leases en memoria. Un worker podía eliminar una copia usada por otro. Al preparar la reproducción, [el pin de caché](../vault/core/services/storage_maintenance.py#L92) seguía enlaces simbólicos. | Locks compartidos durante lectura o escritura y exclusivos al comprobar y borrar, sobre el mismo volumen. [Regresiones](../vault/core/tests/test_storage_maintenance.py) para enlaces a originales, protección durante el uso, muerte del worker, Range y ETag. |
 | P1 · corregido | [Ficha](../vault/assets/js/media_detail.js#L380) esperaba la resolución federada antes de mostrar un archivo del propio servidor. | Publicar en cuanto responde la búsqueda local y conservar la selección al añadir alternativas. [Regresión Chromium](../vault/core/tests/test_federation_player_browser.py#L10) con federación detenida. |
 | P1 · corregido | [Remux](../vault/core/routers/downloads.py#L967) cancelaba toda la cola al iniciar una reproducción y podía descartar trabajo para otros archivos. | Interrumpir solo la conversión activa y conservar tareas pendientes hasta que cierre la última reproducción. [Regresión](../vault/core/tests/test_download_playback.py#L474) con un trabajo activo y otro en cola. |
-| P1 · pendiente | [Presupuesto de disco](../vault/core/services/storage_policy.py) comprueba espacio sin reservarlo. Dos escritores pueden aprobar los mismos bytes antes de empezar a escribir. | Reserva compartida con liberación al finalizar y reconciliación. Probar dos procesos y recuperación tras caída con disco limitado. |
+| P1 · corregido | [Presupuesto de disco](../vault/core/services/storage_policy.py) comprobaba espacio sin reservarlo. Dos escritores podían aprobar los mismos bytes antes de empezar a escribir. | [Reserva compartida](../vault/core/services/storage_reservations.py) por volumen con liberación al terminar, recuperación tras caída y pruebas entre procesos. |
 | P1 · parcial | [TMDB](../vault/core/services/tmdb_service.py#L34) permitía superar `_CACHE_MAX` con entradas frescas. Algunos flujos de descubrimiento dependen de respuestas externas. | LRU en memoria con un límite de 500 entradas y acceso coordinado entre hilos. [Regresión](../vault/core/tests/test_tmdb_pagination.py) con entradas frescas y caducidad. Pendientes persistencia, límite de bytes y pruebas de 429 y desconexión. |
 | P1 · pendiente | [yt-dlp de descargas](../vault/core/services/download_service.py) y [YouTube](../vault/core/services/youtube_service.py) deshabilitan la comprobación de certificados. | Activar la política TLS predeterminada y probar certificado válido y certificado no confiable. |
 | P1 · pendiente | [Federación](../vault/core/services/federation_service.py) crea un cliente HTTP por solicitud de nodo. Seek y cambios de pista repiten conexiones, además de [verificar el destino](../vault/core/services/federation_service.py). | Gestionar pools con vida útil acotada por origen, identidad TLS y destino validado. Probar reutilización, redirecciones, desconexión y revocación. |
 | P1 · pendiente | [Descargas HTTP](../vault/core/services/download_service.py) y [torrent](../vault/core/services/torrent_service.py) mantienen el estado operativo en memoria. La recuperación de [marcas parciales](../vault/core/services/media_library.py) no equivale a recuperar la cola. | Persistir transiciones y reconciliar archivos y procesos. Probar reinicio en cada estado y cancelación del worker real. |
-| P2 · pendiente | [Biblioteca](../vault/core/services/media_library.py) recorre directorios cuando invalida el índice en memoria. [TMDB](../vault/core/services/tmdb_service.py) puede aceptar el primer resultado de búsqueda. | Índice incremental SQLite y selección con confianza, identidad de episodio y correcciones persistentes. Probar grandes bibliotecas, temporadas, títulos ambiguos e idiomas mixtos. |
+| P2 · corregido | [Biblioteca](../vault/core/services/media_library.py) recorría directorios al invalidar el estado en memoria. [TMDB](../vault/core/services/tmdb_service.py) podía aceptar el primer resultado de búsqueda. | [Índice incremental SQLite](../vault/core/services/media_index.py) y selección con confianza. Pruebas con grandes bibliotecas, temporadas, títulos ambiguos e idiomas mixtos. |
 | P2 · pendiente | [Arranque](../vault/core/main.py) usa manejadores depreciados y las tareas periódicas viven por proceso. [SQLite](../vault/core/database.py) ya configura WAL y espera de bloqueo, pero aún hay que medir el coste de transacciones y consultas. | Migrar el ciclo de vida, coordinar tareas y verificar migraciones, cierre y backups consistentes. |
 | P2 · pendiente | [Compose](../vault/docker-compose.yaml) usa una referencia flotante para nginx. El [actualizador](../vault/core/services/updater_service.py) requiere operaciones privilegiadas de despliegue. | Fijar imágenes comprobadas, delimitar permisos del actualizador y distinguir readiness de liveness. Probar instalación y actualización con el directorio de datos existente. |
 | P2 · pendiente | [Interfaz](../vault/assets/js/media_detail.js) concentra carga de fuentes, metadatos, progreso y ciclo de reproducción. El benchmark registra unos 2780 nodos en el portal de prueba. | Medir y dividir por responsabilidades. Evaluar renderizado progresivo y carga de imágenes con los tres tamaños de viewport y navegación por mando. |
@@ -100,3 +100,43 @@ carga ajena al escenario. Los resultados no se extrapolan a dispositivos reales.
   Gradle en modo offline.
 - `check.py build` completó la validación estática y quedó bloqueado por
   la ausencia de Docker con el plugin de Compose y un daemon.
+
+## Segundo tramo
+
+La [identificación](../vault/core/services/media_library.py) preserva títulos
+numéricos y Unicode y separa el año, los episodios, la edición y los indicadores
+técnicos. Los indicadores del nombre quedan diferenciados de las pistas y
+códecs confirmados por FFprobe. Para los resultados de
+[TMDB](../vault/core/services/media_identity.py) se usan normalización Unicode
+y `difflib`. GuessIt y RapidFuzz quedan como opciones si un corpus más amplio
+justifica su coste. La numeración absoluta ambigua requiere revisión o una
+corrección en **Administración → Archivos → Identificar**.
+
+La [búsqueda exacta](../vault/core/services/media_index.py) usa índices por
+tipo, títulos normalizados e ID de TMDB. Las búsquedas parciales se resuelven
+con `instr`, que conserva subcadenas de un carácter sin requerir FTS5. Las
+consultas locales paginan una serie como unidad. El listado combinado con
+nodos conserva su agrupación en memoria. El catálogo federado v1 anuncia el
+primer episodio de un archivo con varios capítulos. Los cambios externos se
+reconcilian aproximadamente cada minuto. La construcción inicial corre fuera
+del bucle de peticiones y FFprobe se reutiliza con tamaño, mtime y ctime iguales.
+
+Con 5.000 archivos sintéticos, 100 carpetas y 30 consultas exactas sobre los
+mismos archivos, la mediana pasó de **35,23 ms a 1,30 ms** en Linux y Python
+3.11. El escaneo inicial anterior tardó **328 ms** y el llenado inicial del
+índice **728 ms**. Se midió la búsqueda de un título y año concretos, con el
+índice ya cargado, incluida la búsqueda de subtítulos vecinos y sin red o FFprobe.
+
+Las [reservas](../vault/core/services/storage_reservations.py) se calculan
+por volumen. Cada productor ajusta el saldo a medida que conoce el tamaño y
+escribe datos. Las escrituras externas a StreamVault quedan fuera de ese
+presupuesto. La limpieza requiere revisión explícita de parciales con medios
+o controles de reanudación. La retención de backups es optativa y conserva
+al menos tres instantáneas.
+
+Pasaron 482 pruebas unitarias, 30 casos Chromium de administración, descargas,
+catálogo y reproducción federada, y las 24 pruebas unitarias de Android.
+El caso de cambio de tamaño en TV pasó al repetirlo de forma aislada tras
+un cierre del driver de Playwright en la pasada larga de `baseline`.
+La pasada larga no se completó. La validación estática pasó y la construcción
+de imágenes sigue pendiente en un entorno con Docker y Compose.

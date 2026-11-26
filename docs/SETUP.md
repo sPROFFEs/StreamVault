@@ -203,6 +203,9 @@ Configure these in `vault/.env`:
 | --- | --- | --- |
 | `MIN_FREE_DISK_GB` | `2` | Physical disk reserve for databases, logs and playback; separate from the download quota |
 | `MAX_CACHE_SIZE_GB` | `100` | Maximum playback/cache storage, independent of the shared-download quota |
+| `STORAGE_PROFILE` | `balanced` | `minimal` caps the cache at 10 GiB and 24 hours and disables automatic full copies. `performance` retains idle copies for at least 336 hours within the configured quota. |
+| `ABANDONED_DOWNLOAD_TTL_HOURS` | `1` | Minimum age before a marked inactive transfer can appear in the storage cleaner |
+| `BACKUP_RETENTION_DAYS` | `0` | Prune older StreamVault backups after a successful backup. A value of 0 preserves every archive. |
 | `PLAYBACK_CACHE_RETENTION_HOURS` | `168` | Expire unused playback copies after seven days |
 | `AUTO_CACHE_ON_WATCH` | `true` | Prepare a seekable copy after meaningful converted playback closes; disable to save disk/CPU |
 | `MAX_LIVE_REMUXES` | `2` | Concurrent live conversions per core process; consider `1` on a small server |
@@ -235,6 +238,16 @@ Core processes sharing a writable cache volume coordinate cleanup through the
 hidden `.leases` directory in that volume. A new live conversion interrupts an
 active background conversion and leaves queued cache work waiting for playback
 to finish. Workers sharing the volume should run the same StreamVault version.
+
+Core and downloader reserve capacity on the shared volume before starting a
+download, cached conversion or subtitle extraction. The storage cleaner
+displays job reservations separately from the configured free-disk reserve.
+
+Use **Administration → Files → Identify** to review or correct a movie or
+episode. A file can be assigned to several episodes, including in season 0.
+The corrections live in the library's SQLite index and are included in
+backups. External file changes are reconciled roughly once a minute. See the
+[upgrade and rollback notes](OPTIMIZATION_ROADMAP.md#migración-y-rollback-del-segundo-tramo).
 
 H.264/AAC files take the direct path when compatible. H.264 10-bit and other
 unsupported video formats use the existing bounded conversion slots; these
