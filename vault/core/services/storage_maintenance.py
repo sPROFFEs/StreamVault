@@ -7,6 +7,7 @@ import logging
 import os
 from pathlib import Path
 import re
+from stat import S_ISREG
 import threading
 import time
 
@@ -90,13 +91,19 @@ class PlaybackFileResponse(FileResponse):
 
 def touch_cache(path) -> bool:
     """Pin a descriptor-to-media handoff without changing the Range ETag."""
+    path = Path(path)
     with _LOCK:
         try:
-            stat = Path(path).stat()
-            if stat.st_size <= 0:
-                return False
-            os.utime(path, ns=(time.time_ns(), stat.st_mtime_ns))
-            return True
+            parent_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                stat = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+                if not S_ISREG(stat.st_mode) or stat.st_size <= 0:
+                    return False
+                os.utime(path.name, ns=(time.time_ns(), stat.st_mtime_ns),
+                         dir_fd=parent_fd, follow_symlinks=False)
+                return True
+            finally:
+                os.close(parent_fd)
         except OSError:
             return False
 

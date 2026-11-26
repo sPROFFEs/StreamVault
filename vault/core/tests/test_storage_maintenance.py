@@ -45,6 +45,18 @@ def test_cache_cleaner_only_offers_owned_idle_files_and_rechecks_before_delete(c
     assert recent.exists() and unknown.exists() and external.exists()
 
 
+def test_touch_cache_does_not_follow_a_symlink_outside_cache(cache, tmp_path):
+    external = tmp_path / "external.mp4"
+    external.write_bytes(b"original")
+    os.utime(external, (1, 1))
+    link = cache_file(cache)
+    link.unlink()
+    link.symlink_to(external)
+
+    assert not maintenance.touch_cache(link)
+    assert external.stat().st_atime_ns == 10**9
+
+
 def test_cache_maintenance_expires_old_copies_but_retains_recent_and_playing(cache):
     old = cache_file(cache, age=8 * 86400)
     recent = cache_file(cache, 'b' * 64 + '.mp4', age=7200)

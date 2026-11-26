@@ -914,7 +914,7 @@ async def remux_downloaded_media(
 
     # Mode 1: cached file exists → serve it (full seeking via Range requests).
     try:
-        if not force_stream and cached.is_file():
+        if not force_stream and not cached.parent.is_symlink() and not cached.is_symlink() and cached.is_file():
             with protect_cache(cached):
                 if cached.stat().st_size > 0:
                     file_response = PlaybackFileResponse(cached, media_type="video/mp4", headers={"Cache-Control": "private, no-store"})
