@@ -4,9 +4,11 @@ TMDB Service - Integración con The Movie Database API
 Obtén tu API key gratuita en: https://www.themoviedb.org/settings/api
 Añádela a .env: TMDB_API_KEY=[redacted]
 """
-import os
-import time
+from collections import OrderedDict
 import logging
+import os
+import threading
+import time
 from typing import Optional, Dict, List, Any, Tuple
 
 logger = logging.getLogger(__name__)
@@ -28,29 +30,34 @@ class TMDBService:
     POSTER_SIZE = "w500"
     BACKDROP_SIZE = "w1280"
 
-    # TTL cache: keyed by (method, args tuple) → (timestamp, result).
+    # TTL/LRU cache: keyed by (method, args tuple) → (timestamp, result).
     # TMDB metadata rarely changes, so a 10-minute TTL dramatically reduces
     # outbound API calls and event-loop blocking from the sync requests lib.
-    _cache: Dict[Tuple, Tuple[float, Any]] = {}
+    _cache: OrderedDict[Tuple, Tuple[float, Any]] = OrderedDict()
+    _cache_lock = threading.Lock()
     _CACHE_TTL = 600.0  # 10 minutes
-    _CACHE_MAX = 500    # prune expired entries past this size
+    _CACHE_MAX = 500
 
     @classmethod
     def _cache_get(cls, key: Tuple):
-        entry = cls._cache.get(key)
-        if entry and (time.monotonic() - entry[0]) < cls._CACHE_TTL:
-            return entry[1]
-        return None
+        with cls._cache_lock:
+            entry = cls._cache.get(key)
+            if entry is None:
+                return None
+            timestamp, value = entry
+            if time.monotonic() - timestamp >= cls._CACHE_TTL:
+                del cls._cache[key]
+                return None
+            cls._cache.move_to_end(key)
+            return value
 
     @classmethod
     def _cache_set(cls, key: Tuple, value: Any) -> Any:
-        cls._cache[key] = (time.monotonic(), value)
-        if len(cls._cache) > cls._CACHE_MAX:
-            now = time.monotonic()
-            expired = [k for k, (ts, _) in cls._cache.items()
-                       if (now - ts) >= cls._CACHE_TTL]
-            for k in expired:
-                del cls._cache[k]
+        with cls._cache_lock:
+            cls._cache[key] = (time.monotonic(), value)
+            cls._cache.move_to_end(key)
+            while len(cls._cache) > cls._CACHE_MAX:
+                cls._cache.popitem(last=False)
         return value
 
     def __init__(self, api_key: str = None):
