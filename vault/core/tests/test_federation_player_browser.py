@@ -7,6 +7,31 @@ from test_discovery_routes_browser import discovery_page
 pytestmark = pytest.mark.browser
 
 
+def test_local_source_is_available_while_federation_is_pending(discovery_page):
+    ui, page = discovery_page, discovery_page.page
+    ui.payloads["/api/downloads/files/match"] = {"match": {"url": "/local.mp4"}}
+    ui.payloads["/api/federation/sources/7"] = [
+        {"source": "Peer server", "type": "federation", "url": "/peer/stream"},
+    ]
+    page.add_init_script("""
+        const nativeFetch = window.fetch.bind(window);
+        window.fetch = (url, options) => {
+            if (String(url).startsWith('/api/federation/sources/7?')) {
+                return new Promise(resolve => {
+                    window.releaseFederation = () => resolve(nativeFetch(url, options));
+                });
+            }
+            return nativeFetch(url, options);
+        };
+    """)
+    page.goto("https://streamvault.test/media/7?type=movie")
+    page.wait_for_function("typeof window.releaseFederation === 'function'")
+    expect(page.locator("#source-select")).to_contain_text("This server")
+    page.evaluate("window.releaseFederation(); undefined")
+    expect(page.locator("#source-select")).to_contain_text("Peer server")
+    expect(page.locator("#source-select option:checked")).to_contain_text("This server")
+
+
 @pytest.mark.parametrize("defer_resolver", [False, True], ids=["immediate", "deferred"])
 def test_cached_node_sources_do_not_wait_for_external_providers(discovery_page, defer_resolver):
     ui, page = discovery_page, discovery_page.page

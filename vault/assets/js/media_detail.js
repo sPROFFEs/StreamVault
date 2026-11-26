@@ -400,75 +400,63 @@ async function autoLoadStreams() {
         params.set("e", el.episodeSelect.value || "1");
     }
 
-    const tid = setTimeout(() => ctrl.abort(), 22000);
-    
-    // Completed local and peer files are independent of external providers.
-    const [localSource, federatedSources] = await Promise.all([
-        findLocalSource(), findFederatedSources(params, ctrl.signal),
-    ]);
-    const immediateSources = [...(localSource ? [localSource] : []), ...federatedSources];
-    if (ctrl.signal.aborted) return;
-    
-    if (localSource) {
-        state.localSubtitles = localSource.subtitles || [];
-        renderAvailableSubtitles();
-        repairLocalProgressDuration(localSource);
-    } else {
-        state.localSubtitles = [];
-    }
-    if (immediateSources.length) {
-        state.streams = immediateSources;
-        el.sourceSelect.innerHTML = immediateSources.map((source, index) => `<option value="${index}">${escH(buildSourceLabel(source))}</option>`).join("");
+    const publishSources = (sources) => {
+        const selectedUrl = state.streams[Number(el.sourceSelect.value || 0)]?.url;
+        state.streams = sources;
+        el.sourceSelect.innerHTML = sources.map((source, index) => `<option value="${index}">${escH(buildSourceLabel(source))}</option>`).join("");
+        const selectedIndex = sources.findIndex(source => source.url === selectedUrl);
+        if (selectedIndex >= 0) el.sourceSelect.value = String(selectedIndex);
         updateDeviceDownloadButton();
-        el.detailStatus.textContent = T.sourcesFound(immediateSources.length);
+        el.detailStatus.textContent = T.sourcesFound(sources.length);
         if (state._playPending) {
             state._playPending = false;
             playCurrentItem();
         }
-    }
+    };
 
-    // 2. Fetch external streams in background
+    const tid = setTimeout(() => ctrl.abort(), 22000);
+    const peers = findFederatedSources(params, ctrl.signal);
     try {
-        const resp = await fetch(`/api/stream/resolve/${TMDB_ID}?${params}`, { signal: ctrl.signal });
-        clearTimeout(tid);
+        // Publish completed files from this server as soon as they are found.
+        const localSource = await findLocalSource(ctrl.signal);
         if (ctrl.signal.aborted) return;
+        state.localSubtitles = localSource?.subtitles || [];
+        if (localSource) {
+            renderAvailableSubtitles();
+            repairLocalProgressDuration(localSource);
+            publishSources([localSource]);
+        }
+
+        const federatedSources = await peers;
+        if (ctrl.signal.aborted) return;
+        const immediateSources = [...(localSource ? [localSource] : []), ...federatedSources];
+        if (federatedSources.length) publishSources(immediateSources);
+
+        const resp = await fetch(`/api/stream/resolve/${TMDB_ID}?${params}`, { signal: ctrl.signal });
         const payload = await resp.json();
+        if (ctrl.signal.aborted) return;
         const urls = new Set(immediateSources.map(source => source.url));
         const remoteStreams = Array.isArray(payload) ? payload.filter(source => !urls.has(source.url)) : [];
-        const selectedUrl = state.streams[Number(el.sourceSelect.value || 0)]?.url;
-        state.streams = [...immediateSources, ...remoteStreams];
         state.failedSources.clear();
-        state.streamsLoading = false;
-        
-        if (!state.streams.length) {
+
+        if (!immediateSources.length && !remoteStreams.length) {
             el.detailStatus.textContent = T.noSources;
             el.sourceSelect.innerHTML = `<option>${T.noSources}</option>`;
             return;
         }
 
-        el.detailStatus.textContent = T.sourcesFound(state.streams.length);
-        el.sourceSelect.innerHTML = state.streams.map((s, i) => `<option value="${i}">${escH(buildSourceLabel(s))}</option>`).join("");
-        const selectedIndex = state.streams.findIndex(source => source.url === selectedUrl);
-        if (selectedIndex >= 0) el.sourceSelect.value = String(selectedIndex);
-        updateDeviceDownloadButton();
+        publishSources([...immediateSources, ...remoteStreams]);
         maybeAutoActivateSubtitle();
-        
-        // If user clicked play while waiting, play the first available stream now!
-        if (state._playPending) {
-            state._playPending = false;
-            playCurrentItem();
-        }
-    } catch (err) {
+    } catch (_) {
+        // Keep completed sources available when provider discovery fails.
+    } finally {
         clearTimeout(tid);
-        if (immediateSources.length) {
+        if (state.streamController === ctrl) {
             state.streamsLoading = false;
-            el.detailStatus.textContent = T.sourcesFound(1);
-            return;
-        }
-        if (!ctrl.signal.aborted) {
-            state.streamsLoading = false;
-            el.detailStatus.textContent = T.resolverError;
-            el.sourceSelect.innerHTML = `<option>${T.resolverError}</option>`;
+            if (!state.streams.length && el.detailStatus.textContent !== T.noSources) {
+                el.detailStatus.textContent = T.resolverError;
+                el.sourceSelect.innerHTML = `<option>${T.resolverError}</option>`;
+            }
         }
     }
 }
@@ -482,7 +470,7 @@ async function findFederatedSources(params, signal) {
     } catch (_) { return []; }
 }
 
-async function findLocalSource() {
+async function findLocalSource(signal) {
     const title = state.item?.title || state.item?.name;
     if (!title) return null;
     const params = new URLSearchParams({ title, media_type: MTYPE });
@@ -498,7 +486,7 @@ async function findLocalSource() {
         }
     }
     try {
-        const response = await fetch(`/api/downloads/files/match?${params}`);
+        const response = await fetch(`/api/downloads/files/match?${params}`, { signal });
         const data = response.ok ? await response.json() : null;
         if (!data?.match) return null;
         return {
