@@ -70,6 +70,12 @@ users, quotas and services in Administration.
 | OpenSubtitles | External subtitles | Optional API key; configure the provider in settings |
 | TV/YouTube/media providers | External channel/stream availability | Network/provider access; availability and codecs vary |
 
+TMDB uses the API key saved in **Administration → Catalog** first, then
+`TMDB_TOKEN` or `TMDB_API_KEY` from the deployment environment. Removing
+the file key restores the environment credentials. Cached metadata survives
+service restarts. Files with a registered TMDB ID keep a minimal title and
+episode view during provider outages.
+
 For other devices, configure a reachable HTTPS hostname with a trusted certificate,
 `DOMAIN`, and matching comma-separated `ALLOWED_HOSTS`. The tunnel origin inside
 Compose is `http://nginx:80`; `localhost` inside cloudflared refers to its own

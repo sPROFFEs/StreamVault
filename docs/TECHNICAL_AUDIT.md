@@ -31,7 +31,7 @@ P2 requiere cambios planificados y P3 recoge deuda de mantenimiento.
 | P1 · corregido | [Ficha](../vault/assets/js/media_detail.js#L380) esperaba la resolución federada antes de mostrar un archivo del propio servidor. | Publicar en cuanto responde la búsqueda local y conservar la selección al añadir alternativas. [Regresión Chromium](../vault/core/tests/test_federation_player_browser.py#L10) con federación detenida. |
 | P1 · corregido | [Remux](../vault/core/routers/downloads.py#L967) cancelaba toda la cola al iniciar una reproducción y podía descartar trabajo para otros archivos. | Interrumpir solo la conversión activa y conservar tareas pendientes hasta que cierre la última reproducción. [Regresión](../vault/core/tests/test_download_playback.py#L474) con un trabajo activo y otro en cola. |
 | P1 · corregido | [Presupuesto de disco](../vault/core/services/storage_policy.py) comprobaba espacio sin reservarlo. Dos escritores podían aprobar los mismos bytes antes de empezar a escribir. | [Reserva compartida](../vault/core/services/storage_reservations.py) por volumen con liberación al terminar, recuperación tras caída y pruebas entre procesos. |
-| P1 · parcial | [TMDB](../vault/core/services/tmdb_service.py#L34) permitía superar `_CACHE_MAX` con entradas frescas. Algunos flujos de descubrimiento dependen de respuestas externas. | LRU en memoria con un límite de 500 entradas y acceso coordinado entre hilos. [Regresión](../vault/core/tests/test_tmdb_pagination.py) con entradas frescas y caducidad. Pendientes persistencia, límite de bytes y pruebas de 429 y desconexión. |
+| P1 · corregido | [TMDB](../vault/core/services/tmdb_service.py) perdía la caché en cada reinicio y podía desactivarse por una caída al arrancar. Algunos flujos consultaban los mismos metadatos con conexiones independientes. | [LRU SQLite](../vault/core/services/tmdb_cache.py) de 500 entradas y 32 MiB de contenido. Sirve datos guardados durante la actualización y pausa consultas tras 429, 5xx o timeout. |
 | P1 · pendiente | [yt-dlp de descargas](../vault/core/services/download_service.py) y [YouTube](../vault/core/services/youtube_service.py) deshabilitan la comprobación de certificados. | Activar la política TLS predeterminada y probar certificado válido y certificado no confiable. |
 | P1 · pendiente | [Federación](../vault/core/services/federation_service.py) crea un cliente HTTP por solicitud de nodo. Seek y cambios de pista repiten conexiones, además de [verificar el destino](../vault/core/services/federation_service.py). | Gestionar pools con vida útil acotada por origen, identidad TLS y destino validado. Probar reutilización, redirecciones, desconexión y revocación. |
 | P1 · pendiente | [Descargas HTTP](../vault/core/services/download_service.py) y [torrent](../vault/core/services/torrent_service.py) mantienen el estado operativo en memoria. La recuperación de [marcas parciales](../vault/core/services/media_library.py) no equivale a recuperar la cola. | Persistir transiciones y reconciliar archivos y procesos. Probar reinicio en cada estado y cancelación del worker real. |
@@ -138,5 +138,39 @@ Pasaron 482 pruebas unitarias, 30 casos Chromium de administración, descargas,
 catálogo y reproducción federada, y las 24 pruebas unitarias de Android.
 El caso de cambio de tamaño en TV pasó al repetirlo de forma aislada tras
 un cierre del driver de Playwright en la pasada larga de `baseline`.
-La pasada larga no se completó. La validación estática pasó y la construcción
-de imágenes sigue pendiente en un entorno con Docker y Compose.
+Después se verificó el `baseline` de `60a98d4` con los 162 casos repartidos
+por perfiles y módulos, con un reintento aislado en TV. La validación
+estática pasó y la construcción de imágenes sigue pendiente en un entorno
+con Docker y Compose.
+
+## Tercer tramo
+
+El [cliente TMDB](../vault/core/services/tmdb_service.py) se abre al primer
+uso y se cierra con la aplicación. Catálogo, IDs externos, subtítulos,
+tráilers y clasificaciones comparten la caché y el pool. La deduplicación
+se realiza dentro de cada proceso. Una prueba con ocho lectores concurrentes
+de una ficha fría observó una sola petición al proveedor.
+
+Trending vence a los 5 minutos, búsquedas a los 10 minutos y descubrimiento
+a los 15 minutos. Las temporadas vencen a la hora, las fichas a las 24 horas
+y los géneros, identificadores de terceros y clasificaciones a los 7 días.
+Las respuestas positivas vencidas pueden servirse hasta 30 días adicionales
+mientras se actualizan. Una respuesta 404 se conserva 5 minutos. Una caída
+transitoria conserva la última respuesta válida. La caché se puede reconstruir
+y vive en `runtime/tmdb.sqlite3`, fuera de los backups de configuración.
+
+La clave guardada por el administrador se aplica a todas las consultas. Si se
+elimina, el servicio vuelve a las credenciales del entorno. Los registros
+de fallo conservan el tipo de error y se filtran las peticiones que llevan
+una clave en la URL.
+Las traducciones usan `es-ES` cuando se solicita español y conservan el título
+original. Cuando falta la respuesta remota, las [fichas locales con ID de
+TMDB](../vault/core/services/media_index.py) pueden abrirse y reproducirse,
+incluidos los especiales. Las búsquedas de subtítulos en segundo plano
+pueden terminar después de que aparezcan las fuentes de reproducción.
+
+Pasaron 490 pruebas unitarias, 90 casos Chromium de descubrimiento y
+reproducción y las 24 pruebas de Android. Los casos de Chromium se
+verificaron por partes tras cierres intermitentes del driver de Playwright.
+`check.py validate` pasó. `check.py build` llegó a la validación estática
+y quedó bloqueado por la ausencia de Docker y Compose.
