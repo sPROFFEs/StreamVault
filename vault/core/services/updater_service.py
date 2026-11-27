@@ -529,8 +529,9 @@ class UpdateManager:
     def wait_ready(self):
         for _ in range(60):
             try:
-                self.compose("exec", "-T", "core", "curl", "--fail", "--silent", "--max-time", "2",
-                             "http://127.0.0.1:8000/api/health", timeout=5)
+                self.compose("exec", "-T", "core", "sh", "-c",
+                             'curl -fsS --max-time 2 -H "Host: ${DOMAIN:-localhost}" http://127.0.0.1:8000/api/ready',
+                             timeout=5)
                 return
             except UpdateError:
                 time.sleep(2)

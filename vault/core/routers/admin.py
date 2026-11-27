@@ -94,6 +94,7 @@ class CleanupPayload(BaseModel):
     # None means all currently detected safe candidates. Supplying paths lets
     # the UI preserve an administrator's explicit deselections.
     paths: list[str] | None = Field(default=None, max_length=500)
+    dry_run: bool = False
 
 
 async def _active_downloader_job_ids() -> set[str] | None:
@@ -505,14 +506,18 @@ def _storage_cleanup_preview(active_job_ids):
 
 
 def _cleanup_storage(paths, active_job_ids):
+    from services.system_monitor import record_cleanup
+
     downloads_paths = None if paths is None else [path for path in paths if not path.startswith('@cache/')]
     cache_paths = None if paths is None else [path[len('@cache/'):] for path in paths if path.startswith('@cache/')]
     result = cleanup_download_library(settings.DOWNLOADS_ROOT, downloads_paths, active_job_ids)
     cache = storage_maintenance.cleanup_cache(cache_paths)
-    return {'deleted': result['deleted'] + ['@cache/' + path for path in cache['deleted']],
+    outcome = {'deleted': result['deleted'] + ['@cache/' + path for path in cache['deleted']],
             'errors': result['errors'] + [dict(error, relative_path='@cache/' + error['relative_path']) for error in cache['errors']],
             'freed_bytes': result['freed_bytes'] + cache['freed_bytes'],
             'remaining': _storage_cleanup_preview(active_job_ids)}
+    record_cleanup(outcome)
+    return outcome
 
 
 @router.post("/api/downloads/cleanup")
@@ -523,6 +528,14 @@ async def run_download_cleanup(
     """Remove only the candidates shown by the cleanup preview."""
     del admin
     active_job_ids = await _active_downloader_job_ids()
+    if payload and payload.dry_run:
+        preview = await asyncio.to_thread(_storage_cleanup_preview, active_job_ids)
+        selected = set(payload.paths) if payload.paths is not None else None
+        planned = [item for item in preview['items'] if (
+            item['relative_path'] in selected if selected is not None else not item.get('requires_review')
+        )]
+        return {'dry_run': True, 'planned': planned,
+                'estimated_bytes': sum(item['size_bytes'] for item in planned), 'remaining': preview}
     return await asyncio.to_thread(
         _cleanup_storage,
         None if payload is None else payload.paths,

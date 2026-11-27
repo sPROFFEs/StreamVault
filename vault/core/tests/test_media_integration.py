@@ -77,8 +77,8 @@ def test_real_video_conversion_and_seekable_cache(tmp_path, monkeypatch, video_a
 
 
 @pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"), reason="FFmpeg tools required")
-@pytest.mark.parametrize("audio_codec", ["ac3", "aac"])
-def test_live_conversion_produces_decodable_fragments(tmp_path, monkeypatch, audio_codec):
+@pytest.mark.parametrize("audio_codec, hardware_fallback", [("ac3", False), ("aac", False), ("ac3", True)])
+def test_live_conversion_produces_decodable_fragments(tmp_path, monkeypatch, audio_codec, hardware_fallback):
     source = tmp_path / 'sample.mkv'
     subprocess.run([
         'ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=2048x1152:rate=10',
@@ -88,6 +88,11 @@ def test_live_conversion_produces_decodable_fragments(tmp_path, monkeypatch, aud
     monkeypatch.setattr(downloads.settings, 'DOWNLOADS_ROOT', str(tmp_path))
     monkeypatch.setattr(downloads.settings, 'MEDIA_STORAGE_PATH', str(tmp_path / 'cache'))
     monkeypatch.setattr(downloads, '_ensure_background_remux', lambda *_: None)
+    if hardware_fallback:
+        from services.system_monitor import _playback
+        failures = _playback["hardware_fallbacks"]
+        monkeypatch.setattr(downloads.settings, "VIDEO_ENCODER", "vaapi")
+        monkeypatch.setattr(downloads.settings, "VIDEO_RENDER_DEVICE", str(tmp_path / "missing-render-device"))
     async def stream():
         response = await downloads.remux_downloaded_media('sample.mkv', start=1.5, force_stream=True)
         return b''.join([chunk async for chunk in response.body_iterator])
@@ -98,6 +103,8 @@ def test_live_conversion_produces_decodable_fragments(tmp_path, monkeypatch, aud
     assert 2.4 <= tracks['duration_seconds'] <= 2.7
     subprocess.run(['ffmpeg', '-v', 'error', '-i', str(output), '-f', 'null', '-'],
                    check=True, capture_output=True, timeout=15)
+    if hardware_fallback:
+        assert _playback["hardware_fallbacks"] == failures + 1
 
 
 @pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"), reason="FFmpeg tools required")

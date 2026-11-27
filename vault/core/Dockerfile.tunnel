@@ -1,5 +1,5 @@
-FROM cloudflare/cloudflared:2026.9.0 AS connector
-FROM python:3.11-slim
+FROM cloudflare/cloudflared:2026.9.0@sha256:ff69a2225ad7c6f85ed84fbd5f3087df46202426b2388ec60214098e0adf05e9 AS connector
+FROM python:3.11-slim@sha256:61e01f72680f86a5279ad510818ab7b2ee9f049822589d4e34e33e044360356c
 
 WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1

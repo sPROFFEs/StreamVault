@@ -64,6 +64,12 @@ class TMDBService:
     def key_path(self):
         return Path(settings.DATA_ROOT) / "tmdb_key.txt"
 
+    def provider_status(self):
+        configured = bool(self._credentials()[2])
+        with self._lock:
+            cooldown = max(0, self._retry_at - self._clock())
+        return {"configured": configured, "retry_in_seconds": round(cooldown)}
+
     def _credentials(self):
         if self._explicit_key is not None:
             return self._explicit_key.strip(), "", "environment"

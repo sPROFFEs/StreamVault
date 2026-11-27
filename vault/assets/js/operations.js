@@ -55,6 +55,37 @@
             byId("system-uptime").textContent = `${Math.floor(data.process.uptime_seconds / 3600)} h`;
             list("system-services", data.services || [], item => row(item.name,
                 [item.state, item.health, item.restarts != null ? `${t("Restarts", "Reinicios")}: ${item.restarts}` : "", item.oom_killed ? "OOM" : ""].filter(Boolean).join(" · ")));
+            const bytes = value => `${(value / 1024**3).toFixed(2)} GiB`;
+            if (data.playback) {
+                const playback = data.playback;
+                const downloads = data.downloads;
+                list("system-workload", [
+                    [t("Active conversions", "Conversiones activas"), `${playback.live_conversions} · FFmpeg ${playback.ffmpeg_processes}`],
+                    [t("Direct delivery responses", "Respuestas de reproducción directa"), String(playback.direct_responses)],
+                    [t("Conversion starts / errors", "Conversiones iniciadas / errores"), `${playback.conversion_starts} / ${playback.conversion_errors}`],
+                    [t("Hardware encoder fallbacks", "Cambios de codificación a software"), String(playback.hardware_fallbacks || 0)],
+                    [t("Last conversion first byte", "Primer byte de la última conversión"), playback.conversion_first_byte_ms == null ? "—" : `${playback.conversion_first_byte_ms} ms`],
+                    [t("Background conversions", "Conversiones en segundo plano"), String(playback.background_conversions)],
+                    [t("Queued / running downloads", "Descargas en cola / en curso"), downloads == null ? "—" : `${downloads.pending || 0} / ${Object.entries(downloads).reduce((sum, [status, count]) => sum + (status === "pending" ? 0 : count), 0)}`],
+                ], ([name, value]) => row(name, value));
+            }
+            if (data.storage) {
+                const {reservations, last_cleanup: cleanup} = data.storage;
+                const {tmdb, torrentio, federation} = data.providers;
+                const nodes = Object.values(federation).reduce((sum, n) => sum + n, 0);
+                const resources = [
+                    [t("Physical free space", "Espacio libre real"), bytes(data.disk.free_bytes)],
+                    [t("Reserved for downloads / cache", "Reservado para descargas / caché"), `${bytes(reservations.downloads)} / ${bytes(reservations.cache)}`],
+                    ["TMDB", !tmdb.configured ? t("Unconfigured", "Sin configurar") : tmdb.retry_in_seconds ? `${t("Retry in", "Reintento en")} ${tmdb.retry_in_seconds}s` : t("Available for requests", "Disponible para consultas")],
+                    ["Torrentio", torrentio.retry_in_seconds ? `${t("Retry in", "Reintento en")} ${torrentio.retry_in_seconds}s` : t("Available for requests", "Disponible para consultas")],
+                    [t("Federated nodes online", "Nodos federados conectados"), `${federation.online || 0} / ${nodes}`],
+                ];
+                if (cleanup) resources.push(
+                    [t("Downloads / cache at last cleanup", "Descargas / caché en la última limpieza"), `${bytes(cleanup.storage.download_bytes)} / ${bytes(cleanup.storage.cache_bytes)}`],
+                    [t("Recoverable at last cleanup", "Recuperable en la última limpieza"), bytes(cleanup.recoverable_bytes)],
+                    [t("Last cleanup", "Última limpieza"), `${new Date(cleanup.sampled_at * 1000).toLocaleString()} · ${bytes(cleanup.freed_bytes)} · ${t("Errors", "Errores")} ${cleanup.errors}`]);
+                list("system-resources", resources, ([name, value]) => row(name, value));
+            }
             message("system-feedback", `${t("Server version", "Versión del servidor")}: ${data.version}`);
         }
         async function history() {

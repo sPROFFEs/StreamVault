@@ -27,6 +27,7 @@ import shutil
 import sqlite3
 import subprocess
 import threading
+import time
 from uuid import uuid4
 from urllib.parse import quote
 from typing import Optional
@@ -36,6 +37,7 @@ from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from services.download_service import DownloadService
+from services.video_encoding import hardware_h264
 from services.torrent_service import torrent_service
 from services.download_client import downloader_client
 from services.download_limits import stop_process
@@ -961,6 +963,9 @@ async def remux_downloaded_media(
     This avoids the Cloudflare 524 timeout that a blocking pre-remux would
     cause on large files.
     """
+    from services.system_monitor import playback_event
+
+    requested_at = time.monotonic()
     media_path = await _playable_path(path)
     if not shutil.which("ffmpeg"):
         raise HTTPException(503, "Local remux is unavailable")
@@ -1005,6 +1010,7 @@ async def remux_downloaded_media(
     if not _active_live_remuxes:
         _live_remux_finished = asyncio.Event()
     _active_live_remuxes += 1
+    playback_event("conversion_starts")
     process = None
     bytes_sent = 0
     completed = False
@@ -1036,23 +1042,60 @@ async def remux_downloaded_media(
 
     async def output():
         nonlocal process, bytes_sent, completed, conversion_failed
-        process = await asyncio.create_subprocess_exec(
+        async def launch(input_options, encoding):
+            return await asyncio.create_subprocess_exec(
                 "ffmpeg", "-nostdin", "-v", "error", "-filter_threads", "2", "-threads", "4",
-                *input_seek_args, "-i", str(media_path), *output_seek_args,
+                *input_options, *input_seek_args, "-i", str(media_path), *output_seek_args,
                 "-map", "0:v:0", "-map", audio_map,
-                *_encoding_args(tracks, audio_map, live=True, hevc=hevc),
+                *encoding,
                 "-avoid_negative_ts", "make_zero",
                 "-movflags", "frag_keyframe+empty_moov+default_base_moof",
                 "-flush_packets", "1",
                 "-frag_duration", "1000000", "-f", "mp4", "pipe:1",
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
-        )
-        while chunk := await process.stdout.read(64 * 1024):
-            bytes_sent += len(chunk)
-            yield chunk
-        await process.wait()
-        if process.returncode:
+            )
+
+        backend, device = settings.VIDEO_ENCODER, settings.VIDEO_RENDER_DEVICE
+        config = None
+        if not (hevc or _browser_h264(tracks)) and time.monotonic() >= _hardware_cooldown.get((backend, device), 0):
+            config = hardware_h264(backend, device, downscale=_needs_live_downscale(tracks))
+        chunk = b""
+        if config:
+            try:
+                initialization, video_options = config
+                process = await launch(initialization, video_options + _audio_encoding_args(tracks, audio_map))
+                chunk = await asyncio.wait_for(_read_first_hardware_fragment(process), timeout=6)
+            except (OSError, TimeoutError):
+                pass
+            if not chunk:
+                await stop_process(process)
+                process = None
+                _hardware_cooldown[(backend, device)] = time.monotonic() + 60
+                playback_event("hardware_fallbacks")
+                logger.warning("Playback encoder %s unavailable; using software", backend)
+        if process is None:
+            process = await launch([], _encoding_args(tracks, audio_map, live=True, hevc=hevc))
+        try:
+            while True:
+                if not chunk:
+                    chunk = await asyncio.wait_for(process.stdout.read(64 * 1024), timeout=45)
+                if not chunk:
+                    break
+                if not bytes_sent:
+                    playback_event("conversion_first_byte_ms", (time.monotonic() - requested_at) * 1000)
+                bytes_sent += len(chunk)
+                yield chunk
+                chunk = b""
+        except TimeoutError:
             conversion_failed = True
+            playback_event("conversion_errors")
+            logger.warning("Live playback conversion stopped producing output")
+            raise
+        await process.wait()
+        if process.returncode or not bytes_sent:
+            conversion_failed = True
+            playback_event("conversion_errors")
+            logger.warning("Live playback conversion failed (exit %s)", process.returncode)
             # Terminate the HTTP body as an error, rather than marking a
             # truncated conversion as a complete device download.
             raise RuntimeError("Video conversion failed before completion")
@@ -1073,6 +1116,31 @@ _live_remux_slots = asyncio.Semaphore(settings.MAX_LIVE_REMUXES)
 _active_live_remuxes = 0
 _live_remux_finished: asyncio.Event | None = None
 _active_background_remux: asyncio.Task | None = None
+_hardware_cooldown: dict[tuple[str, str], float] = {}
+
+
+async def _read_first_hardware_fragment(process):
+    # Keep the MP4 header private until an encoder has started a fragment.
+    # Once bytes are sent, another encoder cannot restart that HTTP body.
+    data = bytearray()
+    offset = 0
+    while len(data) < 256 * 1024:
+        chunk = await process.stdout.read(64 * 1024)
+        if not chunk:
+            return b""
+        data.extend(chunk)
+        while len(data) >= offset + 8:
+            size = int.from_bytes(data[offset:offset + 4], "big")
+            if size < 8:
+                return b""
+            if data[offset + 4:offset + 8] == b"moof":
+                return bytes(data)
+            offset += size
+    return b""
+
+
+def playback_activity():
+    return {"live_conversions": _active_live_remuxes, "background_conversions": len(_background_remux_tasks)}
 
 
 def _encoding_args(tracks: dict, audio_map: str, *, live: bool = False, hevc: bool = False) -> list[str]:
@@ -1085,13 +1153,20 @@ def _encoding_args(tracks: dict, audio_map: str, *, live: bool = False, hevc: bo
         video += ["-tag:v", "hvc1"]
     if live and not copy_video:
         video += ["-tune", "zerolatency", "-maxrate", "6M", "-bufsize", "6M"]
-        if tracks.get("video_width", 0) > 1920 or tracks.get("video_height", 0) > 1080:
+        if _needs_live_downscale(tracks):
             video += ["-vf", "scale=1920:1080:force_original_aspect_ratio=decrease:force_divisible_by=2"]
+    return video + _audio_encoding_args(tracks, audio_map)
+
+
+def _needs_live_downscale(tracks):
+    return tracks.get("video_width", 0) > 1920 or tracks.get("video_height", 0) > 1080
+
+
+def _audio_encoding_args(tracks, audio_map):
     selected = next((track for track in tracks["audio"] if f"0:{track['stream_index']}" == audio_map), None)
-    audio = ["-c:a", "copy"] if selected and selected["codec"] == "aac" else [
+    return ["-c:a", "copy"] if selected and selected["codec"] == "aac" else [
         "-c:a", "aac", "-b:a", "192k", "-ac", "2", "-threads:a", "1",
     ]
-    return video + audio
 
 
 def _browser_h264(tracks: dict) -> bool:

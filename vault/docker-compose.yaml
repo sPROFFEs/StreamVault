@@ -6,6 +6,12 @@ services:
     restart: unless-stopped
     init: true
     cpu_shares: 1024
+    cpus: ${CORE_CPUS:-0.0}
+    mem_limit: ${CORE_MEMORY_LIMIT:-0}
+    pids_limit: ${CORE_PIDS_LIMIT:-384}
+    ulimits:
+      nofile: ${CORE_NOFILE_LIMIT:-16384}
+    stop_grace_period: 30s
     # Explicit resolvers — the host's resolver was leaking into the
     # container and failing for external DNS (api.themoviedb.org etc.).
     dns:
@@ -14,7 +20,7 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+      - ${UPDATE_DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
       - ..:/workspace
       - ${HOST_DATA_ROOT:-./data}:/saas-data
       - ./core/templates:/app/templates
@@ -42,6 +48,8 @@ services:
       - TORRENT_MAX_PEERS=${TORRENT_MAX_PEERS:-40}
       - YTDLP_CONCURRENT_FRAGMENTS=${YTDLP_CONCURRENT_FRAGMENTS:-5}
       - MAX_LIVE_REMUXES=${MAX_LIVE_REMUXES:-2}
+      - VIDEO_ENCODER=${VIDEO_ENCODER:-software}
+      - VIDEO_RENDER_DEVICE=${VIDEO_RENDER_DEVICE:-/dev/dri/renderD128}
       - MAX_CACHE_SIZE_GB=${MAX_CACHE_SIZE_GB:-100}
       - STORAGE_PROFILE=${STORAGE_PROFILE:-balanced}
       - ABANDONED_DOWNLOAD_TTL_HOURS=${ABANDONED_DOWNLOAD_TTL_HOURS:-1}
@@ -60,6 +68,12 @@ services:
       - OPENSUBTITLES_USER_AGENT=${OPENSUBTITLES_USER_AGENT:-StreamVaultDebug/1.0}
     depends_on:
       - downloader
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS --max-time 3 -H \"Host: $${DOMAIN:-localhost}\" http://127.0.0.1:8000/api/ready"]
+      interval: 30s
+      timeout: 5s
+      start_period: 25s
+      retries: 3
     logging:
       driver: json-file
       options:
@@ -77,6 +91,11 @@ services:
     cpu_shares: 256
     cpus: ${DOWNLOADER_CPUS:-1.0}
     mem_limit: ${DOWNLOADER_MEMORY_LIMIT:-768m}
+    pids_limit: ${DOWNLOADER_PIDS_LIMIT:-128}
+    ulimits:
+      nofile: ${DOWNLOADER_NOFILE_LIMIT:-8192}
+    stop_grace_period: 30s
+    security_opt: ["no-new-privileges:true"]
     dns:
       - 1.1.1.1
       - 8.8.8.8
@@ -98,7 +117,7 @@ services:
       - OPENSUBTITLES_API_KEY=${OPENSUBTITLES_API_KEY}
       - OPENSUBTITLES_USER_AGENT=${OPENSUBTITLES_USER_AGENT:-StreamVaultDebug/1.0}
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:8001/ready"]
       interval: 30s
       timeout: 5s
       start_period: 10s
@@ -135,6 +154,10 @@ services:
       - /tmp
     mem_limit: ${TUNNEL_MEMORY_LIMIT:-512m}
     pids_limit: 64
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      nginx:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-m", "services.cloudflared_worker", "--healthcheck"]
       interval: 30s
@@ -148,7 +171,7 @@ services:
         max-file: "3"
 
   nginx:
-    image: nginx:latest
+    image: nginx:stable@sha256:755983e0e0e568e4c86297cc91485d7a6f9fb73e42d8a19cdba3eac9e8b8cfc9
     container_name: streamvault_nginx
     restart: unless-stopped
     cpu_shares: 1024
@@ -159,7 +182,14 @@ services:
       - ./assets:/app/assets:ro
       - ${HOST_DATA_ROOT:-./data}/downloads:/srv/downloads:ro
     depends_on:
-      - core
+      core:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-ec", "exec 3<>/dev/tcp/127.0.0.1/80; printf 'GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3; read -r response <&3; [[ $$response == 'HTTP/1.1 204'* ]]"]
+      interval: 15s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
     logging:
       driver: json-file
       options:

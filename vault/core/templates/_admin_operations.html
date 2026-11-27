@@ -11,6 +11,9 @@
             <div class="operations-metric"><span>{{ txt('Core uptime', 'Uptime del core') }}</span><strong id="system-uptime">—</strong></div>
         </div>
         <h3>{{ txt('Deployment services', 'Servicios del despliegue') }}</h3><div id="system-services" class="operations-list"></div>
+        <h3>{{ txt('Playback and downloads', 'Reproducción y descargas') }}</h3><div id="system-workload" class="operations-list"></div>
+        <h3>{{ txt('Storage and providers', 'Disco y proveedores') }}</h3><div id="system-resources" class="operations-list"></div>
+        <a class="button button--compact button--ghost" href="/admin/?tab=files&amp;clean=1">{{ txt('Preview storage cleanup', 'Previsualizar limpieza de disco') }}</a>
         <a class="button button--compact" href="/admin/?tab=overview">{{ txt('Configure and install updates', 'Configurar e instalar actualizaciones') }}</a>
         <h3>{{ txt('Operation history', 'Historial de operaciones') }}</h3><div id="system-history" class="operations-list"></div>
         <div class="operations-heading"><h3>{{ txt('Database and configuration backups', 'Copias de bases de datos y configuración') }}</h3><button class="button button--compact" type="button" id="system-backup">{{ txt('Create backup', 'Crear copia') }}</button></div>

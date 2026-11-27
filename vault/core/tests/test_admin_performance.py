@@ -106,6 +106,20 @@ def test_cleanup_endpoints_require_authentication():
         assert client.post("/admin/api/downloads/cleanup", json={}).status_code == 401
 
 
+def test_cleanup_dry_run_leaves_selected_files_on_disk(regression_client, tmp_path, monkeypatch):
+    from routers import admin
+    monkeypatch.setattr(admin.settings, "DOWNLOADS_ROOT", str(tmp_path))
+    async def no_jobs():
+        return set()
+    monkeypatch.setattr(admin, "_active_downloader_job_ids", no_jobs)
+    (tmp_path / "empty").mkdir()
+    regression_client.post("/login", data={"username": "baseline-admin", "password": "Baseline123!"})
+    response = regression_client.post("/admin/api/downloads/cleanup", json={"paths": ["empty"], "dry_run": True})
+    assert response.status_code == 200
+    assert response.json()["planned"][0]["relative_path"] == "empty"
+    assert (tmp_path / "empty").is_dir()
+
+
 def test_cleaner_includes_idle_playback_copies_and_reports_disk_budget(tmp_path, monkeypatch):
     import os
     import time

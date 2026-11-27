@@ -44,3 +44,14 @@ def test_system_page_keeps_explicit_monitor_tab(regression_client):
     response = regression_client.get("/admin/system")
     assert response.status_code == 303
     assert response.headers["location"] == "/admin/?tab=system"
+
+
+def test_readiness_reports_db_failure_without_failing_liveness(regression_client, monkeypatch):
+    import main
+    def unavailable():
+        raise OSError("private database path")
+    monkeypatch.setattr(main.database, "check_connection", unavailable, raising=False)
+    assert regression_client.get("/api/health").status_code == 200
+    response = regression_client.get("/api/ready")
+    assert response.status_code == 503
+    assert response.json() == {"status": "unavailable"}
