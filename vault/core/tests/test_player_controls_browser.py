@@ -30,6 +30,7 @@ def player_page(regression_browser, browser_viewport):
     page.add_script_tag(path=ASSETS / "js/shell.js")
     page.add_script_tag(path=ASSETS / "js/local-player.js")
     page.add_script_tag(path=ASSETS / "js/custom-player.js")
+    page.add_script_tag(path=ASSETS / "js/playback-history.js")
     page.add_script_tag(content=(ASSETS / "js/media_detail.js").read_text().replace(
         'document.addEventListener("DOMContentLoaded", boot);', ''))
     page.evaluate('''() => {

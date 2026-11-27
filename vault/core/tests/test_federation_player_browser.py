@@ -32,6 +32,18 @@ def test_local_source_is_available_while_federation_is_pending(discovery_page):
     expect(page.locator("#source-select option:checked")).to_contain_text("This server")
 
 
+def test_external_sources_remain_available_when_federation_stalls(discovery_page):
+    ui, page = discovery_page, discovery_page.page
+    ui.payloads["/api/stream/resolve/7"] = [{"source": "External server", "type": "direct", "url": "/external.mp4"}]
+    page.add_init_script("""
+        const original = window.fetch.bind(window);
+        window.fetch = (url, options) => String(url).startsWith('/api/federation/sources/7?')
+            ? new Promise(() => {}) : original(url, options);
+    """)
+    page.goto("https://streamvault.test/media/7?type=movie")
+    expect(page.locator("#source-select")).to_contain_text("External server", timeout=4000)
+
+
 def test_local_source_does_not_wait_for_subtitle_metadata(discovery_page):
     ui, page = discovery_page, discovery_page.page
     ui.payloads["/api/downloads/files/match"] = {"match": {"url": "/local.mp4", "subtitles": []}}
@@ -48,6 +60,64 @@ def test_local_source_does_not_wait_for_subtitle_metadata(discovery_page):
     page.goto("https://streamvault.test/media/7?type=movie")
     page.wait_for_function("window.subtitleLookupPending === true")
     expect(page.locator("#source-select")).to_contain_text("This server")
+
+
+def test_local_source_does_not_wait_for_preferences_or_history(discovery_page):
+    ui, page = discovery_page, discovery_page.page
+    ui.payloads["/api/downloads/files/match"] = {"match": {"url": "/local.mp4"}}
+    page.add_init_script(r"""
+        const nativeFetch = window.fetch.bind(window);
+        window.fetch = (url, options) => {
+            if (/^\/api\/(preferences|library\/history\/progress)\b/.test(String(url))) {
+                return new Promise(() => {});
+            }
+            return nativeFetch(url, options);
+        };
+    """)
+    page.goto("https://streamvault.test/media/7?type=movie")
+    expect(page.locator("#source-select")).to_contain_text("This server", timeout=4000)
+
+
+def test_episode_catalog_ignores_an_older_season_response(discovery_page):
+    ui, page = discovery_page, discovery_page.page
+    ui.payloads["/api/tmdb/tv/7"] = {**ui.movie, "seasons": [{"season_number": n} for n in (1, 2, 3)]}
+    ui.payloads["/api/tmdb/tv/7/season/2"] = {"episodes": [{"episode_number": 2, "name": "Second season"}]}
+    ui.payloads["/api/tmdb/tv/7/season/3"] = {"episodes": [{"episode_number": 3, "name": "Third season"}]}
+    page.add_init_script("""
+        const nativeFetch = window.fetch.bind(window);
+        window.fetch = async (url, options) => {
+            const response = await nativeFetch(url, options);
+            if (String(url).startsWith('/api/tmdb/tv/7/season/2?')) {
+                await new Promise(resolve => { window.releaseSeasonTwo = resolve; });
+            }
+            return response;
+        };
+    """)
+    page.goto("https://streamvault.test/media/7?type=tv")
+    expect(page.locator("#episode-select")).to_contain_text("Pilot")
+    page.locator("#season-select").select_option("2")
+    page.wait_for_function("Boolean(window.releaseSeasonTwo)")
+    page.locator("#season-select").select_option("3")
+    expect(page.locator("#episode-select")).to_contain_text("Third season")
+    page.evaluate("window.releaseSeasonTwo()")
+    page.wait_for_function("""() => new Promise(resolve => setTimeout(() => resolve(true), 100))""")
+    expect(page.locator("#episode-select option")).to_have_text("E3 · Third season")
+
+
+def test_episode_change_flushes_progress_under_the_old_episode(discovery_page):
+    ui, page = discovery_page, discovery_page.page
+    ui.payloads["/api/tmdb/tv/7/season/1"] = {"episodes": [
+        {"episode_number": 1, "name": "Pilot"}, {"episode_number": 2, "name": "Next"}]}
+    page.goto("https://streamvault.test/media/7?type=tv")
+    expect(page.locator("#episode-select")).to_have_value("1")
+    page.evaluate("""() => {
+        state.progressRecorder = makeProgressRecorder();
+        state.progressRecorder.schedule(() => [42, 100, false]);
+    }""")
+    with page.expect_request(lambda request: request.method == "POST" and request.url.endswith("/api/library/history")) as post:
+        page.locator("#episode-select").select_option("2")
+    assert post.value.post_data_json["episode_number"] == 1
+    assert post.value.post_data_json["progress_seconds"] == 42
 
 
 @pytest.mark.parametrize("defer_resolver", [False, True], ids=["immediate", "deferred"])

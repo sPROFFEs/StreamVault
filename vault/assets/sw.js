@@ -1,6 +1,6 @@
 // Only public static assets are cached. Device media is explicitly saved in IDB.
 importScripts("/assets/js/offline-store.js?v=20261024-1");
-const CACHE_NAME = "streamvault-shell-v7";
+const CACHE_NAME = "streamvault-shell-v8";
 const APP_SHELL = [
   "/assets/icon.png",
   "/assets/favicon.ico",
@@ -67,20 +67,6 @@ self.addEventListener("fetch", (event) => {
       (await caches.match("/assets/offline.html")) || Response.error()));
     return;
   }
-  // Only cache same-origin static assets.
-  if (url.origin !== self.location.origin || !url.pathname.startsWith("/assets/")) return;
-  event.respondWith(
-    caches.match(event.request).then((cached) => {
-      const fetchPromise = fetch(event.request)
-        .then((response) => {
-          if (response.ok) {
-            const clone = response.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
-          }
-          return response;
-        })
-        .catch(() => cached);
-      return cached || fetchPromise;
-    })
-  );
+  if (!APP_SHELL.includes(url.pathname + url.search)) return;
+  event.respondWith(caches.match(event.request, {cacheName: CACHE_NAME}).then(cached => cached || fetch(event.request)));
 });

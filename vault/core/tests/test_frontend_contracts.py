@@ -52,7 +52,9 @@ def test_nginx_does_not_cache_mutable_assets_for_thirty_days():
     nginx = (PROJECT_ROOT / "nginx.conf").read_text()
 
     assert "expires 30d" not in nginx
-    assert 'Cache-Control "no-cache, must-revalidate"' in nginx
+    assert 'map $arg_v $asset_cache_control' in nginx
+    assert """'' "no-cache, must-revalidate";""" in nginx
+    assert 'add_header Cache-Control $asset_cache_control;' in nginx
 
 
 def test_browse_honors_favorites_deep_link():
@@ -110,7 +112,8 @@ def test_media_detail_prefers_matching_local_source():
     nginx = (PROJECT_ROOT / "nginx.conf").read_text()
 
     assert "findLocalSource" in script
-    assert "localSource ? [localSource" in script
+    assert "update(0, [localSource])" in script
+    assert "update(1, sources)" in script and "update(2, sources)" in script
     assert 'source.type === "local"' in script
     assert "SVLocalPlayback.open" in script
     assert "embedded-subtitle" in (PROJECT_ROOT / "core/routers/downloads.py").read_text()

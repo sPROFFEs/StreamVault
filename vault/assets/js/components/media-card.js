@@ -79,6 +79,11 @@
         `;
 
         const image = a.querySelector("img");
+        const candidates = window.SVArtwork?.posterSrcset(item.poster_path);
+        if (image && candidates) {
+            image.sizes = "(max-width: 600px) 38vw, (max-width: 1100px) 21vw, 210px";
+            image.srcset = candidates;
+        }
         image?.addEventListener("error", () => {
             image.hidden = true;
             a.querySelector(".media-card__placeholder").hidden = false;

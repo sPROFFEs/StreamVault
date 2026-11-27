@@ -43,7 +43,7 @@ def test_custom_controls_play_seek_pause_and_release_real_media(regression_brows
     try:
         page.goto("https://playback.test/")
         page.add_style_tag(path=ASSETS / "css/app.css")
-        for name in ["local-player.js", "custom-player.js"]:
+        for name in ["local-player.js", "custom-player.js", "playback-history.js"]:
             page.add_script_tag(path=ASSETS / f"js/{name}")
         page.add_script_tag(content=(ASSETS / "js/media_detail.js").read_text().replace(
             'document.addEventListener("DOMContentLoaded", boot);', ''))

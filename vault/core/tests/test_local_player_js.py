@@ -42,7 +42,7 @@ __SCRIPT__
 def test_library_refresh_installs_only_one_click_handler():
     script = (ASSETS / "download-manager.js").read_text().replace("boot();", "")
     probe = r"""
-global.window = {APP_LANG: 'en'};
+global.window = {APP_LANG: 'en', addEventListener() {}};
 const elements = new Map();
 global.document = {addEventListener() {}, getElementById(id) {
   if (!elements.has(id)) elements.set(id, {style: {}, addEventListener() {this.handlers = (this.handlers || 0) + 1;}});

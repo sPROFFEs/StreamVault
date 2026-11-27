@@ -108,11 +108,15 @@ const state = {
     streams: [],
     streamsLoading: false,
     streamController: null,
+    episodeController: null,
+    progressController: null,
+    pickerController: null,
+    federationPlaybackController: null,
     currentProgress: null,
     isFavorite: false,
     hls: null,
     wtClient: null,
-    progressTimer: null,
+    progressRecorder: null,
     torrentPeerTimer: null,
     torrentStatsTimer: null,
     iframeTimer: null,
@@ -223,17 +227,8 @@ async function boot() {
 
     if (MTYPE === "tv") {
         el.seriesControls.style.display = "grid";
-        el.seasonSelect.addEventListener("change", async () => {
-            await loadEpisodes();
-            await loadProgress();
-            autoLoadStreams();
-            void loadSubtitles();
-        });
-        el.episodeSelect.addEventListener("change", async () => {
-            await loadProgress();
-            autoLoadStreams();
-            void loadSubtitles();
-        });
+        el.seasonSelect.addEventListener("change", () => void changeEpisode(true));
+        el.episodeSelect.addEventListener("change", () => void changeEpisode(false));
     }
 
     const back = document.getElementById("detail-back");
@@ -265,23 +260,51 @@ async function loadDetailMetadata() {
     if (retrying) el.favoriteBtn.focus();
     if (MTYPE === "tv") await loadSeasons();
 
-    await Promise.all([loadProgress(), checkFavorite()]);
+    void checkFavorite();
+    loadEpisodeSources();
+    return true;
+}
 
+async function loadSubtitlePreferences() {
     try {
         const prefs = await window.SVAppearance.loadPrefs();
         if (prefs) {
             state.autoSourceFailover = prefs.auto_source_failover !== false;
-            state.subtitleLangPref = prefs.subtitle_lang || null;
+            state.subtitleLangPref ??= prefs.subtitle_lang || null;
             if (state.subtitleLangPref && el.subtitleLangSelect) {
                 el.subtitleLangSelect.value = state.subtitleLangPref;
             }
         }
     } catch (_) {}
 
-    // Auto-load stream sources
-    autoLoadStreams();
-    void loadSubtitles();
-    return true;
+}
+
+function loadEpisodeSources() {
+    const episode = episodeIdentity();
+    void loadProgress();
+    void autoLoadStreams();
+    void loadSubtitlePreferences().then(() => {
+        if (episode === episodeIdentity() && !state.pageHidden) return loadSubtitles();
+    });
+}
+
+async function changeEpisode(seasonChanged) {
+    state.streamController?.abort();
+    state.progressController?.abort();
+    state.subtitleController?.abort();
+    closeDownloadPicker();
+    destroyPlayer();
+    resetPlayerPlaceholder();
+    state._playPending = false;
+    state.streams = [];
+    state.currentProgress = null;
+    state.localSubtitles = [];
+    state.remoteSubtitles = [];
+    state.subtitleAutoActivated = false;
+    state.failedSources.clear();
+    setBtnLabel(el.playBtn, T.play);
+    renderAvailableSubtitles();
+    if (!seasonChanged || await loadEpisodes()) loadEpisodeSources();
 }
 
 /* ------------------------------------------------------------------ */
@@ -364,17 +387,22 @@ async function loadSeasons() {
 
 async function loadEpisodes(defaultEp) {
     const season = el.seasonSelect.value;
-    if (!season) return;
+    if (!season) return false;
+    state.episodeController?.abort();
+    const controller = state.episodeController = new AbortController();
     el.episodeSelect.innerHTML = `<option>${T.loading}</option>`;
     try {
-        const resp = await fetch(`/api/tmdb/tv/${TMDB_ID}/season/${season}?lang=${encodeURIComponent(TMDB_LANG)}`);
+        const resp = await fetch(`/api/tmdb/tv/${TMDB_ID}/season/${season}?lang=${encodeURIComponent(TMDB_LANG)}`, {signal: controller.signal});
         const data = await resp.json();
+        if (controller.signal.aborted) return false;
         el.episodeSelect.innerHTML = (data.episodes || []).map(ep =>
             `<option value="${ep.episode_number}">${T.episodeLabel(ep.episode_number, escH(ep.name || T.untitled))}</option>`
         ).join("");
-        if (defaultEp) el.episodeSelect.value = defaultEp;
+        if (defaultEp && Array.from(el.episodeSelect.options).some(option => option.value === defaultEp)) el.episodeSelect.value = defaultEp;
+        return true;
     } catch {
-        el.episodeSelect.innerHTML = `<option>Error</option>`;
+        if (!controller.signal.aborted) el.episodeSelect.innerHTML = `<option>Error</option>`;
+        return false;
     }
 }
 
@@ -418,44 +446,54 @@ async function autoLoadStreams() {
         }
     };
 
+    const groups = [[], [], []];
+    const update = (index, sources) => {
+        if (ctrl.signal.aborted || !sources.length) return;
+        groups[index] = sources;
+        const seen = new Set();
+        publishSources(groups.flat().filter(source => {
+            if (!source.url || seen.has(source.url)) return false;
+            seen.add(source.url);
+            return true;
+        }));
+    };
     const tid = setTimeout(() => ctrl.abort(), 22000);
-    const peers = findFederatedSources(params, ctrl.signal);
+    const aborted = new Promise(resolve => ctrl.signal.addEventListener("abort", resolve, {once: true}));
+    let preferenceTimer;
     try {
-        // Publish completed files from this server as soon as they are found.
-        const localSource = await findLocalSource(ctrl.signal);
-        if (ctrl.signal.aborted) return;
-        state.localSubtitles = localSource?.subtitles || [];
-        if (localSource) {
+        const local = findLocalSource(ctrl.signal).then(localSource => {
+            if (!localSource || ctrl.signal.aborted) return;
+            state.localSubtitles = localSource.subtitles || [];
             renderAvailableSubtitles();
             repairLocalProgressDuration(localSource);
-            publishSources([localSource]);
-        }
-
-        const federatedSources = await peers;
+            update(0, [localSource]);
+            void maybeAutoActivateSubtitle();
+        });
+        const peers = findFederatedSources(params, ctrl.signal).then(sources => update(1, sources));
+        const firstParty = Promise.allSettled([local, peers]);
+        // Give the local catalogue priority while keeping a slow node from
+        // blocking the fallback provider request.
+        await Promise.race([firstParty, aborted, new Promise(resolve => {
+            preferenceTimer = setTimeout(resolve, 850);
+        })]);
+        clearTimeout(preferenceTimer);
         if (ctrl.signal.aborted) return;
-        const immediateSources = [...(localSource ? [localSource] : []), ...federatedSources];
-        if (federatedSources.length) publishSources(immediateSources);
-
-        const resp = await fetch(`/api/stream/resolve/${TMDB_ID}?${params}`, { signal: ctrl.signal });
-        const payload = await resp.json();
-        if (ctrl.signal.aborted) return;
-        const urls = new Set(immediateSources.map(source => source.url));
-        const remoteStreams = Array.isArray(payload) ? payload.filter(source => !urls.has(source.url)) : [];
-        state.failedSources.clear();
-
-        if (!immediateSources.length && !remoteStreams.length) {
+        const external = (async () => {
+            const response = await fetch(`/api/stream/resolve/${TMDB_ID}?${params}`, {signal: ctrl.signal});
+            if (!response.ok) return false;
+            const sources = await response.json();
+            if (Array.isArray(sources)) update(2, sources);
+            return true;
+        })().catch(() => false);
+        const settled = await Promise.race([Promise.all([firstParty, external]), aborted]);
+        if (!ctrl.signal.aborted && settled?.[1] && !state.streams.length) {
             el.detailStatus.textContent = T.noSources;
             el.sourceSelect.innerHTML = `<option>${T.noSources}</option>`;
-            return;
         }
-
-        publishSources([...immediateSources, ...remoteStreams]);
-        maybeAutoActivateSubtitle();
-    } catch (_) {
-        // Keep completed sources available when provider discovery fails.
     } finally {
         clearTimeout(tid);
-        if (state.streamController === ctrl) {
+        clearTimeout(preferenceTimer);
+        if (state.streamController === ctrl && !state.pageHidden) {
             state.streamsLoading = false;
             if (!state.streams.length && el.detailStatus.textContent !== T.noSources) {
                 el.detailStatus.textContent = T.resolverError;
@@ -723,9 +761,10 @@ async function loadSource(source) {
 
 async function loadFederatedSource(source) {
     const attempt = ++state.sourceAttempt;
+    const controller = state.federationPlaybackController = new AbortController();
     el.playerContainer.innerHTML = `<div class="player-placeholder" role="status">${T.loading}</div>`;
     try {
-        const response = await fetch(source.metadata_url);
+        const response = await fetch(source.metadata_url, {signal: controller.signal});
         const metadata = await response.json();
         if (attempt !== state.sourceAttempt) return;
         if (!response.ok) throw new Error(metadata.detail || T.sourceLoadError);
@@ -796,7 +835,7 @@ async function loadLocalSource(source, selectedStreamIndex) {
             ...playbackOptions, start: resumeAt,
         });
     } catch (error) {
-        playbackOptions.onError(error);
+        if (video.isConnected && state.activeLocalSource === source) playbackOptions.onError(error);
     }
 }
 
@@ -825,12 +864,9 @@ function onPlayerMessage(event) {
     const progress = Number(media.watched ?? media.currentTime ?? media.current_time);
     const duration = Number(media.duration ?? media.totalDuration ?? 0);
     if (Number.isFinite(progress) && progress >= 0) {
-        if (state.progressTimer) return;
-        state.progressTimer = setTimeout(() => {
-            state.progressTimer = null;
-            persistProgress(progress, Number.isFinite(duration) ? duration : 0,
-                duration > 0 && progress >= duration * 0.9);
-        }, 4000);
+        state.progressRecorder ??= makeProgressRecorder();
+        state.progressRecorder.schedule(() => [progress, Number.isFinite(duration) ? duration : 0,
+            duration > 0 && progress >= duration * 0.9]);
     }
 }
 
@@ -1229,6 +1265,8 @@ async function openDownloadPicker() {
     const src = state.streams[Number(el.sourceSelect.value || 0)];
     if (!src) return;
 
+    state.pickerController?.abort();
+    const controller = state.pickerController = new AbortController();
     el.downloadPicker.style.display = "flex";
     el.downloadOptions.innerHTML = `
         <button class="download-option" type="button" data-active-server>
@@ -1245,15 +1283,16 @@ async function openDownloadPicker() {
         params.set("e", el.episodeSelect.value || "1");
     }
     try {
-        const response = await fetch(`/api/stream/download-options/${TMDB_ID}?${params}`);
+        const response = await fetch(`/api/stream/download-options/${TMDB_ID}?${params}`, {signal: controller.signal});
         const torrents = response.ok ? await response.json() : [];
-        renderTorrentOptions(torrents);
+        if (!controller.signal.aborted) renderTorrentOptions(torrents);
     } catch (_) {
-        renderTorrentOptions([]);
+        if (!controller.signal.aborted) renderTorrentOptions([]);
     }
 }
 
 function closeDownloadPicker() {
+    state.pickerController?.abort();
     if (el.downloadPicker) el.downloadPicker.style.display = "none";
 }
 
@@ -1404,22 +1443,29 @@ function syncFavBtn() {
 /* Progress tracking                                                   */
 /* ------------------------------------------------------------------ */
 async function loadProgress() {
+    state.progressController?.abort();
+    const controller = state.progressController = new AbortController();
     try {
         const params = new URLSearchParams();
         if (MTYPE === "tv") {
             if (el.seasonSelect.value)  params.set("season_number",  el.seasonSelect.value);
             if (el.episodeSelect.value) params.set("episode_number", el.episodeSelect.value);
         }
-        const resp = await fetch(`/api/library/history/progress/${MTYPE}/${TMDB_ID}?${params}`);
+        const resp = await fetch(`/api/library/history/progress/${MTYPE}/${TMDB_ID}?${params}`, {signal: controller.signal});
         const data = await resp.json();
+        if (controller.signal.aborted) return;
         state.currentProgress = data.item;
         const resumeAt = savedResumePosition(state.currentProgress?.duration_seconds);
         setBtnLabel(el.playBtn, resumeAt
             ? T.continueLabel(fmtClock(resumeAt))
             : T.play);
     } catch {
-        setBtnLabel(el.playBtn, T.play);
+        if (!controller.signal.aborted) setBtnLabel(el.playBtn, T.play);
     }
+}
+
+function episodeIdentity() {
+    return MTYPE === "tv" ? `${el.seasonSelect.value}:${el.episodeSelect.value}` : "movie";
 }
 
 function savedResumePosition(knownDuration = 0) {
@@ -1430,27 +1476,34 @@ function savedResumePosition(knownDuration = 0) {
 }
 
 function attachProgressTracking(video, knownDuration = 0, resumeOffset = 0) {
+    const recorder = state.progressRecorder = makeProgressRecorder();
     const init = typeof resumeOffset === "function" || resumeOffset > 0 ? 0 : savedResumePosition(knownDuration);
     video.addEventListener("loadedmetadata", () => {
         if (init > 5 && video.duration && init < video.duration - 5)
             video.currentTime = init;
     }, { once: true });
 
-    video.addEventListener("timeupdate", () => {
-        if (state.progressTimer) return;
-        state.progressTimer = setTimeout(() => {
-            state.progressTimer = null;
-            const duration = Number(knownDuration || video.duration || 0);
-            if (video._playbackRequest?.pendingPosition != null || video.error) return;
-            const offset = typeof resumeOffset === "function" ? resumeOffset() : resumeOffset;
-            const absoluteTime = offset + video.currentTime;
-            const done = duration ? absoluteTime >= duration * 0.9 : false;
-            persistProgress(absoluteTime, duration, done);
-        }, 4000);
-    });
-
+    const sample = () => {
+        if (video._playbackRequest?.pendingPosition != null || video.error || video.seeking) return null;
+        const duration = Number(knownDuration || video.duration || 0);
+        const offset = typeof resumeOffset === "function" ? resumeOffset() : resumeOffset;
+        const absoluteTime = offset + video.currentTime;
+        return Number.isFinite(absoluteTime) && absoluteTime > 0
+            ? [absoluteTime, Number.isFinite(duration) ? duration : 0, duration > 0 && absoluteTime >= duration * 0.9]
+            : null;
+    };
+    video.addEventListener("timeupdate", () => recorder.schedule(sample));
+    video.addEventListener("pause", () => recorder.flush());
     video.addEventListener("ended", () =>
-        persistProgress(Number(knownDuration || video.duration || 0), Number(knownDuration || video.duration || 0), true));
+        recorder.finish(() => {
+            const duration = Number(knownDuration || video.duration || 0);
+            return Number.isFinite(duration) && duration > 0 ? [duration, duration, true] : sample();
+        }));
+}
+
+function makeProgressRecorder() {
+    const episode = episodeIdentity();
+    return window.SVPlaybackHistory.throttle((...sample) => persistProgress(...sample, episode));
 }
 
 function repairLocalProgressDuration(source) {
@@ -1462,13 +1515,10 @@ function repairLocalProgressDuration(source) {
     persistProgress(progress, duration, progress >= duration * 0.9);
 }
 
-async function persistProgress(progressSeconds, durationSeconds, completed) {
+function persistProgress(progressSeconds, durationSeconds, completed, episode = episodeIdentity()) {
     if (!state.item) return;
-    try {
-        await fetch("/api/library/history", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
+    const [season, number] = episode.split(":");
+    window.SVPlaybackHistory.send(episode, {
                 tmdb_id:       TMDB_ID,
                 media_type:    MTYPE,
                 title:         state.item.title || state.item.name || T.untitled,
@@ -1476,21 +1526,21 @@ async function persistProgress(progressSeconds, durationSeconds, completed) {
                 backdrop_path: state.item.backdrop_path || null,
                 release_date:  state.item.release_date  || state.item.first_air_date || null,
                 rating:        state.item.vote_average  || null,
-                season_number:  MTYPE === "tv" ? Number(el.seasonSelect.value  || 1) : null,
-                episode_number: MTYPE === "tv" ? Number(el.episodeSelect.value || 1) : null,
+                season_number:  MTYPE === "tv" ? Number(season || 1) : null,
+                episode_number: MTYPE === "tv" ? Number(number || 1) : null,
                 progress_seconds:  progressSeconds,
                 duration_seconds:  durationSeconds,
                 completed,
-            }),
-        });
-        state.currentProgress = {
-            ...state.currentProgress,
-            progress_seconds: progressSeconds,
-            duration_seconds: durationSeconds,
-            completed,
-        };
-        setBtnLabel(el.playBtn, completed ? T.play : T.continueLabel(fmtClock(progressSeconds)));
-    } catch (e) { console.error(e); }
+    });
+    if (episode !== episodeIdentity()) return;
+    state.progressController?.abort();
+    state.currentProgress = {
+        ...state.currentProgress,
+        progress_seconds: progressSeconds,
+        duration_seconds: durationSeconds,
+        completed,
+    };
+    setBtnLabel(el.playBtn, completed ? T.play : T.continueLabel(fmtClock(progressSeconds)));
 }
 
 /* ------------------------------------------------------------------ */
@@ -1920,6 +1970,9 @@ function connectNotificationSse() {
 /* Cleanup                                                             */
 /* ------------------------------------------------------------------ */
 function destroyPlayer() {
+    state.federationPlaybackController?.abort();
+    state.progressRecorder?.close();
+    state.progressRecorder = null;
     const localVideo = el.playerContainer.querySelector("video");
     if (localVideo) {
         localVideo._svCleanup?.();
@@ -1934,7 +1987,6 @@ function destroyPlayer() {
     if (state.hls)      { state.hls.destroy();               state.hls      = null; }
     if (state.wtClient) { try { state.wtClient.destroy(); } catch (_) {} state.wtClient = null; }
     el.torrentStatus.hidden = true;
-    if (state.progressTimer) { clearTimeout(state.progressTimer); state.progressTimer = null; }
     state.activeLocalSource = null;
     state.localPlaybackOffset = 0;
     state.activeSubtitleKey = null;
@@ -1988,12 +2040,16 @@ function escH(v) {
         .replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
 }
 
+function resetPlayerPlaceholder() {
+    el.playerContainer.innerHTML = `<div class="player-placeholder"><button type="button" class="button button--primary">${T.play}</button></div>`;
+    el.playerContainer.querySelector("button").addEventListener("click", playCurrentItem);
+}
+
 window.SVToggleFs = togglePseudoFullscreen;
 window.SVDestroyPlayer = () => {
     const trigger = el.playerContainer.querySelector("video")?._svReturnFocus;
     destroyPlayer();
-    el.playerContainer.innerHTML = `<div class="player-placeholder"><button type="button" class="button button--primary">${T.play}</button></div>`;
-    el.playerContainer.querySelector("button").addEventListener("click", playCurrentItem);
+    resetPlayerPlaceholder();
     const target = trigger?.isConnected ? trigger : el.playBtn;
     target?.focus({preventScroll: true});
 };
@@ -2004,5 +2060,19 @@ window.SVStopSubtitles = () => {
     syncSubtitleSelection();
 };
 
-window.addEventListener("pagehide", destroyPlayer);
+window.addEventListener("pagehide", () => {
+    state.pageHidden = true;
+    for (const key of ["streamController", "episodeController", "progressController", "subtitleController"]) {
+        state[key]?.abort();
+    }
+    closeDownloadPicker();
+    destroyPlayer();
+});
+window.addEventListener("pageshow", (event) => {
+    if (!event.persisted) return;
+    state.pageHidden = false;
+    resetPlayerPlaceholder();
+    connectNotificationSse();
+    loadEpisodeSources();
+});
 document.addEventListener("DOMContentLoaded", boot);

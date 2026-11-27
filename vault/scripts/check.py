@@ -27,7 +27,7 @@ def validate():
     environment = Environment()
     for path in templates:
         environment.parse(path.read_text(encoding="utf-8"))
-    javascript = sorted((ROOT / "vault/assets/js").rglob("*.js"))
+    javascript = sorted((ROOT / "vault/assets/js").rglob("*.js")) + [ROOT / "vault/assets/sw.js"]
     for path in javascript:
         run(["node", "--check", str(path)])
     run(["sh", "-n", "vault/core/entrypoint.sh"])

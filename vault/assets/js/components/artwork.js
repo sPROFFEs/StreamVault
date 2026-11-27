@@ -21,8 +21,18 @@
             image.hidden = true;
             if (placeholder) placeholder.hidden = false;
         };
+        const candidates = posterSrcset(path);
+        if (candidates) {
+            image.sizes = "(max-width: 640px) 33vw, 220px";
+            image.srcset = candidates;
+        } else image.removeAttribute("srcset");
         if (source) image.src = source;
         else image.removeAttribute("src");
+    }
+
+    function posterSrcset(path) {
+        if (!/^\/[A-Za-z0-9_-]+\.(jpg|png|webp)$/i.test(path || "")) return "";
+        return [185, 342, 500].map(width => `${url(path, `w${width}`)} ${width}w`).join(", ");
     }
 
     function setBackdrop(element, path) {
@@ -31,5 +41,5 @@
         element.style.backgroundImage = source ? `url(${JSON.stringify(source)})` : "none";
     }
 
-    window.SVArtwork = { url, setImage, setBackdrop };
+    window.SVArtwork = { url, setImage, setBackdrop, posterSrcset };
 })();

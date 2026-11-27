@@ -156,6 +156,13 @@ async function boot() {
         changeLibraryFilters();
     });
     el.refreshBtn.addEventListener("click", refresh);
+    el.activeList.addEventListener("click", event => {
+        const button = event.target.closest(".resume-btn,.cancel-btn");
+        const id = button?.closest("[data-job-id]")?.dataset.jobId;
+        if (!id) return;
+        if (button.classList.contains("resume-btn")) void resumeDownload(id);
+        else void cancelJob(id);
+    });
     el.libraryPrevious?.addEventListener("click", () => changeLibraryPage(-1));
     el.libraryNext?.addEventListener("click", () => changeLibraryPage(1));
     el.confirmCancel.addEventListener("click", () => {
@@ -178,10 +185,14 @@ async function boot() {
     el.previewOverlay.addEventListener("click", (event) => {
         if (event.target === el.previewOverlay) closePreview();
     });
-    // #4: Listen for global notifications (download complete, library updated).
+    connectDownloadUpdates();
+    await refresh();
+}
+
+function connectDownloadUpdates() {
     try {
         if (window.location.hostname.endsWith(".trycloudflare.com")) throw new Error("Use polling for quick tunnels");
-        const notifEs = new EventSource("/api/downloads/notifications");
+        const notifEs = state.notifications = new EventSource("/api/downloads/notifications");
         notifEs.onmessage = (evt) => {
             try {
                 const event = JSON.parse(evt.data);
@@ -193,7 +204,6 @@ async function boot() {
         };
     } catch (_) {}
     ensurePolling();
-    await refresh();
 }
 
 function ensurePolling() {
@@ -209,10 +219,9 @@ async function refresh() {
     await Promise.all([loadJobs(), loadFiles()]);
 }
 
-async function fetchDownloadJson(url) {
+async function fetchDownloadJson(url, controller = new AbortController()) {
     // AbortSignal.timeout is unavailable on some supported browsers. Keep the
     // deadline active through reading the response body, including via tunnels.
-    const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
     try {
         const response = await fetch(url, {signal: controller.signal, cache: "no-store"});
@@ -230,7 +239,9 @@ async function loadJobs() {
     if (state.jobsLoading) return;
     state.jobsLoading = true;
     try {
-        const data = await fetchDownloadJson("/api/downloads/jobs");
+        const controller = state.jobsController = new AbortController();
+        const data = await fetchDownloadJson("/api/downloads/jobs", controller);
+        if (controller.signal.aborted) return;
         const previous = {...state.torrentJobs, ...state.ytJobs};
         const completed = [...(data.torrent || []), ...(data.yt_dlp || [])].some(
             job => job.status === "completed" && previous[job.id]?.status !== "completed"
@@ -247,7 +258,7 @@ async function loadJobs() {
         renderActive();
         if (completed) await loadFiles();
     } catch (e) {
-        console.error("Error cargando descargas:", e);
+        if (e.name !== "AbortError") console.error("Error cargando descargas:", e);
     } finally {
         state.jobsLoading = false;
     }
@@ -265,22 +276,19 @@ function renderActive() {
 
     el.activeCount.textContent = String(all.length);
 
-    if (!all.length) {
-        el.activeList.innerHTML = "";
-        el.activeEmpty.hidden = false;
-        return;
+    el.activeEmpty.hidden = all.length > 0;
+    const structure = JSON.stringify(all.map(job => [job.id, job.title, job.status, job.can_resume]));
+    if (structure !== state.activeStructure) {
+        const focused = document.activeElement?.closest?.("[data-job-id]");
+        const restoreFocus = focused && el.activeList.contains(focused) ? focused.dataset.jobId : null;
+        el.activeList.innerHTML = all.map(buildJobRow).join("");
+        state.activeStructure = structure;
+        if (restoreFocus) {
+            const row = [...el.activeList.children].find(item => item.dataset.jobId === restoreFocus);
+            (row?.querySelector("button") || el.refreshBtn).focus({preventScroll: true});
+        }
     }
-    el.activeEmpty.hidden = true;
-
-    el.activeList.innerHTML = "";
-    for (const job of all) {
-        el.activeList.insertAdjacentHTML("beforeend", buildJobRow(job));
-        el.activeList.querySelector(`[data-job-id="${job.id}"] .cancel-btn`)
-            ?.addEventListener("click", () => cancelJob(job.id));
-        el.activeList.querySelector(`[data-job-id="${job.id}"] .resume-btn`)
-            ?.addEventListener("click", () => resumeDownload(job.id));
-        updateJobRow(job);
-    }
+    for (const job of all) updateJobRow(job);
 }
 
 function buildJobRow(job) {
@@ -389,6 +397,7 @@ function changeLibraryFilters(debounce = false) {
     state.origin = el.libraryOrigin?.value || "all";
     state.libraryPage = 1;
     state.filterRevision++;
+    state.filesController?.abort();
     updateLibraryUrl();
     if (debounce) state.searchTimer = setTimeout(loadFiles, 250);
     else void loadFiles();
@@ -397,6 +406,7 @@ function changeLibraryFilters(debounce = false) {
 function changeLibraryPage(delta) {
     state.libraryPage = Math.max(1, state.libraryPage + delta);
     state.filterRevision++;
+    state.filesController?.abort();
     updateLibraryUrl();
     void loadFiles();
 }
@@ -419,6 +429,7 @@ async function loadFiles() {
         return;
     }
     state.filesLoading = true;
+    const controller = state.filesController = new AbortController();
     const revision = state.filterRevision;
     const params = new URLSearchParams(`page=${state.libraryPage}`);
     if (state.query) params.set("q", state.query);
@@ -428,7 +439,7 @@ async function loadFiles() {
     el.libraryList.setAttribute("aria-busy", "true");
     if (el.librarySummary) el.librarySummary.textContent = T.searching;
     try {
-        const data = await fetchDownloadJson(`/api/downloads/library?${params}`);
+        const data = await fetchDownloadJson(`/api/downloads/library?${params}`, controller);
         // A slow response for the previous filter must not overwrite a newer search.
         if (revision !== state.filterRevision) return;
         state.libraryPage = data.page;
@@ -457,7 +468,7 @@ async function loadFiles() {
     } finally {
         state.filesLoading = false;
         el.libraryList.setAttribute("aria-busy", "false");
-        if (state.filesReloadPending) {
+        if (state.filesReloadPending && !state.pageHidden) {
             state.filesReloadPending = false;
             void loadFiles();
         }
@@ -749,6 +760,8 @@ function closeLocalPlayer() {
 
 /* ── File preview overlay (images, text, subtitles) ── */
 async function openPreview(path, name) {
+    state.previewController?.abort();
+    const controller = state.previewController = new AbortController();
     el.previewTitle.textContent = name;
     el.previewBody.innerHTML = `<div class="spinner" style="margin:2rem auto;"></div>`;
     el.previewOverlay.classList.add("preview-overlay--open");
@@ -760,17 +773,18 @@ async function openPreview(path, name) {
         if (["jpg", "jpeg", "png", "webp", "gif", "bmp"].includes(ext)) {
             el.previewBody.innerHTML = `<img src="${previewUrl}" alt="${escHtml(name)}">`;
         } else {
-            const resp = await fetch(previewUrl);
+            const resp = await fetch(previewUrl, {signal: controller.signal});
             if (!resp.ok) throw new Error("Preview failed");
             const text = await resp.text();
-            el.previewBody.innerHTML = `<pre>${escHtml(text)}</pre>`;
+            if (!controller.signal.aborted) el.previewBody.innerHTML = `<pre>${escHtml(text)}</pre>`;
         }
     } catch (e) {
-        el.previewBody.innerHTML = `<p style="color:var(--danger);padding:2rem;">${escHtml(e.message)}</p>`;
+        if (!controller.signal.aborted) el.previewBody.innerHTML = `<p style="color:var(--danger);padding:2rem;">${escHtml(e.message)}</p>`;
     }
 }
 
 function closePreview() {
+    state.previewController?.abort();
     el.previewOverlay.classList.remove("preview-overlay--open");
     el.previewBody.innerHTML = "";
 }
@@ -834,3 +848,21 @@ function escHtml(v) {
 }
 
 document.addEventListener("DOMContentLoaded", boot);
+window.addEventListener("pagehide", () => {
+    state.pageHidden = true;
+    clearTimeout(state.searchTimer);
+    clearInterval(state.refreshTimer);
+    state.refreshTimer = null;
+    state.notifications?.close();
+    state.jobsController?.abort();
+    state.filesController?.abort();
+    closePreview();
+    closeLocalPlayer();
+});
+window.addEventListener("pageshow", event => {
+    if (!event.persisted) return;
+    state.pageHidden = false;
+    state.filesReloadPending = false;
+    connectDownloadUpdates();
+    void refresh();
+});
