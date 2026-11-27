@@ -276,3 +276,40 @@ custom player includes buffered progress, playback speed and picture in picture
 when the browser supports it. Android's installed frontend receives these UI
 changes when a new APK is built and installed; hosted browsers receive the
 versioned assets after updating the server.
+
+## Deploying and monitoring the updated services
+
+Recreate core, downloader, nginx and cloudflared together when applying this
+update. Keep the existing `HOST_DATA_ROOT` and take a database and configuration
+backup before updating. Core `/api/health` confirms that HTTP is live.
+`/api/ready` checks SQLite and returns 503 when the database is unavailable.
+The downloader has equivalent `/health` and `/ready` endpoints on its private
+port. Compose waits for core readiness before starting nginx and for nginx's
+HTTP listener before starting the tunnel.
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `CORE_CPUS`, `CORE_MEMORY_LIMIT` | `0.0`, `0` | Optional core CPU and memory ceilings. Zero leaves resources uncapped. |
+| `CORE_PIDS_LIMIT`, `CORE_NOFILE_LIMIT` | `384`, `16384` | Core process/thread and open-file limits. |
+| `DOWNLOADER_PIDS_LIMIT`, `DOWNLOADER_NOFILE_LIMIT` | `128`, `8192` | Downloader process/thread and open-file limits. |
+| `VIDEO_ENCODER` | `software` | Live H.264 encoding backend. Supported choices are `software`, `vaapi`, `qsv` and `nvenc`. |
+| `VIDEO_RENDER_DEVICE` | `/dev/dri/renderD128` | Render device inside the core container for VAAPI and Quick Sync. |
+| `UPDATE_DOCKER_SOCKET` | `/var/run/docker.sock` | Host socket used by the built-in deployment updater. Set `/dev/null` to remove Docker API access and apply updates from the host. |
+
+The default playback settings run on CPU. To try hardware encoding, configure
+the matching host driver and expose its device to the core container. VAAPI and
+QSV need a render device accessible to `appuser`. NVENC needs NVIDIA container
+runtime access. If an enabled encoder fails before the first fragment, StreamVault
+tries software and waits a minute before trying that device again. Direct play,
+video copying and background cache generation keep their existing paths.
+For small systems start with `MAX_LIVE_REMUXES=1`, `CONCURRENT_DOWNLOADS=1`
+and `AUTO_CACHE_ON_WATCH=false` if playback takes priority over cache warm-up.
+
+**Administration → System monitor** shows live Core conversions, FFmpeg
+children, direct delivery responses, queued downloads, provider state and disk
+reservations. Direct delivery responses count requests, which can include seek
+requests. Conversion first-byte timing measures Core and excludes browser
+buffering. Storage categories and recoverable space are sampled during cleanup.
+**Administration → Files → Storage cleaner** shows the candidates before deleting.
+Automation can send `dry_run: true` with its selected `paths` to
+`POST /admin/api/downloads/cleanup`; this returns the plan and estimated bytes.

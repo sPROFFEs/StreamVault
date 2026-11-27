@@ -31,9 +31,10 @@ the lightweight Android app connects to your server without a second backend.
 - **Movies & series:** search, metadata and artwork with TMDB, favorites, seasons,
   episodes and saved playback progress.
 - **Playback that stays yours:** fullscreen controls, keyboard/D-pad navigation,
-  audio-track selection and subtitles; server-side conversion for supported formats.
-- **Server-side downloads:** progress, speed and ETA, searchable movie/series
-  organization, storage limits and administrator file management.
+  audio tracks and subtitles, direct delivery for compatible media, and optional
+  hardware encoding for live conversion.
+- **Server-side downloads:** resumable jobs, searchable movies and series, storage
+  limits and an administrator file manager with a cleanup preview.
 - **Private federation:** connect trusted StreamVault nodes and stream completed
   media without copying the entire library. Browse local and remote files together
   and filter by server.
@@ -44,7 +45,8 @@ the lightweight Android app connects to your server without a second backend.
 - **Multi-user by design:** per-user preferences, English/Spanish UI, optional
   community profiles and separately controlled aggregate viewing metrics.
 - **Built-in operations:** service monitoring, backups, update checks and
-  administrator-managed maintenance. Cloudflare Tunnel is an optional integration.
+  administrator-managed maintenance. The system panel shows conversion load,
+  provider status and storage reservations. Cloudflare Tunnel is optional.
 
 This is an actively developed self-hosted project. Provider availability, browser
 codecs and device support vary; see the guides before choosing a deployment.

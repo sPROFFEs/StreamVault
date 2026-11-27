@@ -17,9 +17,9 @@ el APK siguen siendo la base de la transición.
 | 7 · TMDB | La tercera entrega incorpora caché SQLite con límite de entradas y bytes, TTL por recurso, actualización en segundo plano y conexiones compartidas. Los archivos con ID registrado conservan su ficha local si faltan metadatos remotos. | Caché saturada, reinicio, ocho lecturas concurrentes, 429 con Retry-After, 5xx, timeout y reproducción local sin credenciales de TMDB. |
 | 8 · Disco | El segundo tramo incorpora reservas compartidas, perfiles Minimal, Balanced y Performance, revisión de parciales recuperables y retención opcional de backups. La caché regenerable conserva TTL y LRU. | Dos escritores con presupuesto compartido, liberación tras caída, revisión de parciales y protección de activos. |
 | 9 · Descargas | La cuarta entrega persiste la cola SQLite, conserva la prioridad y el progreso, restaura trabajos compatibles y verifica los archivos antes de publicarlos. yt-dlp y aria2 validan TLS. | Pruebas de recuperación del estado y de la publicación, cancelación del grupo de procesos y descargas reales por HTTP y BitTorrent. Una temporada conserva los episodios y los parciales en su directorio hasta verificar el conjunto seleccionado. |
-| 10 · Web | Mostrar fuentes locales temprano, abortar peticiones obsoletas y conservar la sesión de reproducción al añadir fuentes. Separar módulos, liberar listeners, temporizadores y Blob URLs y medir carga de imágenes, DOM, paginación y virtualización. | Chromium móvil, escritorio y TV, navegación por mando, offline, cambio de episodio y posición preservada ante actualizaciones secundarias. |
-| 11 · SQLite | Medir consultas, añadir índices según planes de ejecución, agrupar progreso, acortar transacciones y coordinar tareas periódicas. | Migraciones compatibles, contención controlada, copia consistente y apagado ordenado durante reproducción o descarga. |
-| 12 · Operaciones | Versiones reproducibles, límites ajustables, healthchecks, rotación y privilegios mínimos del actualizador. Panel ligero para disco, reservas, copias regenerables, CPU, RAM, reproducción, colas y proveedores. | Instalar y actualizar una instancia de prueba con sus volúmenes. Probar dry-run del cleaner y simular arranque de nginx y del túnel. |
+| 10 · Web | Fuentes locales independientes de preferencias y del historial, espera acotada antes del fallback, cancelación de búsquedas y aislamiento entre episodios. El progreso agrupa muestras y la PWA conserva un listado acotado de recursos offline. | Regresiones con una temporada tardía, un nodo detenido y guardado de progreso al cambiar de episodio. Medición del tiempo hasta la primera fuente local. |
+| 11 · SQLite | Migraciones aditivas serializadas, índices para historial y federación, menos escrituras repetidas y un worker periódico por volumen. | Migraciones concurrentes sobre una base heredada, comprobación del plan de consulta, sucesión del worker y apagado mediante lifespan. |
+| 12 · Operaciones | Manifiestos Docker fijados, límites ajustables, comprobaciones de disponibilidad, limpieza en seco, registros nginx estructurados y métricas ligeras. Se puede retirar el socket Docker al gestionar las actualizaciones desde el host. | Verificar migración, salud con SQLite ocupado, limpieza en seco y arranque de nginx con servicios locales. La validación de imágenes y del túnel requiere Docker. |
 | 13 · Validación | Extender las pruebas deterministas y los benchmarks al incorporar cada fase. Mantener CI web, Android y producción. | `check.py unit`, `baseline`, `browser`, `validate` y `build`. Pruebas Android y escenarios reales con codecs, redes móviles, varios espectadores y disco bajo presión. |
 
 ## Objetivos y configuración inicial
@@ -86,3 +86,18 @@ de core y downloader. La versión anterior ignora la cola nueva. Cada
 descarga gestionada conserva un marcador `.streamvault-managed.part`
 hasta que sus archivos pasan la verificación. Ese marcador también impide que
 un arranque de la versión anterior recupere un parcial como archivo completo.
+
+## Migración y rollback del cierre
+
+Las migraciones del core añaden columnas e índices en una transacción. Los
+índices `ix_federated_lookup` y `history_continue` pueden quedarse al volver
+a las imágenes anteriores. Para revertir, usar la revisión anterior de
+Compose e imágenes y conservar el volumen. La copia de configuración y
+SQLite del actualizador sirve para recuperación si se dañan esos datos.
+Los locks de mantenimiento se liberan al cerrar el proceso.
+
+La aceleración VAAPI, QSV o NVENC es optativa. El software sigue como valor
+predeterminado. El uso real de GPU, mapeo HDR a SDR, HLS adaptativo cuando el
+hardware o la red lo justifiquen y la latencia sobre conexiones WAN siguen
+como verificaciones o mejoras de una futura entrega. La [guía de instalación](SETUP.md#deploying-and-monitoring-the-updated-services)
+documenta las variables y el monitor operativo.

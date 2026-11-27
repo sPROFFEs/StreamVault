@@ -33,12 +33,12 @@ P2 requiere cambios planificados y P3 recoge deuda de mantenimiento.
 | P1 · corregido | [Presupuesto de disco](../vault/core/services/storage_policy.py) comprobaba espacio sin reservarlo. Dos escritores podían aprobar los mismos bytes antes de empezar a escribir. | [Reserva compartida](../vault/core/services/storage_reservations.py) por volumen con liberación al terminar, recuperación tras caída y pruebas entre procesos. |
 | P1 · corregido | [TMDB](../vault/core/services/tmdb_service.py) perdía la caché en cada reinicio y podía desactivarse por una caída al arrancar. Algunos flujos consultaban los mismos metadatos con conexiones independientes. | [LRU SQLite](../vault/core/services/tmdb_cache.py) de 500 entradas y 32 MiB de contenido. Sirve datos guardados durante la actualización y pausa consultas tras 429, 5xx o timeout. |
 | P1 · corregido | [yt-dlp de descargas](../vault/core/services/download_service.py) y [YouTube](../vault/core/services/youtube_service.py) deshabilitaban la comprobación de certificados. | Restablecer la validación TLS de los extractores y hacer explícita la verificación de certificados en [aria2](../vault/core/services/torrent_service.py). |
-| P1 · pendiente | [Federación](../vault/core/services/federation_service.py) crea un cliente HTTP por solicitud de nodo. Seek y cambios de pista repiten conexiones, además de [verificar el destino](../vault/core/services/federation_service.py). | Gestionar pools con vida útil acotada por origen, identidad TLS y destino validado. Probar reutilización, redirecciones, desconexión y revocación. |
+| P1 · corregido | [Federación](../vault/core/services/federation_service.py) creaba un cliente HTTP por solicitud de nodo. Seek y cambios de pista repetían conexiones. | Reutilizar conexiones por host TLS, puerto e IP validada con un pool acotado. Comprobar DNS y credencial en cada solicitud. Probar reutilización, cambio de IP, bloqueo de redirecciones y desconexión. |
 | P1 · corregido | [Descargas HTTP](../vault/core/services/download_service.py) y [torrent](../vault/core/services/torrent_service.py) guardaban el estado operativo en memoria. La recuperación por tamaño podía exponer archivos parciales. | [Cola persistente](../vault/core/services/download_queue.py) con recuperación, punto de control tras la verificación y publicación recuperable. Pruebas de reinicio, descarga real y cancelación del grupo de procesos. |
 | P2 · corregido | [Biblioteca](../vault/core/services/media_library.py) recorría directorios al invalidar el estado en memoria. [TMDB](../vault/core/services/tmdb_service.py) podía aceptar el primer resultado de búsqueda. | [Índice incremental SQLite](../vault/core/services/media_index.py) y selección con confianza. Pruebas con grandes bibliotecas, temporadas, títulos ambiguos e idiomas mixtos. |
-| P2 · pendiente | [Arranque](../vault/core/main.py) usa manejadores depreciados y las tareas periódicas viven por proceso. [SQLite](../vault/core/database.py) ya configura WAL y espera de bloqueo, pero aún hay que medir el coste de transacciones y consultas. | Migrar el ciclo de vida, coordinar tareas y verificar migraciones, cierre y backups consistentes. |
-| P2 · pendiente | [Compose](../vault/docker-compose.yaml) usa una referencia flotante para nginx. El [actualizador](../vault/core/services/updater_service.py) requiere operaciones privilegiadas de despliegue. | Fijar imágenes comprobadas, delimitar permisos del actualizador y distinguir readiness de liveness. Probar instalación y actualización con el directorio de datos existente. |
-| P2 · pendiente | [Interfaz](../vault/assets/js/media_detail.js) concentra carga de fuentes, metadatos, progreso y ciclo de reproducción. El benchmark registra unos 2780 nodos en el portal de prueba. | Medir y dividir por responsabilidades. Evaluar renderizado progresivo y carga de imágenes con los tres tamaños de viewport y navegación por mando. |
+| P2 · corregido | [Arranque](../vault/core/main.py) usaba manejadores obsoletos y repetía tareas periódicas por proceso. [SQLite](../vault/core/database.py) ocultaba todos los errores de las migraciones. | Gestionar el ciclo de vida, coordinar el mantenimiento por volumen y serializar migraciones aditivas. Hay pruebas con dos migraciones concurrentes y con el relevo del worker. |
+| P2 · mitigado | [Compose](../vault/docker-compose.yaml) usaba una referencia flotante para nginx. El [actualizador](../vault/core/services/updater_service.py) requiere operaciones privilegiadas de despliegue. | Fijar manifiestos, distinguir readiness de liveness y ofrecer despliegue sin socket Docker con actualizaciones desde el host. El actualizador integrado conserva su acceso predeterminado a Docker. |
+| P2 · mitigado | [Interfaz](../vault/assets/js/media_detail.js) concentraba carga de fuentes, metadatos, progreso y ciclo de reproducción. El benchmark histórico registra unos 2780 nodos en el portal de prueba. | Extraer el guardado de progreso, aislar respuestas obsoletas y ajustar tamaños de carátulas. La primera fuente local se mide en escritorio, móvil y TV. |
 | P3 · comprobación pendiente | [Transcoder histórico](../vault/core/services/transcoder.py) genera un manifiesto que referencia MP4 completos. La búsqueda de referencias en el árbol versionado encontró su reexportación, sin rutas que lo instancien. | Verificar instalaciones que importen ese servicio antes de retirarlo. Si se habilita HLS adaptativo, exigir manifiestos y segmentos válidos y reproducción real. |
 
 ## Línea base reproducible
@@ -206,3 +206,60 @@ Pasaron 499 pruebas unitarias, 62 casos de la línea base Chromium de escritorio
 Android. Los casos con binarios reales cubrieron HTTP y torrents de un episodio
 y una temporada. Pasó `check.py validate`. La compilación de imágenes de
 producción quedó pendiente porque el entorno carece de Docker y Compose.
+
+## Cierre de la revisión
+
+La interfaz publica cada grupo conforme llega y asigna al proveedor alternativo
+una espera máxima de 850 ms si sigue pendiente algún grupo del servidor propio
+o federado. La selección activa se conserva al incorporar fuentes. Al cambiar
+de episodio se cancelan las solicitudes anteriores y se guarda su posición con
+su identificador. [Ficha y selección de fuentes](../vault/assets/js/media_detail.js) ·
+[Agrupación del progreso](../vault/assets/js/playback-history.js).
+
+El transporte federado conserva `Range`, valida DNS en cada petición y limita
+la reutilización al host TLS y la IP resuelta. La integración de Torrentio reúne
+peticiones iguales, aplica TTL positivo y negativo y respeta `Retry-After`.
+La codificación de vídeo puede usar VAAPI, QSV o NVENC si se habilitan. La
+prueba real de FFmpeg verifica la vuelta a software cuando falta el dispositivo.
+La validación del rendimiento de esas GPU físicas queda pendiente.
+[Pool federado](../vault/core/services/federation_service.py) ·
+[Política de Torrentio](../vault/core/providers/sources/torrentio.py) ·
+[Codificación](../vault/core/routers/downloads.py).
+
+### Medición con una ficha local
+
+Medianas de tres ejecuciones por viewport con el [benchmark local](../vault/scripts/performance.py),
+Chromium, nginx real, caché fría, API de prueba sin imágenes, RTT de 150 ms,
+1,6 Mbit/s, CPU ralentizada 4× y respuesta federada demorada 1,5 s.
+La referencia es `518a553`. Los tiempos se miden en milisegundos.
+
+| Pantalla | Primera fuente antes | Primera fuente después | LCP antes | LCP después | CLS después |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Móvil | 2.222 | 2.102 | 856 | 1.000 | 0,02 |
+| Escritorio | 2.295 | 2.188 | 872 | 988 | 0,01 |
+| TV | 2.303 | 2.207 | 888 | 1.036 | 0,00 |
+
+La primera fuente quedó disponible entre 96 y 120 ms antes en este escenario.
+El LCP aumentó entre 116 y 148 ms. La ventana de medida registró 9 solicitudes
+API frente a 8, una carga de preferencias en ambos casos y 1.712 bytes
+adicionales de recursos transferidos. La búsqueda externa puede iniciarse
+mientras aún se espera al nodo. La prueba mide opciones visibles y LCP. La
+latencia al primer fotograma, INP, presión sostenida de memoria y uso de GPU
+requieren mediciones adicionales con una instancia y dispositivos de destino.
+
+### Validación del cierre
+
+- Pasaron 506 pruebas unitarias, incluida la migración concurrente y el fallback
+  de la codificación con vídeo sintético. Pasaron la validación estática y las
+  24 pruebas de Android.
+- Pasaron los 62 casos de la línea base de escritorio y 66 casos de federación,
+  progreso, descargas y operaciones repartidos entre móvil, escritorio y TV.
+  Ocho casos de reproducción offline y subtítulos pasaron entre la ejecución
+  agrupada y la repetición del caso afectado por un cierre del driver.
+- La ejecución completa de Chromium se interrumpió después de pérdidas de
+  conexión con el driver de Playwright. Los grupos y casos verificados se
+  ejecutaron sin reducir sus comprobaciones.
+- Compose 2.39.4 validó el modelo con `config --quiet`. El benchmark arrancó
+  nginx contra la API de prueba. `check.py build` requiere un daemon Docker,
+  que no estaba disponible. El arranque de los contenedores, el túnel y el uso
+  real de GPU siguen pendientes de verificación en un host con esos servicios.
