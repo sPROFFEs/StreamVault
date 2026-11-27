@@ -32,9 +32,9 @@ P2 requiere cambios planificados y P3 recoge deuda de mantenimiento.
 | P1 · corregido | [Remux](../vault/core/routers/downloads.py#L967) cancelaba toda la cola al iniciar una reproducción y podía descartar trabajo para otros archivos. | Interrumpir solo la conversión activa y conservar tareas pendientes hasta que cierre la última reproducción. [Regresión](../vault/core/tests/test_download_playback.py#L474) con un trabajo activo y otro en cola. |
 | P1 · corregido | [Presupuesto de disco](../vault/core/services/storage_policy.py) comprobaba espacio sin reservarlo. Dos escritores podían aprobar los mismos bytes antes de empezar a escribir. | [Reserva compartida](../vault/core/services/storage_reservations.py) por volumen con liberación al terminar, recuperación tras caída y pruebas entre procesos. |
 | P1 · corregido | [TMDB](../vault/core/services/tmdb_service.py) perdía la caché en cada reinicio y podía desactivarse por una caída al arrancar. Algunos flujos consultaban los mismos metadatos con conexiones independientes. | [LRU SQLite](../vault/core/services/tmdb_cache.py) de 500 entradas y 32 MiB de contenido. Sirve datos guardados durante la actualización y pausa consultas tras 429, 5xx o timeout. |
-| P1 · pendiente | [yt-dlp de descargas](../vault/core/services/download_service.py) y [YouTube](../vault/core/services/youtube_service.py) deshabilitan la comprobación de certificados. | Activar la política TLS predeterminada y probar certificado válido y certificado no confiable. |
+| P1 · corregido | [yt-dlp de descargas](../vault/core/services/download_service.py) y [YouTube](../vault/core/services/youtube_service.py) deshabilitaban la comprobación de certificados. | Restablecer la validación TLS de los extractores y hacer explícita la verificación de certificados en [aria2](../vault/core/services/torrent_service.py). |
 | P1 · pendiente | [Federación](../vault/core/services/federation_service.py) crea un cliente HTTP por solicitud de nodo. Seek y cambios de pista repiten conexiones, además de [verificar el destino](../vault/core/services/federation_service.py). | Gestionar pools con vida útil acotada por origen, identidad TLS y destino validado. Probar reutilización, redirecciones, desconexión y revocación. |
-| P1 · pendiente | [Descargas HTTP](../vault/core/services/download_service.py) y [torrent](../vault/core/services/torrent_service.py) mantienen el estado operativo en memoria. La recuperación de [marcas parciales](../vault/core/services/media_library.py) no equivale a recuperar la cola. | Persistir transiciones y reconciliar archivos y procesos. Probar reinicio en cada estado y cancelación del worker real. |
+| P1 · corregido | [Descargas HTTP](../vault/core/services/download_service.py) y [torrent](../vault/core/services/torrent_service.py) guardaban el estado operativo en memoria. La recuperación por tamaño podía exponer archivos parciales. | [Cola persistente](../vault/core/services/download_queue.py) con recuperación, punto de control tras la verificación y publicación recuperable. Pruebas de reinicio, descarga real y cancelación del grupo de procesos. |
 | P2 · corregido | [Biblioteca](../vault/core/services/media_library.py) recorría directorios al invalidar el estado en memoria. [TMDB](../vault/core/services/tmdb_service.py) podía aceptar el primer resultado de búsqueda. | [Índice incremental SQLite](../vault/core/services/media_index.py) y selección con confianza. Pruebas con grandes bibliotecas, temporadas, títulos ambiguos e idiomas mixtos. |
 | P2 · pendiente | [Arranque](../vault/core/main.py) usa manejadores depreciados y las tareas periódicas viven por proceso. [SQLite](../vault/core/database.py) ya configura WAL y espera de bloqueo, pero aún hay que medir el coste de transacciones y consultas. | Migrar el ciclo de vida, coordinar tareas y verificar migraciones, cierre y backups consistentes. |
 | P2 · pendiente | [Compose](../vault/docker-compose.yaml) usa una referencia flotante para nginx. El [actualizador](../vault/core/services/updater_service.py) requiere operaciones privilegiadas de despliegue. | Fijar imágenes comprobadas, delimitar permisos del actualizador y distinguir readiness de liveness. Probar instalación y actualización con el directorio de datos existente. |
@@ -174,3 +174,35 @@ reproducción y las 24 pruebas de Android. Los casos de Chromium se
 verificaron por partes tras cierres intermitentes del driver de Playwright.
 `check.py validate` pasó. `check.py build` llegó a la validación estática
 y quedó bloqueado por la ausencia de Docker y Compose.
+
+## Cuarto tramo
+
+La [cola de descargas](../vault/core/services/download_queue.py) conserva el
+identificador, el directorio de trabajo, los intentos y el último avance. La
+API añade `state` además de `status`. Las solicitudes con encabezados privados
+se ejecutan en vivo y requieren una solicitud nueva tras una interrupción.
+Las descargas activas se deduplican por fuente y, para BitTorrent, por archivo
+seleccionado. La prioridad ordena los trabajos que esperan. Los fallos de red
+transitorios compatibles tienen hasta tres intentos automáticos por ciclo.
+
+[La cancelación de yt-dlp](../vault/core/services/download_limits.py) señala
+todo el grupo de procesos para detener también FFmpeg. aria2 continúa en el
+mismo directorio y comprueba los hashes de las piezas recibidas. Para HTTP,
+un proceso con salida correcta, la ausencia de parciales y un flujo de vídeo
+legible por FFprobe permiten publicar el archivo. Esa comprobación no
+decodifica el vídeo completo ni calcula un hash contra el origen.
+
+El punto de control de verificación registra la ruta, el tamaño y la fecha de
+modificación de cada archivo. El arranque puede repetir la publicación desde
+ese punto. Una temporada mantiene todos los archivos del conjunto seleccionado
+en el directorio del trabajo hasta completar la verificación. Las plazas de
+transferencia se comparten entre motores. Se reparte el presupuesto de descarga
+entre las plazas y, para yt-dlp, entre los grupos de fragmentos nativos. Los
+extractores que delegan la descarga de red en otra herramienta pueden aplicar
+límites distintos.
+
+Pasaron 499 pruebas unitarias, 62 casos de la línea base Chromium de escritorio,
+13 casos de descargas y administración en navegador y las 24 pruebas de
+Android. Los casos con binarios reales cubrieron HTTP y torrents de un episodio
+y una temporada. Pasó `check.py validate`. La compilación de imágenes de
+producción quedó pendiente porque el entorno carece de Docker y Compose.

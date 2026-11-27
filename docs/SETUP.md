@@ -223,6 +223,18 @@ check detects that the reserve has been reached. Torrent files allocate as
 pieces arrive rather than reserving a season's full disk space before transfer.
 Completed media is never automatically deleted to create space.
 
+The server keeps queued download IDs and partial files across restarts. Use
+**Downloads → Resume** on a compatible failed or interrupted download to retry
+in the same directory. A selected torrent season appears in the library once
+the selected files have finished and passed verification. Update core and
+downloader together and keep their shared volumes. See the
+[download queue rollout notes](OPTIMIZATION_ROADMAP.md#migración-y-rollback-de-la-cola-de-descargas).
+
+API clients can send `Idempotency-Key` when starting a direct or torrent
+download to get the same job ID on repeat requests while the job is retained.
+Requests can set `priority` to `-1`, `0` or `1`. Priority applies to jobs
+waiting for a transfer slot.
+
 **Administration → Files → Storage cleaner** previews abandoned partial jobs,
 empty folders and rebuildable playback copies. It shows physical free space,
 cache usage and the reserve, processes up to 500 candidates per batch, and

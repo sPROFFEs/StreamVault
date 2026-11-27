@@ -16,7 +16,7 @@ el APK siguen siendo la base de la transición.
 | 6 · Índice | El segundo tramo introduce SQLite incremental por ruta y huella de archivo, consultas y paginación local, reconciliación de cambios externos y persistencia de FFprobe. | Archivo agregado, modificado y borrado, reinicio y biblioteca de 5.000 títulos. |
 | 7 · TMDB | La tercera entrega incorpora caché SQLite con límite de entradas y bytes, TTL por recurso, actualización en segundo plano y conexiones compartidas. Los archivos con ID registrado conservan su ficha local si faltan metadatos remotos. | Caché saturada, reinicio, ocho lecturas concurrentes, 429 con Retry-After, 5xx, timeout y reproducción local sin credenciales de TMDB. |
 | 8 · Disco | El segundo tramo incorpora reservas compartidas, perfiles Minimal, Balanced y Performance, revisión de parciales recuperables y retención opcional de backups. La caché regenerable conserva TTL y LRU. | Dos escritores con presupuesto compartido, liberación tras caída, revisión de parciales y protección de activos. |
-| 9 · Descargas | Persistir cola y transiciones idempotentes. Validar TLS, reanudar cuando sea compatible, comprobar integridad y publicar archivos completos de forma atómica. | Cancelación efectiva y reinicio en cada estado. Una temporada interrumpida conserva los episodios completos y los parciales recuperables. |
+| 9 · Descargas | La cuarta entrega persiste la cola SQLite, conserva la prioridad y el progreso, restaura trabajos compatibles y verifica los archivos antes de publicarlos. yt-dlp y aria2 validan TLS. | Pruebas de recuperación del estado y de la publicación, cancelación del grupo de procesos y descargas reales por HTTP y BitTorrent. Una temporada conserva los episodios y los parciales en su directorio hasta verificar el conjunto seleccionado. |
 | 10 · Web | Mostrar fuentes locales temprano, abortar peticiones obsoletas y conservar la sesión de reproducción al añadir fuentes. Separar módulos, liberar listeners, temporizadores y Blob URLs y medir carga de imágenes, DOM, paginación y virtualización. | Chromium móvil, escritorio y TV, navegación por mando, offline, cambio de episodio y posición preservada ante actualizaciones secundarias. |
 | 11 · SQLite | Medir consultas, añadir índices según planes de ejecución, agrupar progreso, acortar transacciones y coordinar tareas periódicas. | Migraciones compatibles, contención controlada, copia consistente y apagado ordenado durante reproducción o descarga. |
 | 12 · Operaciones | Versiones reproducibles, límites ajustables, healthchecks, rotación y privilegios mínimos del actualizador. Panel ligero para disco, reservas, copias regenerables, CPU, RAM, reproducción, colas y proveedores. | Instalar y actualizar una instancia de prueba con sus volúmenes. Probar dry-run del cleaner y simular arranque de nginx y del túnel. |
@@ -71,3 +71,18 @@ conservar el volumen de datos. Las versiones anteriores usan su escaneo
 habitual y las correcciones del índice quedan disponibles para otra
 actualización. Conservar `library-*.db` en los backups. El directorio
 `runtime/space-reservations` contiene el registro auxiliar de trabajos en vivo.
+
+## Migración y rollback de la cola de descargas
+
+Actualizar core y downloader juntos sobre los volúmenes existentes. La cola
+se crea automáticamente en `DATA_ROOT/runtime/jobs-*/queue.sqlite3` y
+conserva los trabajos al recrear sus contenedores. El directorio pertenece
+al volumen activo y queda fuera de los backups del actualizador. Los trabajos
+de una versión anterior que solo existían en memoria deben terminar antes
+del cambio para conservar su estado.
+
+Para revertir, conservar los volúmenes y desplegar las imágenes anteriores
+de core y downloader. La versión anterior ignora la cola nueva. Cada
+descarga gestionada conserva un marcador `.streamvault-managed.part`
+hasta que sus archivos pasan la verificación. Ese marcador también impide que
+un arranque de la versión anterior recupere un parcial como archivo completo.
