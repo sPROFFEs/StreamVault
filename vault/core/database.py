@@ -1,6 +1,5 @@
 from sqlalchemy import event, Boolean, Column, DateTime, ForeignKey, Integer, String, Text, Float, UniqueConstraint, create_engine
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship, sessionmaker
+from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 from sqlalchemy.sql import func
 
 SQLALCHEMY_DATABASE_URL = "sqlite:////saas-data/core.db"
@@ -8,9 +7,9 @@ SQLALCHEMY_DATABASE_URL = "sqlite:////saas-data/core.db"
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL,
     connect_args={"check_same_thread": False},
-    pool_size=30,
-    max_overflow=50,
-    pool_timeout=30,
+    pool_size=8,
+    max_overflow=4,
+    pool_timeout=8,
     pool_recycle=1800,
 )
 
@@ -23,8 +22,8 @@ def set_sqlite_pragma(dbapi_connection, connection_record):
     except Exception:
         pass
     cursor.execute("PRAGMA synchronous=NORMAL")
-    cursor.execute("PRAGMA busy_timeout=10000")
-    cursor.execute("PRAGMA cache_size=-64000")
+    cursor.execute("PRAGMA busy_timeout=5000")
+    cursor.execute("PRAGMA cache_size=-8192")
     cursor.close()
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -185,7 +184,9 @@ class FederatedMedia(Base):
 User.profile = relationship("UserProfile", uselist=False, cascade="all, delete-orphan")
 
 
-Base.metadata.create_all(bind=engine)
+with engine.begin() as connection:
+    connection.exec_driver_sql("BEGIN IMMEDIATE")
+    Base.metadata.create_all(bind=connection)
 
 
 def run_migrations():
@@ -202,14 +203,18 @@ def run_migrations():
         ("user_preferences", "opensubtitles_api_key", "TEXT"),
         ("users", "can_download", "BOOLEAN DEFAULT 0"),
     ]
-    with engine.connect() as conn:
+    with engine.begin() as conn:
+        # Serialize schema discovery and changes across startup workers.
+        conn.exec_driver_sql("BEGIN IMMEDIATE")
+        tables = {table: {row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info({table})")}
+                  for table in sorted({table for table, _, _ in new_columns})}
         for table, col, col_type in new_columns:
-            try:
-                conn.execute(
-                    __import__("sqlalchemy").text(
-                        f"ALTER TABLE {table} ADD COLUMN {col} {col_type}"
-                    )
-                )
-                conn.commit()
-            except Exception:
-                pass  # La columna ya existe
+            if col not in tables[table]:
+                conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
+        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_federated_lookup ON "
+                             "federated_media(media_type, tmdb_id, season_number, episode_number)")
+
+
+def check_connection():
+    with engine.connect() as conn:
+        conn.exec_driver_sql("SELECT 1").scalar_one()

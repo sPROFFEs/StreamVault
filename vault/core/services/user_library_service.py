@@ -190,6 +190,14 @@ class UserLibraryService:
                     duration_seconds=excluded.duration_seconds,
                     completed=excluded.completed,
                     updated_at=CURRENT_TIMESTAMP
+                WHERE history.progress_seconds IS NOT excluded.progress_seconds
+                   OR history.duration_seconds IS NOT excluded.duration_seconds
+                   OR history.completed IS NOT excluded.completed
+                   OR history.title IS NOT excluded.title
+                   OR history.poster_path IS NOT excluded.poster_path
+                   OR history.backdrop_path IS NOT excluded.backdrop_path
+                   OR history.release_date IS NOT excluded.release_date
+                   OR history.rating IS NOT excluded.rating
                 """,
                 (
                     payload["tmdb_id"],
@@ -422,6 +430,7 @@ class UserLibraryService:
         except Exception:
             pass
         connection.execute("PRAGMA synchronous=NORMAL")
+        connection.execute("BEGIN IMMEDIATE")
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS favorites (
@@ -458,6 +467,8 @@ class UserLibraryService:
             """
         )
         self._cleanup_legacy_history(connection)
+        connection.execute("CREATE INDEX IF NOT EXISTS history_continue ON history(updated_at DESC) "
+                           "WHERE completed = 0 AND progress_seconds > 0")
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS youtube_favorites (
@@ -535,19 +546,17 @@ class UserLibraryService:
             try:
                 connection = sqlite3.connect(db_path, timeout=30.0)
                 connection.row_factory = sqlite3.Row
-                try:
-                    connection.execute("PRAGMA journal_mode=WAL")
-                except Exception:
-                    pass
                 connection.execute("PRAGMA synchronous=NORMAL")
-                connection.execute("PRAGMA busy_timeout=10000")
-                connection.execute("PRAGMA cache_size=-16000")
+                connection.execute("PRAGMA busy_timeout=5000")
+                connection.execute("PRAGMA cache_size=-4096")
                 if db_path not in self._initialized_dbs:
                     self._init_db(connection)
-                    self._cleanup_legacy_history(connection)
                     self._initialized_dbs.add(db_path)
                 break
             except sqlite3.OperationalError as err:
+                if connection is not None:
+                    connection.close()
+                    connection = None
                 last_err = err
                 time.sleep(0.1 * (attempt + 1))
         else:

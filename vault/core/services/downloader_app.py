@@ -6,6 +6,7 @@ torrent processes, preventing I/O, CPU, and socket saturation in the core contai
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 import json
 import logging
 import os
@@ -22,7 +23,16 @@ from services.media_library import identify_video
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="StreamVault Downloader Service")
+@asynccontextmanager
+async def lifespan(_app):
+    try:
+        await asyncio.gather(torrent_service.restore(), download_service.restore())
+        yield
+    finally:
+        await asyncio.gather(torrent_service.close(), download_service.close(), return_exceptions=True)
+
+
+app = FastAPI(title="StreamVault Downloader Service", lifespan=lifespan)
 download_service = DownloadService()
 
 _notification_queues: list[asyncio.Queue] = []
@@ -136,6 +146,16 @@ async def health():
     return {"status": "ok", "service": "streamvault-downloader"}
 
 
+@app.get("/ready")
+def ready():
+    try:
+        with download_service.store.connect() as connection:
+            connection.execute("SELECT 1 FROM jobs LIMIT 1").fetchone()
+    except Exception:
+        return JSONResponse({"status": "unavailable"}, status_code=503)
+    return {"status": "ready"}
+
+
 @app.post("/api/downloads/start")
 async def start_yt_dlp(payload: YtDlpPayload):
     try:
@@ -241,8 +261,6 @@ async def stream_progress(job_id: str, request: Request):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
-
-
 @app.get("/api/downloads/notifications")
 async def global_notifications(request: Request):
     q: asyncio.Queue = asyncio.Queue(maxsize=20)
@@ -267,13 +285,3 @@ async def global_notifications(request: Request):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
-
-
-@app.on_event("startup")
-async def restore_downloads():
-    await asyncio.gather(torrent_service.restore(), download_service.restore())
-
-
-@app.on_event("shutdown")
-async def shutdown():
-    await asyncio.gather(torrent_service.close(), download_service.close())

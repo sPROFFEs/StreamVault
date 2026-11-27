@@ -48,13 +48,13 @@ class HistoryPayload(BaseModel):
 
 
 @router.get("/favorites")
-async def get_favorites(user: database.User = Depends(get_current_user)):
+def get_favorites(user: database.User = Depends(get_current_user)):
     items = user_library_service.list_favorites(user.username)
     return {"items": items, "total": len(items)}
 
 
 @router.get("/favorites/{media_type}/{tmdb_id}")
-async def favorite_status(
+def favorite_status(
     media_type: str,
     tmdb_id: str,
     user: database.User = Depends(get_current_user),
@@ -66,7 +66,7 @@ async def favorite_status(
 
 
 @router.post("/favorites")
-async def add_favorite(
+def add_favorite(
     payload: FavoritePayload,
     user: database.User = Depends(get_current_user),
 ):
@@ -90,7 +90,7 @@ async def add_favorite(
 
 
 @router.delete("/favorites/{media_type}/{tmdb_id}")
-async def delete_favorite(
+def delete_favorite(
     media_type: str,
     tmdb_id: str,
     user: database.User = Depends(get_current_user),
@@ -101,16 +101,16 @@ async def delete_favorite(
 
 
 @router.get("/history")
-async def get_continue_watching(
+def get_continue_watching(
     limit: int = 12,
     user: database.User = Depends(get_current_user),
 ):
-    items = user_library_service.list_continue_watching(user.username, limit=limit)
+    items = user_library_service.list_continue_watching(user.username, limit=max(0, min(limit, 100)))
     return {"items": items, "total": len(items)}
 
 
 @router.get("/history/progress/{media_type}/{tmdb_id}")
-async def get_history_progress(
+def get_history_progress(
     media_type: str,
     tmdb_id: int,
     season_number: int | None = None,
@@ -128,7 +128,7 @@ async def get_history_progress(
 
 
 @router.post("/history")
-async def upsert_history(
+def upsert_history(
     payload: HistoryPayload,
     user: database.User = Depends(get_current_user),
 ):

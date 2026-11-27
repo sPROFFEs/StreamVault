@@ -24,16 +24,19 @@ from fastapi import FastAPI, Request, Depends, Form, UploadFile, File, HTTPExcep
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
+from starlette.datastructures import QueryParams
 import httpx
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 import asyncio
+from contextlib import asynccontextmanager
 
 # Imports locales
 from config import settings
 from version import VERSION
 from services.media_library import recover_completed_downloads
 from services import federation_service, media_index, storage_maintenance
+from services.periodic_tasks import run_periodic
 from services.tmdb_service import tmdb_service
 import auth
 import auth_forms
@@ -51,10 +54,20 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # --- APP INIT ---
+@asynccontextmanager
+async def lifespan(_app):
+    try:
+        await startup_event()
+        yield
+    finally:
+        await shutdown_event()
+
+
 app = FastAPI(
     title="StreamVault",
     description="Centro Multimedia Unificado",
-    version=VERSION
+    version=VERSION,
+    lifespan=lifespan,
 )
 
 # TrustedHost solo en producción
@@ -78,13 +91,15 @@ if not ASSETS_DIR:
     raise RuntimeError(f"No se pudo localizar el directorio de assets. Revisados: {ASSET_CANDIDATES}")
 
 class CacheStaticFiles(StaticFiles):
-    def is_not_modified(self, response_headers, request_headers) -> bool:
-        response_headers["Cache-Control"] = "public, max-age=31536000, immutable"
-        return super().is_not_modified(response_headers, request_headers)
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        versioned = bool(QueryParams(scope.get("query_string", b"")).get("v"))
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable" if versioned else "no-cache, must-revalidate"
+        return response
 
 app.mount("/assets", CacheStaticFiles(directory=ASSETS_DIR), name="assets")
 
-PUBLIC_PATHS = {"/", "/login", "/setup", "/api/health", "/sw.js"}
+PUBLIC_PATHS = {"/", "/login", "/setup", "/api/health", "/api/ready", "/sw.js"}
 PUBLIC_PREFIXES = ("/assets/", "/set-language/", "/api/federation/v1/")
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
@@ -224,23 +239,21 @@ async def _recover_downloads_background():
         logger.exception("[DOWNLOADS] Completed-download recovery failed")
 
 
-@app.on_event("startup")
 async def startup_event():
     if settings.SECRET_KEY in {"unsafe-default-secret-key-change-me-in-production", "streamvault-dev-secret-change-me"} or len(settings.SECRET_KEY) < 32:
         raise RuntimeError("SECRET_KEY must be a unique random value of at least 32 characters")
     i18n.load_translations()
     logger.info(f"[I18N] Idiomas cargados: {list(i18n.translations.keys())}")
-    database.run_migrations()
+    await asyncio.to_thread(database.run_migrations)
     # Recovery can touch a large mounted library. It must never delay HTTP
     # readiness or keep the Cloudflare tunnel waiting for the app to start.
     recovery_task = asyncio.create_task(_recover_downloads_background())
     _startup_tasks.add(recovery_task)
     recovery_task.add_done_callback(_startup_tasks.discard)
-    for coroutine in (_update_checks_background(), federation_service.background_loop(),
-                      storage_maintenance.background_loop(), media_index.reconcile_loop()):
-        task = asyncio.create_task(coroutine)
-        _startup_tasks.add(task)
-        task.add_done_callback(_startup_tasks.discard)
+    maintenance = asyncio.create_task(run_periodic(settings.DATA_ROOT, _update_checks_background,
+        federation_service.background_loop, storage_maintenance.background_loop, media_index.reconcile_loop))
+    _startup_tasks.add(maintenance)
+    maintenance.add_done_callback(_startup_tasks.discard)
     if (
         not admin.cloudflared_manager.external
         and not admin.cloudflared_manager.tunnel_url
@@ -252,18 +265,23 @@ async def startup_event():
             logger.warning("[TUNNEL] Could not restore Cloudflare Tunnel: %s", exc)
     logger.info("[STARTUP] StreamVault iniciado correctamente")
 
-@app.on_event("shutdown")
 async def shutdown_event():
-    for task in list(_startup_tasks):
+    tasks = list(_startup_tasks)
+    for task in tasks:
         task.cancel()
-    await asyncio.gather(*_startup_tasks, return_exceptions=True)
-    await federation.close_tasks()
-    await downloads.downloader_client.close()
-    await downloads.close_playback_tasks()
-    await iptv.iptv_service.close()
-    await asyncio.to_thread(tmdb_service.close)
+    await asyncio.gather(*tasks, return_exceptions=True)
+    services = {
+        "federation": federation.close_tasks(), "downloads": downloads.downloader_client.close(),
+        "playback": downloads.close_playback_tasks(), "iptv": iptv.iptv_service.close(),
+        "tmdb": asyncio.to_thread(tmdb_service.close), "torrentio": resolver.orchestrator.torrentio.close(),
+    }
     if not admin.cloudflared_manager.external and not admin.cloudflared_manager.tunnel_url:
-        await admin.cloudflared_manager.stop(disable=False)
+        services["tunnel"] = admin.cloudflared_manager.stop(disable=False)
+    for name, result in zip(services, await asyncio.gather(*services.values(), return_exceptions=True)):
+        if isinstance(result, Exception):
+            logger.warning("Shutdown failed for %s (%s)", name, type(result).__name__)
+    await federation_service.close_remote_connections()
+    await asyncio.to_thread(database.engine.dispose)
     logger.info("[SHUTDOWN] StreamVault detenido")
 
 # --- DATABASE DEPENDENCY ---
@@ -626,6 +644,15 @@ async def health_check():
         "service": "StreamVault",
         "version": VERSION
     }
+
+
+@app.get("/api/ready")
+def readiness_check():
+    try:
+        database.check_connection()
+    except Exception:
+        return JSONResponse({"status": "unavailable"}, status_code=503)
+    return {"status": "ready"}
 
 
 @app.get("/sw.js")
