@@ -67,3 +67,46 @@ def test_downloads_page_loads_and_recovers(compatibility):
             assert not errors
         finally:
             browser.close()
+
+
+def test_interrupted_download_can_resume_without_creating_a_new_job():
+    request = Request({"type": "http", "headers": [], "state": {}})
+    html = templates.get_template("downloads.html").render(request=request, is_admin=True)
+    assets = Path(__file__).resolve().parents[2] / "assets"
+    job = {"id": "existing-job", "title": "Partial download", "status": "interrupted",
+           "progress": 42, "can_resume": True}
+    resume_path = "/api/downloads/jobs/existing-job/resume"
+    resumed = []
+
+    def respond(route):
+        from urllib.parse import urlsplit
+        path = urlsplit(route.request.url).path
+        if path == "/downloads":
+            return route.fulfill(content_type="text/html", body=html)
+        if path.startswith("/assets/"):
+            asset = assets / path.removeprefix("/assets/")
+            return route.fulfill(path=asset) if asset.is_file() else route.fulfill(status=404)
+        if path == "/api/downloads/jobs":
+            return route.fulfill(json={"torrent": [], "yt_dlp": [job]})
+        if path == resume_path:
+            resumed.append(route.request.method)
+            job.update(status="pending", can_resume=False)
+            return route.fulfill(json={"success": True, "job_id": job["id"]})
+        if path == "/api/downloads/notifications":
+            return route.fulfill(content_type="text/event-stream", body=": connected\n\n")
+        return route.fulfill(json={})
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(args=CHROMIUM_ARGS)
+        try:
+            page = browser.new_page()
+            page.route("**/*", respond)
+            page.goto("https://streamvault.test/downloads")
+            row = page.locator('[data-job-id="existing-job"]')
+            expect(row).to_contain_text("Interrupted")
+            expect(row).to_contain_text("42%")
+            row.get_by_role("button", name="Resume").click()
+            expect(row).to_contain_text("Pending")
+            assert resumed == ["POST"]
+        finally:
+            browser.close()

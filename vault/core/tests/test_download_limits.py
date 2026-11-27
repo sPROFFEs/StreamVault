@@ -1,11 +1,11 @@
 import asyncio
-from unittest.mock import AsyncMock
-
-from services.torrent_service import TorrentJob, TorrentService
 from pathlib import Path
 import sys
 
-from services.download_limits import stop_process
+import pytest
+
+from services.download_limits import TransferSlots, stop_process, stop_process_group
+from services.torrent_service import TorrentService
 
 
 def test_stopping_encoder_with_full_stdout_does_not_deadlock():
@@ -25,6 +25,33 @@ def test_stopping_encoder_with_full_stdout_does_not_deadlock():
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("parent_exits", [False, True])
+def test_stopping_worker_group_stops_child_before_it_writes(tmp_path, parent_exits):
+    destination = tmp_path / "child-wrote"
+    child = "import pathlib,sys,time; print('ready', flush=True); time.sleep(1); pathlib.Path(sys.argv[1]).touch()"
+    spawn = "Popen" if parent_exits else "run"
+    supervisor = f"import subprocess,sys; subprocess.{spawn}([sys.executable, '-c', sys.argv[1], sys.argv[2]])"
+
+    async def scenario():
+        process = await asyncio.create_subprocess_exec(
+            sys.executable, "-c", supervisor, child, str(destination),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, start_new_session=True,
+        )
+        try:
+            assert await asyncio.wait_for(process.stdout.readline(), timeout=3) == b"ready\n"
+            if parent_exits:
+                async with asyncio.timeout(0.8):
+                    while process.returncode is None:
+                        await asyncio.sleep(0.01)
+            await asyncio.wait_for(stop_process_group(process), timeout=6)
+            await asyncio.sleep(1.1)
+            assert not destination.exists()
+        finally:
+            await stop_process_group(process)
+
+    asyncio.run(scenario())
+
+
 def test_default_transfer_budget_leaves_headroom_and_matches_compose():
     from config import Settings
     settings = Settings(_env_file=None)
@@ -38,7 +65,7 @@ def test_default_transfer_budget_leaves_headroom_and_matches_compose():
     assert "DOWNLOADER_MEMORY_LIMIT:-768m" in downloader
 
 
-def test_only_configured_number_of_downloads_run_at_once(monkeypatch):
+def test_only_configured_number_of_downloads_run_at_once(tmp_path, monkeypatch):
     import services.torrent_service as torrents
 
     async def scenario():
@@ -52,16 +79,19 @@ def test_only_configured_number_of_downloads_run_at_once(monkeypatch):
             first_entered.set()
             await gate.wait()
 
-        monkeypatch.setattr(torrents, "download_slots", asyncio.Semaphore(1), raising=False)
+        monkeypatch.setattr(torrents, "DOWNLOADS_DIR", str(tmp_path))
+        monkeypatch.setattr(torrents, "_aria2c_available", lambda: True)
+        monkeypatch.setattr(torrents, "download_slots", TransferSlots(1))
         monkeypatch.setattr(service, "_download", transfer, raising=False)
-        jobs = [TorrentJob(str(i), f"magnet:?xt=urn:btih:{i}") for i in range(3)]
-        tasks = [asyncio.create_task(service._run(job)) for job in jobs]
+        ids = [service.start_torrent_download(str(i), f"magnet:?xt=urn:btih:{i}", priority=priority)
+               for i, priority in enumerate((0, -1, 1))]
+        tasks = list(service._bg_tasks.values())
         await asyncio.wait_for(first_entered.wait(), timeout=2)
         try:
             assert len(entered) == 1
-            assert jobs[1].status == "pending"
+            assert service.get_job(ids[1])["status"] == "pending"
         finally:
             gate.set()
             await asyncio.gather(*tasks)
-        assert len(entered) == 3
+        assert entered == [ids[0], ids[2], ids[1]]
     asyncio.run(scenario())

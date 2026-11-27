@@ -7,7 +7,8 @@ import socket
 import struct
 import subprocess
 import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from functools import partial
+from http.server import BaseHTTPRequestHandler, SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import quote
 
 import pytest
@@ -15,6 +16,37 @@ import pytest
 from routers import downloads
 from services import torrent_service as torrents
 from services.media_library import find_matching_media, is_incomplete_media, scan_media_library
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"), reason="FFmpeg tools required")
+def test_http_worker_verifies_and_publishes_a_real_video(tmp_path, monkeypatch):
+    from services import download_service
+
+    media = tmp_path / "clip.mp4"
+    subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=black:s=64x64:d=1",
+                    "-c:v", "mpeg4", str(media)], check=True, timeout=10)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), partial(SimpleHTTPRequestHandler, directory=tmp_path))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    library = tmp_path / "downloads"
+    monkeypatch.setattr(download_service, "DOWNLOADS_DIR", str(library))
+
+    async def transfer():
+        service = download_service.DownloadService()
+        job_id = service.start_download(f"http://127.0.0.1:{server.server_port}/clip.mp4", "Clip")
+        await asyncio.wait_for(service._bg_tasks[job_id], 25)
+        result = service.get_job(job_id)
+        assert result["state"] == "completed", result["error"]
+        assert len(scan_media_library(library)["files"]) == 1
+        from pathlib import Path
+        assert Path(result["local_path"]).read_bytes() == media.read_bytes()
+
+    try:
+        asyncio.run(transfer())
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
 
 
 @pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"), reason="FFmpeg tools required")
@@ -165,10 +197,14 @@ def test_real_magnet_selects_episode_or_whole_season(tmp_path, monkeypatch, file
     monkeypatch.setattr(torrents, "DOWNLOADS_DIR", str(tmp_path / "downloads"))
 
     async def transfer():
-        monkeypatch.setattr(torrents, "download_slots", asyncio.Semaphore(1))
-        job = torrents.TorrentJob("Show", f"magnet:?xt=urn:btih:{info_hash}&tr={quote(tracker, safe='')}", info_hash, file_idx)
+        from services.download_limits import TransferSlots
+        monkeypatch.setattr(torrents, "download_slots", TransferSlots(1))
         service = torrents.TorrentService()
-        await asyncio.wait_for(service._run(job), timeout=45)
+        job_id = service.start_torrent_download(
+            "Show", f"magnet:?xt=urn:btih:{info_hash}&tr={quote(tracker, safe='')}", info_hash, file_idx,
+        )
+        job = service._jobs[job_id]
+        await asyncio.wait_for(service._bg_tasks[job_id], timeout=45)
         assert job.status == "completed", job.error_msg
         expected = range(2) if file_idx is None else [file_idx]
         assert len(job.local_paths) == len(expected)

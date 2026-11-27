@@ -31,7 +31,7 @@ from uuid import uuid4
 from urllib.parse import quote
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse, Response
 from pydantic import BaseModel, Field
 
@@ -39,6 +39,7 @@ from services.download_service import DownloadService
 from services.torrent_service import torrent_service
 from services.download_client import downloader_client
 from services.download_limits import stop_process
+from services.download_queue import TERMINAL
 from services.streaming_response import ClosingStreamingResponse
 from services.storage_policy import get_global_download_quota_gb, get_path_size_bytes, invalidate_path_size
 from services.storage_policy import ensure_download_space
@@ -237,6 +238,8 @@ async def _download_remote_subtitle(url: str) -> bytes | None:
 
 
 torrent_service.on_completion(_on_torrent_done)
+if not downloader_client.is_remote:
+    downloader_client.local_download_service.on_completion(_on_torrent_done)
 
 
 # ------------------------------------------------------------------ #
@@ -248,6 +251,7 @@ class YtDlpRequest(BaseModel):
     title: str
     quality: Optional[str] = "best"
     type: Optional[str] = "video"
+    priority: int = Field(0, ge=-1, le=1)
 
 
 class TorrentRequest(BaseModel):
@@ -256,6 +260,7 @@ class TorrentRequest(BaseModel):
     info_hash: Optional[str] = None
     file_idx: Optional[int] = Field(None, ge=0)
     size_bytes: Optional[int] = Field(None, ge=0)
+    priority: int = Field(0, ge=-1, le=1)
 
 
 # ------------------------------------------------------------------ #
@@ -267,6 +272,7 @@ class EmbedDownloadRequest(BaseModel):
     title: str
     quality: str = "best"
     referer: Optional[str] = None
+    priority: int = Field(0, ge=-1, le=1)
 
 
 @router.post("/start-from-embed")
@@ -278,8 +284,8 @@ async def start_embed_download(req: EmbedDownloadRequest, user=Depends(get_downl
     try:
         sniffed = await sniffer.sniff(req.embed_url, referer=req.referer, timeout_s=30)
     except Exception as e:
-        logger.warning(f"Error sniffing embed {req.embed_url}: {e}")
-        raise HTTPException(502, f"Error extrayendo stream del reproductor embed: {e}")
+        logger.warning("Embed metadata failed (%s)", type(e).__name__)
+        raise HTTPException(502, "Error extrayendo stream del reproductor embed") from e
 
     if not sniffed.get("ok") or not sniffed.get("url"):
         reason = sniffed.get("reason", "no media URL captured")
@@ -293,17 +299,21 @@ async def start_embed_download(req: EmbedDownloadRequest, user=Depends(get_downl
             title=req.title,
             quality=req.quality,
             extra_headers=headers if headers else None,
+            priority=req.priority,
         )
     except Exception as e:
         raise HTTPException(500, f"Error iniciando descarga: {e}")
 
 
 @router.post("/start")
-async def start_yt_dlp_download(req: YtDlpRequest, user=Depends(get_download_authorized)):
+async def start_yt_dlp_download(req: YtDlpRequest, user=Depends(get_download_authorized),
+                                 request_key: str | None = Header(None, alias="Idempotency-Key", max_length=128)):
     """Inicia descarga con yt-dlp (YouTube, URLs HTTP directas)."""
     try:
-        await _check_download_quota()
-        return await downloader_client.start_yt_dlp(req.url, req.title, req.quality)
+        if not request_key:
+            await _check_download_quota()
+        return await downloader_client.start_yt_dlp(req.url, req.title, req.quality, priority=req.priority,
+                                                    request_key=request_key)
     except HTTPException:
         raise
     except ValueError as e:
@@ -313,9 +323,11 @@ async def start_yt_dlp_download(req: YtDlpRequest, user=Depends(get_download_aut
 
 
 @router.post("/start-torrent")
-async def start_torrent_download(req: TorrentRequest, user=Depends(get_download_authorized)):
+async def start_torrent_download(req: TorrentRequest, user=Depends(get_download_authorized),
+                                  request_key: str | None = Header(None, alias="Idempotency-Key", max_length=128)):
     """Inicia descarga de torrent con aria2c (magnet link)."""
-    await _check_download_quota(req.size_bytes or 0)
+    if not request_key:
+        await _check_download_quota(req.size_bytes or 0)
 
     try:
         return await downloader_client.start_torrent(
@@ -324,6 +336,8 @@ async def start_torrent_download(req: TorrentRequest, user=Depends(get_download_
             info_hash=req.info_hash,
             file_idx=req.file_idx,
             size_bytes=req.size_bytes,
+            priority=req.priority,
+            request_key=request_key,
         )
     except RuntimeError as e:
         raise HTTPException(503, str(e))
@@ -360,10 +374,17 @@ async def get_job_status(job_id: str):
 @router.delete("/jobs/{job_id}")
 @router.post("/cancel/{job_id}")
 async def cancel_job(job_id: str):
-    """Cancela un torrent activo."""
+    """Solicita la cancelación de una transferencia."""
     if await downloader_client.cancel_job(job_id):
         return {"success": True}
     raise HTTPException(404, "Trabajo no encontrado o ya finalizado")
+
+
+@router.post("/jobs/{job_id}/resume")
+async def resume_job(job_id: str, user=Depends(get_download_authorized)):
+    if await downloader_client.resume_job(job_id):
+        return {"success": True, "job_id": job_id}
+    raise HTTPException(409, "No se puede reanudar esta descarga")
 
 
 @router.post("/stop-all")
@@ -393,7 +414,7 @@ async def stream_progress(job_id: str, request: Request):
                 yield f"data: {json.dumps({'status': 'not_found'})}\n\n"
                 break
             yield f"data: {json.dumps(job)}\n\n"
-            if job.get("status") in ("completed", "error", "cancelled"):
+            if job.get("status") in TERMINAL:
                 break
             await asyncio.sleep(2)
 

@@ -26,7 +26,7 @@ class YouTubeService:
             'format': 'best',
             'skip_download': True,
             'extract_flat': True,
-            'nocheckcertificate': True,
+            'nocheckcertificate': False,
             'source_address': '0.0.0.0',
             # Usar cliente de Android suele saltar bloqueos de bot mejor que User-Agent de PC
             'extractor_args': {'youtube': {'player_client': ['android', 'web']}},

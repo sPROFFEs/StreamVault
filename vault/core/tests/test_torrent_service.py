@@ -39,13 +39,21 @@ def test_torrent_service_detects_same_active_source():
     assert service.find_active_duplicate("magnet:?xt=urn:btih:abc", "abc") == job.id
 
 
-def test_cancelled_torrents_are_not_returned_after_reload():
-    service = TorrentService()
-    job = TorrentJob("Movie", "magnet:?xt=urn:btih:abc")
-    job.status = "cancelled"
-    service._history.append(job)
+def test_cancelled_torrents_are_not_returned_after_reload(tmp_path, monkeypatch):
+    monkeypatch.setattr(torrents, "DOWNLOADS_DIR", str(tmp_path))
+    monkeypatch.setattr(torrents, "_aria2c_available", lambda: True)
 
-    assert service.get_all_jobs() == []
+    async def scenario():
+        service = TorrentService()
+        job_id = service.start_torrent_download("Movie", "magnet:?xt=urn:btih:abc")
+        task = service._bg_tasks[job_id]
+        assert service.cancel_job(job_id)
+        await asyncio.gather(task, return_exceptions=True)
+        reopened = TorrentService()
+        assert reopened.get_all_jobs() == []
+        assert reopened.get_job(job_id)["status"] == "cancelled"
+
+    asyncio.run(scenario())
 
 
 def test_different_episodes_in_same_torrent_are_not_duplicates():
@@ -82,27 +90,29 @@ def test_torrent_completion_only_finds_its_own_nested_files(tmp_path, monkeypatc
     season.mkdir(parents=True)
     for episode in (1, 2):
         (season / f"Show.S01E0{episode}.mkv").write_bytes(b"video")
-    paths = TorrentService()._find_downloaded_files(job)
+    from services.download_queue import downloaded_videos
+    paths = downloaded_videos(job)
     assert len(paths) == 2
-    assert str(unrelated) not in paths
+    assert unrelated not in paths
 
 
-def test_torrent_cannot_register_completion_without_video(tmp_path):
-    job = TorrentJob("Episode", "magnet:?xt=urn:btih:abc")
-    job.download_dir = str(tmp_path / job.id)
-    directory = Path(job.download_dir)
-    directory.mkdir()
-    marker = directory / ".streamvault-incomplete"
-    marker.touch()
-    (directory / "readme.txt").write_text("not playable")
+def test_torrent_cannot_register_completion_without_video(tmp_path, monkeypatch):
+    monkeypatch.setattr(torrents, "DOWNLOADS_DIR", str(tmp_path))
+    monkeypatch.setattr(torrents, "_aria2c_available", lambda: True)
 
-    try:
-        TorrentService()._register_completed_download(job, marker)
-    except RuntimeError as exc:
-        assert "no playable video" in str(exc).lower()
-    else:
-        raise AssertionError("completion without a video must fail")
-    assert marker.exists()
+    async def scenario():
+        service = TorrentService()
+        async def transfer(job):
+            (Path(job.download_dir) / "readme.txt").write_text("not playable")
+        monkeypatch.setattr(service, "_transfer", transfer)
+        job_id = service.start_torrent_download("Episode", "magnet:?xt=urn:btih:abc")
+        await service._bg_tasks[job_id]
+        result = service.get_job(job_id)
+        assert result["state"] == "failed"
+        assert "no playable video" in result["error"].lower()
+        assert (tmp_path / job_id / ".streamvault-incomplete").exists()
+
+    asyncio.run(scenario())
 
 
 def test_carriage_return_progress_does_not_overflow_reader():

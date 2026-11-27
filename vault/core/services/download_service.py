@@ -1,220 +1,150 @@
-import os
-import uuid
-import logging
+"""Resumable HTTP media downloads using the shared durable transfer queue."""
 import asyncio
-import threading
-import time
+import json
+import os
 from pathlib import Path
-try:
-    import yt_dlp
-except ImportError:
-    yt_dlp = None
-from typing import Dict, List, Optional
-from datetime import datetime
+import shutil
+import sys
+import time
 
 from config import settings
+from services.download_limits import download_slots, download_rate_per_job, stop_process, stop_process_group
+from services.download_queue import (
+    PARTIAL_GUARD, PersistentTransfers, TransferError, TransferJob, downloaded_videos, prepare_directory,
+    restore_job_fields, source_fingerprint, verified_paths,
+)
 from services.storage_policy import ensure_download_space, get_path_size_bytes
-from services.download_limits import download_slots, download_rate_per_job
 from services.storage_reservations import download_window, reserve_space_async
-from services.media_library import sync_library_paths, INCOMPLETE_MARKER, VIDEO_EXTENSIONS
-
-logger = logging.getLogger(__name__)
 
 DOWNLOADS_DIR = settings.DOWNLOADS_ROOT
-if not os.path.exists(DOWNLOADS_DIR):
-    try:
-        os.makedirs(DOWNLOADS_DIR, exist_ok=True)
-    except Exception as e:
-        logger.error(f"Could not create downloads directory {DOWNLOADS_DIR}: {e}")
+_WORKER = Path(__file__).with_name("ytdlp_worker.py")
 
-HISTORY_LIMIT = 50
 
-class DownloadJob:
-    def __init__(self, url: str, title: str, quality: str = 'best',
-                 extra_headers: Optional[Dict[str, str]] = None):
-        self.id = str(uuid.uuid4())
-        self.download_dir = os.path.join(DOWNLOADS_DIR, self.id)
+class DownloadJob(TransferJob):
+    def __init__(self, url, title, quality="best", extra_headers=None, priority=0):
+        super().__init__(DOWNLOADS_DIR, title, priority)
         self.url = url
-        self.title = title
         self.quality = quality
-        self.status = "pending" # pending, downloading, completed, error
-        self.progress = 0.0
-        self.filepath = ""
-        self.error_msg = ""
-        self.created_at = datetime.now()
         self.extra_headers = extra_headers or {}
 
-    def to_dict(self):
-        return {
-            "id": self.id,
-            "title": self.title,
-            "status": self.status,
-            "progress": self.progress,
-            "error": self.error_msg,
-            "created_at": self.created_at.isoformat()
-        }
 
-class DownloadService:
+class DownloadService(PersistentTransfers):
     def __init__(self):
-        self.active_downloads: Dict[str, DownloadJob] = {}
-        self.history: List[DownloadJob] = []
-        self._lock = asyncio.Lock()
-        self._bg_tasks: Dict[str, asyncio.Task] = {}
+        super().__init__(lambda: DOWNLOADS_DIR, "yt_dlp")
 
-    def start_download(self, url: str, title: str, quality: str = 'best',
-                       extra_headers: Optional[Dict[str, str]] = None,
-                       quota_checked: bool = False) -> str:
+    def _slots(self):
+        return download_slots
+
+    def start_download(self, url, title, quality="best", extra_headers=None, quota_checked=False,
+                       priority=0, request_key=None):
         if not quota_checked:
             ensure_download_space(DOWNLOADS_DIR)
+        job = DownloadJob(url, title, quality, extra_headers, priority)
+        # Header-bearing embed URLs can depend on expiring cookies. Keep those
+        # request secrets in the live worker only.
+        payload = None if extra_headers else {"url": url, "quality": quality}
+        fingerprint = source_fingerprint(url, quality, extra_headers or {})
+        return self._enqueue(job, payload, fingerprint, request_key)
 
-        duplicate_id = self.find_active_duplicate(url=url, title=title)
-        if duplicate_id:
-            return duplicate_id
+    def _restore_job(self, row):
+        view = json.loads(row["view"])
+        options = json.loads(row["payload"]) if row["payload"] else {}
+        job = DownloadJob(options.get("url"), view["title"], options.get("quality", "best"))
+        job._has_source = bool(row["payload"])
+        return restore_job_fields(job, row, ())
 
-        job = DownloadJob(url, title, quality, extra_headers=extra_headers)
-        self.active_downloads[job.id] = job
-
-        # Store the task reference so it isn't garbage-collected mid-flight.
-        task = asyncio.create_task(self._process_download(job))
-        self._bg_tasks[job.id] = task
-        task.add_done_callback(lambda t, jid=job.id: self._bg_tasks.pop(jid, None))
-        return job.id
-
-    def find_active_duplicate(self, url: Optional[str] = None, title: Optional[str] = None) -> Optional[str]:
-        for job in self.active_downloads.values():
-            if url and job.url == url:
-                return job.id
-            if title and job.title.casefold() == title.casefold() and job.status in ("pending", "downloading"):
-                return job.id
-        return None
-
-    def get_job(self, job_id: str) -> Optional[dict]:
-        job = self.active_downloads.get(job_id)
-        if not job:
-            # Check history
-            for h in self.history:
-                if h.id == job_id: return h.to_dict()
-            return None
-        return job.to_dict()
-
-    def get_all_jobs(self):
-        active = [j.to_dict() for j in self.active_downloads.values()]
-        # Recent history
-        hist = [j.to_dict() for j in self.history[-20:]]
-        return active + hist
-
-    def _archive(self, job: DownloadJob):
-        """Move job from active to history, capping history size."""
-        if job.id in self.active_downloads:
-            del self.active_downloads[job.id]
-        if job not in self.history:
-            self.history.append(job)
-        if len(self.history) > HISTORY_LIMIT:
-            self.history = self.history[-HISTORY_LIMIT:]
-
-    async def _process_download(self, job: DownloadJob):
-        async with download_slots:
-            await self._download(job)
-
-    async def _download(self, job: DownloadJob):
-        job.status = "downloading"
-        logger.info("Starting download: %s", job.id)
-        marker = Path(job.download_dir) / INCOMPLETE_MARKER
-        last_space_check = 0.0
-        cancellation = threading.Event()
+    async def _download(self, job):
         window = download_window(download_rate_per_job())
-        expected = 0
-        reservation = None
+        async with reserve_space_async(self.store.root, "downloads", window, job_id=job.id) as reservation:
+            await asyncio.to_thread(prepare_directory, job)
+            await self._transfer(job, reservation)
+            job.status = "processing"
+            self.checkpoint(job, force=True)
+            verified = await self._verify(job)
+            await self.complete(job, verified)
 
-        def progress_hook(d):
-            nonlocal last_space_check, expected
-            if cancellation.is_set():
-                raise RuntimeError("Download cancelled")
-            estimated = d.get("total_bytes") or d.get("total_bytes_estimate")
-            new_size = isinstance(estimated, int) and estimated * 2 > expected
-            if new_size or time.monotonic() - last_space_check >= 5 or d["status"] == "finished":
-                written = get_path_size_bytes(job.download_dir, max_age=0)
-                if new_size:
-                    expected = max(expected, 2 * (max(0, written - (d.get("downloaded_bytes") or 0)) + estimated))
-                # Merging tracks can momentarily require a second copy.
-                reservation.resize(max(window, expected - written, written))
-                last_space_check = time.monotonic()
-            if d['status'] == 'downloading':
-                try:
-                    p = d.get('_percent_str', '0%').replace('%','')
-                    job.progress = float(p)
-                except: pass
-            elif d['status'] == 'finished':
-                job.progress = 100.0
-                job.filepath = d.get('filename')
-
-        def _safe_format(q: str) -> str:
-            if not q or str(q).lower() in ("best", "auto"):
-                return "bestvideo+bestaudio/best"
-            height = "".join(filter(str.isdigit, str(q)))
-            if height:
-                return f"bestvideo[height<={height}]+bestaudio/best[height<={height}]/best"
-            return "bestvideo+bestaudio/best"
-
-        ydl_opts = {
-            'format': _safe_format(job.quality),
-            'outtmpl': os.path.join(job.download_dir, '%(title)s.%(ext)s'),
-            'progress_hooks': [progress_hook],
-            'quiet': True,
-            'no_warnings': True,
-            # Sanitise filenames: restrict to ASCII-safe chars, no weird parentheses.
-            'restrictfilenames': True,
-            # Hardened options matching YouTubeService
-            'nocheckcertificate': True,
-            # Android client logic for bot bypass
-            'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
-            'socket_timeout': 30,
-            'retries': 5,
-            'fragment_retries': 5,
-            'buffersize': 131072,
-            'concurrent_fragment_downloads': int(os.environ.get("YTDLP_CONCURRENT_FRAGMENTS", "5")),
-            'ratelimit': download_rate_per_job(),
-            'noplaylist': True,
+    def _options(self, job):
+        quality = "".join(filter(str.isdigit, str(job.quality or "")))
+        formats = f"bestvideo[height<={quality}]+bestaudio/best[height<={quality}]/best" if quality else "bestvideo+bestaudio/best"
+        return {
+            "format": formats, "outtmpl": os.path.join(job.download_dir, "%(title)s.%(ext)s"),
+            "quiet": True, "no_warnings": True, "restrictfilenames": True,
+            "nocheckcertificate": False, "continuedl": True, "overwrites": False,
+            "skip_unavailable_fragments": False,
+            "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
+            "socket_timeout": 20, "retries": 3, "fragment_retries": 3, "buffersize": 131072,
+            "concurrent_fragment_downloads": max(1, int(os.environ.get("YTDLP_CONCURRENT_FRAGMENTS", "5"))),
+            "ratelimit": download_rate_per_job(), "noplaylist": True,
+            "http_headers": job.extra_headers,
         }
-        if job.extra_headers:
-            ydl_opts['http_headers'] = dict(job.extra_headers)
 
+    async def _transfer(self, job, reservation):
+        process = await asyncio.create_subprocess_exec(
+            sys.executable, str(_WORKER), stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+            start_new_session=True,
+            pass_fds=(job._claim_fd, reservation.fd),
+        )
+        expected = 0
+        last_space_check = 0.0
+        window = download_window(download_rate_per_job())
         try:
-            # Recheck after queueing: another transfer or conversion may have
-            # consumed the available space while this job waited for its slot.
-            async with reserve_space_async(DOWNLOADS_DIR, "downloads", window, job_id=job.id) as reservation:
-                await asyncio.to_thread(Path(job.download_dir).mkdir, parents=True, exist_ok=True)
-                await asyncio.to_thread(marker.touch)
-                loop = asyncio.get_running_loop()
-                worker = loop.run_in_executor(None, self._run_yt_dlp, ydl_opts, job.url)
-                try:
-                    await asyncio.shield(worker)
-                except asyncio.CancelledError:
-                    cancellation.set()
-                    await asyncio.gather(worker, return_exceptions=True)
-                    raise
-                await asyncio.to_thread(marker.unlink, missing_ok=True)
-                await asyncio.to_thread(self._index_download, job.download_dir)
-                job.status = "completed"
-                self._archive(job)
+            request = json.dumps({"url": job.url, "options": self._options(job)}).encode()
+            process.stdin.write(request)
+            await process.stdin.drain()
+            process.stdin.close()
+            while line := await asyncio.wait_for(process.stdout.readline(), timeout=180):
+                data = json.loads(line)
+                downloaded = data.get("downloaded_bytes") or 0
+                size = data.get("total_bytes") or data.get("total_bytes_estimate") or 0
+                job.downloaded_bytes = downloaded or job.downloaded_bytes
+                job.size_bytes = size or job.size_bytes
+                job.speed_bytes, job.eta_seconds = data.get("speed") or 0, data.get("eta")
+                if size and downloaded:
+                    job.progress = min(99.0, 100 * downloaded / size)
+                phase = data.get("status")
+                if phase in {"finished", "processing"}:
+                    job.status = "processing"
+                elif phase == "downloading":
+                    job.status = "downloading"
+                now = time.monotonic()
+                if size * 2 > expected or now - last_space_check >= 5 or phase == "finished":
+                    written = await asyncio.to_thread(get_path_size_bytes, job.download_dir, max_age=0)
+                    expected = max(expected, 2 * (max(0, written - downloaded) + size))
+                    await asyncio.to_thread(reservation.resize, max(window, expected - written, written))
+                    last_space_check = now
+                self.checkpoint(job)
+            if await process.wait() != 0:
+                raise TransferError("The media provider failed to complete the transfer")
+        except asyncio.TimeoutError as exc:
+            raise TransferError("The media provider stopped reporting progress", retryable=True) from exc
+        except (BrokenPipeError, ConnectionResetError) as exc:
+            raise TransferError("The media worker could not start") from exc
+        finally:
+            await stop_process_group(process)
 
-        except asyncio.CancelledError:
-            job.status = "cancelled"
-            self._archive(job)
-            raise
-        except Exception as e:
-            logger.warning("Download failed %s (%s)", job.id, type(e).__name__)
-            job.status = "error"
-            job.error_msg = str(e)
-            self._archive(job)
-
-    def _run_yt_dlp(self, opts, url):
-        if yt_dlp is None:
-            raise RuntimeError("yt-dlp is not installed")
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.download([url])
-
-    @staticmethod
-    def _index_download(directory):
-        paths = [path for path in Path(directory).rglob("*") if path.suffix.lower() in VIDEO_EXTENSIONS]
-        sync_library_paths(DOWNLOADS_DIR, paths)
+    async def _verify(self, job):
+        directory = Path(job.download_dir)
+        files = await asyncio.to_thread(downloaded_videos, job)
+        verified = await asyncio.to_thread(verified_paths, directory, files)
+        for suffix in (".part", ".ytdl"):
+            if await asyncio.to_thread(lambda: any(path != directory / PARTIAL_GUARD
+                                                   for path in directory.rglob(f"*{suffix}"))):
+                raise TransferError("The download still contains unfinished data")
+        if not shutil.which("ffprobe"):
+            raise TransferError("FFprobe is required to verify the downloaded video")
+        for path in files:
+            process = await asyncio.create_subprocess_exec(
+                "ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_type",
+                "-of", "csv=p=0", str(path), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+            )
+            try:
+                output, _ = await asyncio.wait_for(process.communicate(), timeout=15)
+                if process.returncode or b"video" not in output.splitlines():
+                    raise TransferError("The downloaded file does not contain a readable video")
+            except asyncio.TimeoutError as exc:
+                raise TransferError("Video verification timed out") from exc
+            finally:
+                if process.returncode is None:
+                    await stop_process(process)
+        return verified

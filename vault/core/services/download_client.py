@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Dict, Optional
+from urllib.parse import quote
 try:
     import httpx
 except ImportError:
@@ -12,7 +13,7 @@ except ImportError:
 from config import settings
 from services.download_service import DownloadService
 from services.media_library import sync_completed_job
-from services.torrent_service import torrent_service, TorrentService
+from services.torrent_service import torrent_service
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,8 @@ class DownloaderClient:
         title: str,
         quality: str = "best",
         extra_headers: Optional[Dict[str, str]] = None,
+        priority: int = 0,
+        request_key: str | None = None,
     ) -> dict:
         if self.is_remote:
             async with httpx.AsyncClient(timeout=30) as client:
@@ -49,14 +52,18 @@ class DownloaderClient:
                         "title": title,
                         "quality": quality,
                         "extra_headers": extra_headers,
+                        "priority": priority,
+                        "request_key": request_key,
                     },
                 )
                 if not resp.is_success:
                     err = resp.json().get("detail") if resp.headers.get("content-type") == "application/json" else resp.text
                     raise RuntimeError(err or f"Downloader returned {resp.status_code}")
                 return resp.json()
-        job_id = self.local_download_service.start_download(
-            url, title, quality, extra_headers=extra_headers, quota_checked=True
+        service = self.local_download_service
+        job_id = service.start_download(
+            url, title, quality, extra_headers=extra_headers, quota_checked=True,
+            priority=priority, request_key=request_key,
         )
         return {"success": True, "job_id": job_id, "type": "yt-dlp"}
 
@@ -67,6 +74,8 @@ class DownloaderClient:
         info_hash: Optional[str] = None,
         file_idx: Optional[int] = None,
         size_bytes: Optional[int] = None,
+        priority: int = 0,
+        request_key: str | None = None,
     ) -> dict:
         if self.is_remote:
             async with httpx.AsyncClient(timeout=30) as client:
@@ -78,6 +87,8 @@ class DownloaderClient:
                         "info_hash": info_hash,
                         "file_idx": file_idx,
                         "size_bytes": size_bytes,
+                        "priority": priority,
+                        "request_key": request_key,
                     },
                 )
                 if not resp.is_success:
@@ -86,16 +97,16 @@ class DownloaderClient:
                 return resp.json()
 
         duplicate_id = torrent_service.find_active_duplicate(magnet, info_hash, file_idx)
-        if duplicate_id:
-            return {"success": True, "job_id": duplicate_id, "type": "torrent", "duplicate": True}
         job_id = torrent_service.start_torrent_download(
             title=title,
             magnet=magnet,
             info_hash=info_hash,
             file_idx=file_idx,
             size_bytes=size_bytes,
+            priority=priority,
+            request_key=request_key,
         )
-        return {"success": True, "job_id": job_id, "type": "torrent", "duplicate": False}
+        return {"success": True, "job_id": job_id, "type": "torrent", "duplicate": duplicate_id == job_id}
 
     async def get_jobs(self) -> dict:
         if self.is_remote:
@@ -116,28 +127,36 @@ class DownloaderClient:
                         return jobs
             except Exception as exc:
                 logger.warning("Failed to fetch jobs from downloader service (%s): %s", self.url, exc)
-        return {
-            "yt_dlp": self.local_download_service.get_all_jobs(),
-            "torrent": torrent_service.get_all_jobs(),
-        }
+        yt_jobs, torrent_jobs = await asyncio.gather(
+            asyncio.to_thread(self.local_download_service.get_all_jobs),
+            asyncio.to_thread(torrent_service.get_all_jobs),
+        )
+        return {"yt_dlp": yt_jobs, "torrent": torrent_jobs}
 
     async def get_job(self, job_id: str) -> Optional[dict]:
         if self.is_remote:
             try:
                 async with httpx.AsyncClient(timeout=10) as client:
-                    resp = await client.get(f"{self.url}/api/downloads/jobs/{job_id}")
+                    resp = await client.get(f"{self.url}/api/downloads/jobs/{quote(job_id, safe='')}")
                     if resp.is_success:
                         return resp.json()
             except Exception as exc:
                 logger.warning("Failed to fetch job %s from downloader service: %s", job_id, exc)
-        return self.local_download_service.get_job(job_id) or torrent_service.get_job(job_id)
+        return await asyncio.to_thread(lambda: self.local_download_service.get_job(job_id) or torrent_service.get_job(job_id))
 
     async def cancel_job(self, job_id: str) -> bool:
         if self.is_remote:
             async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.delete(f"{self.url}/api/downloads/jobs/{job_id}")
+                resp = await client.delete(f"{self.url}/api/downloads/jobs/{quote(job_id, safe='')}")
                 return resp.is_success
-        return torrent_service.cancel_job(job_id)
+        return torrent_service.cancel_job(job_id) or self.local_download_service.cancel_job(job_id)
+
+    async def resume_job(self, job_id: str) -> bool:
+        if self.is_remote:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.post(f"{self.url}/api/downloads/jobs/{quote(job_id, safe='')}/resume")
+                return resp.is_success
+        return torrent_service.resume(job_id) or self.local_download_service.resume(job_id)
 
     async def stop_all(self) -> dict:
         if self.is_remote:
@@ -145,12 +164,7 @@ class DownloaderClient:
                 resp = await client.post(f"{self.url}/api/downloads/stop-all")
                 if resp.is_success:
                     return resp.json()
-        cancelled = 0
-        for job in list(torrent_service._jobs.values()):
-            if job.status in ("pending", "connecting", "downloading"):
-                job.cancel()
-                cancelled += 1
-        return {"success": True, "cancelled": cancelled}
+        return {"success": True, "cancelled": torrent_service.stop_all() + self.local_download_service.stop_all()}
 
     async def clear_history(self) -> dict:
         if self.is_remote:
@@ -158,9 +172,19 @@ class DownloaderClient:
                 resp = await client.post(f"{self.url}/api/downloads/clear-history")
                 if resp.is_success:
                     return resp.json()
-        torrent_service._history.clear()
-        self.local_download_service.history.clear()
+        await asyncio.gather(
+            asyncio.to_thread(torrent_service.clear_history),
+            asyncio.to_thread(self.local_download_service.clear_history),
+        )
         return {"success": True}
+
+    async def restore(self):
+        if not self.is_remote:
+            await asyncio.gather(torrent_service.restore(), self.local_download_service.restore())
+
+    async def close(self):
+        if not self.is_remote:
+            await asyncio.gather(torrent_service.close(), self.local_download_service.close())
 
 
 downloader_client = DownloaderClient(settings.DOWNLOADER_URL)

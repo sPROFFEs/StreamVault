@@ -211,6 +211,10 @@ async def _update_checks_background():
 
 async def _recover_downloads_background():
     try:
+        await downloads.downloader_client.restore()
+    except Exception:
+        logger.warning("[DOWNLOADS] Could not restore download queue")
+    try:
         recovered = await asyncio.to_thread(
             recover_completed_downloads, settings.DOWNLOADS_ROOT
         )
@@ -254,7 +258,7 @@ async def shutdown_event():
         task.cancel()
     await asyncio.gather(*_startup_tasks, return_exceptions=True)
     await federation.close_tasks()
-    await downloads.torrent_service.close()
+    await downloads.downloader_client.close()
     await downloads.close_playback_tasks()
     await iptv.iptv_service.close()
     await asyncio.to_thread(tmdb_service.close)

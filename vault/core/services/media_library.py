@@ -316,6 +316,10 @@ def recover_completed_downloads(root: str | Path) -> list[str]:
                 continue
             if directory.is_symlink() or marker.is_symlink():
                 continue
+            # Managed jobs publish only from the durable verified file list.
+            # Empty markers from older releases retain the legacy recovery.
+            if marker.stat().st_size:
+                continue
             if any(next(directory.rglob(f"*{suffix}"), None) for suffix in (".aria2", ".part", ".ytdl")):
                 continue
             videos = sorted(

@@ -4,12 +4,16 @@ const T = {
         noActive: "No active downloads.",
         noFiles: "No downloaded files.",
         cancel: "Cancel",
+        resume: "Resume",
         delete: "Delete",
         play: "Play",
         confirmDelete: (name) => `Delete "${name}" from disk?`,
         statusPending: "Pending",
         statusConnecting: "Connecting...",
         statusDownloading: "Downloading",
+        statusProcessing: "Verifying video",
+        statusCancelling: "Cancelling…",
+        statusInterrupted: "Interrupted",
         statusCompleted: "Completed",
         statusError: "Error",
         statusCancelled: "Cancelled",
@@ -32,12 +36,16 @@ const T = {
         noActive: "No hay descargas en curso.",
         noFiles: "No hay archivos descargados.",
         cancel: "Cancelar",
+        resume: "Reanudar",
         delete: "Eliminar",
         play: "Reproducir",
         confirmDelete: (name) => `¿Eliminar "${name}" del disco?`,
         statusPending: "Pendiente",
         statusConnecting: "Conectando...",
         statusDownloading: "Descargando",
+        statusProcessing: "Verificando vídeo",
+        statusCancelling: "Cancelando…",
+        statusInterrupted: "Interrumpida",
         statusCompleted: "Completado",
         statusError: "Error",
         statusCancelled: "Cancelado",
@@ -249,7 +257,7 @@ async function loadJobs() {
 // Render active downloads                                             //
 // ------------------------------------------------------------------ //
 function renderActive() {
-    const activeStatuses = ["pending", "connecting", "downloading", "error"];
+    const activeStatuses = ["pending", "connecting", "downloading", "processing", "cancelling", "interrupted", "error"];
     const all = [
         ...Object.values(state.torrentJobs),
         ...Object.values(state.ytJobs),
@@ -269,11 +277,17 @@ function renderActive() {
         el.activeList.insertAdjacentHTML("beforeend", buildJobRow(job));
         el.activeList.querySelector(`[data-job-id="${job.id}"] .cancel-btn`)
             ?.addEventListener("click", () => cancelJob(job.id));
+        el.activeList.querySelector(`[data-job-id="${job.id}"] .resume-btn`)
+            ?.addEventListener("click", () => resumeDownload(job.id));
         updateJobRow(job);
     }
 }
 
 function buildJobRow(job) {
+    const canCancel = ["pending", "connecting", "downloading", "processing"].includes(job.status);
+    const action = job.can_resume
+        ? `<button class="button resume-btn" type="button">${T.resume}</button>`
+        : canCancel ? `<button class="button cancel-btn" type="button">${T.cancel}</button>` : "";
     return `
     <div class="download-item" data-job-id="${job.id}">
         <div class="download-item__info">
@@ -292,7 +306,7 @@ function buildJobRow(job) {
             <span class="download-item__pct" data-pct>0%</span>
         </div>
         <div class="download-item__actions">
-            <button class="button cancel-btn" type="button">${T.cancel}</button>
+            ${action}
         </div>
     </div>`;
 }
@@ -325,6 +339,9 @@ function updateJobRow(job) {
     row.querySelector("[data-size]").textContent = formatBytes(job.size_bytes);
     row.querySelector("[data-status]").textContent = job.seeders
         ? `${statusLabel(job.status)} · ${T.seeders(job.seeders)}` : statusLabel(job.status);
+    if (job.status === "interrupted" && job.error) {
+        row.querySelector("[data-status]").textContent += ` · ${job.error}`;
+    }
 
     // Completado → quitar del panel activo (aparecerá en biblioteca)
     if (job.status === "completed") {
@@ -341,13 +358,23 @@ async function cancelJob(jobId) {
     try {
         const response = await fetch(`/api/downloads/jobs/${jobId}`, { method: "DELETE" });
         if (!response.ok) throw new Error("Could not cancel download");
-        delete state.torrentJobs[jobId];
-        el.activeList.querySelector(`[data-job-id="${jobId}"]`)?.remove();
-        const remaining = el.activeList.querySelectorAll("[data-job-id]").length;
-        el.activeCount.textContent = String(remaining);
-        if (!remaining) el.activeEmpty.hidden = false;
+        await loadJobs();
     } catch (e) {
         console.error(e);
+    }
+}
+
+async function resumeDownload(jobId) {
+    const button = el.activeList.querySelector(`[data-job-id="${jobId}"] .resume-btn`);
+    if (button) button.disabled = true;
+    try {
+        const response = await fetch(`/api/downloads/jobs/${jobId}/resume`, {method: "POST"});
+        if (!response.ok) throw new Error("Could not resume download");
+        await loadJobs();
+    } catch (error) {
+        console.error(error);
+    } finally {
+        if (button) button.disabled = false;
     }
 }
 
@@ -773,6 +800,9 @@ function statusLabel(status) {
         pending: T.statusPending,
         connecting: T.statusConnecting,
         downloading: T.statusDownloading,
+        processing: T.statusProcessing,
+        cancelling: T.statusCancelling,
+        interrupted: T.statusInterrupted,
         completed: T.statusCompleted,
         error: T.statusError,
         cancelled: T.statusCancelled,

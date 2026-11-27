@@ -27,6 +27,7 @@ from services.media_index import get_index
 from services import storage_maintenance
 from services.storage_policy import disk_free_bytes
 from services.storage_reservations import reservation_totals
+from services.download_queue import ACTIVE
 
 cloudflared_manager = CloudflaredManager(
     settings.DATA_ROOT,
@@ -111,7 +112,7 @@ async def _active_downloader_job_ids() -> set[str] | None:
             str(job["id"])
             for kind in ("torrent", "yt_dlp")
             for job in jobs.get(kind, [])
-            if job.get("status") in {"pending", "connecting", "downloading"}
+            if job.get("status") in ACTIVE
         }
     except Exception:
         # If status is unavailable, the filesystem scanner stays conservative.

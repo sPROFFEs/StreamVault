@@ -11,27 +11,24 @@ Notificaciones globales (descarga completa) vía NotificationService.
 """
 
 import asyncio
-import logging
+import json
 import os
 import re
 import shutil
-import uuid
 import time
-from datetime import datetime
-from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Optional
 from urllib.parse import parse_qs, urlsplit
 
 from config import settings
 from services.download_limits import download_slots, download_rate_per_job, stop_process
-from services.media_library import VIDEO_EXTENSIONS, INCOMPLETE_MARKER, sync_library_paths
+from services.download_queue import (
+    ACTIVE, PersistentTransfers, TransferError, TransferJob, downloaded_videos, prepare_directory,
+    restore_job_fields, source_fingerprint, verified_paths,
+)
 from services.storage_policy import ensure_download_space
 from services.storage_reservations import download_window, reserve_space_async
 
-logger = logging.getLogger(__name__)
-
 DOWNLOADS_DIR = settings.DOWNLOADS_ROOT
-HISTORY_LIMIT = 50
 
 
 def _aria2c_available() -> bool:
@@ -44,7 +41,7 @@ def build_aria2_command(
     file_idx: Optional[int] = None,
 ) -> list[str]:
     """Build a resource-conscious aria2 command for a personal media server."""
-    upload_limit = max(16384, min(settings.TORRENT_UPLOAD_RATE_LIMIT, 131072) // max(1, settings.CONCURRENT_DOWNLOADS))
+    upload_limit = max(1, min(settings.TORRENT_UPLOAD_RATE_LIMIT, 131072) // settings.CONCURRENT_DOWNLOADS)
     command = [
         "aria2c",
         "--no-conf=true",
@@ -58,8 +55,14 @@ def build_aria2_command(
         "--enable-color=false",
         "--truncate-console-readout=false",
         "--continue=true",
+        "--check-integrity=true",
+        "--check-certificate=true",
+        "--bt-save-metadata=true",
+        "--bt-load-saved-metadata=true",
+        "--max-tries=2",
+        "--retry-wait=2",
         "--allow-overwrite=false",
-        "--auto-file-renaming=true",
+        "--auto-file-renaming=false",
         # Keep DHT and PEX with safety bounds, disable IPv6 DHT socket spam and LPD multicast flood
         "--enable-dht=true",
         "--enable-dht6=false",
@@ -90,144 +93,49 @@ def build_aria2_command(
     return command
 
 
-class TorrentJob:
-    def __init__(
-        self,
-        title: str,
-        magnet: str,
-        info_hash: Optional[str] = None,
-        file_idx: Optional[int] = None,
-        size_bytes: Optional[int] = None,
-    ):
-        self.id = str(uuid.uuid4())
-        self.title = title
-        self.magnet = magnet
-        self.info_hash = info_hash
-        self.file_idx = file_idx
+class TorrentJob(TransferJob):
+    def __init__(self, title, magnet, info_hash=None, file_idx=None, size_bytes=None, priority=0):
+        super().__init__(DOWNLOADS_DIR, title, priority)
+        self.magnet, self.info_hash, self.file_idx = magnet, info_hash, file_idx
         self.size_bytes = size_bytes
-
-        self.status = "pending"       # pending | connecting | downloading | completed | error | cancelled
-        self.progress = 0.0           # 0-100
-        self.speed_bytes = 0          # bytes/s
-        self.eta_seconds: Optional[int] = None
-        self.downloaded_bytes = 0
-        self.seeders = 0
-        self.peers = 0
-        self.local_path: Optional[str] = None
-        self.local_paths: List[str] = []
-        self.download_dir = os.path.join(DOWNLOADS_DIR, self.id)
-        self.error_msg = ""
-        self.created_at = datetime.now()
-        self._process: Optional[asyncio.subprocess.Process] = None
+        self.seeders = self.peers = 0
         self._reservation = None
 
-    def to_dict(self) -> dict:
-        return {
-            "id": self.id,
-            "title": self.title,
-            "info_hash": self.info_hash,
-            "file_idx": self.file_idx,
-            "status": self.status,
-            "progress": round(self.progress, 1),
-            "speed_bytes": self.speed_bytes,
-            "eta_seconds": self.eta_seconds,
-            "downloaded_bytes": self.downloaded_bytes,
-            "size_bytes": self.size_bytes,
-            "seeders": self.seeders,
-            "peers": self.peers,
-            "local_path": self.local_path,
-            "local_paths": self.local_paths,
-            "error": self.error_msg,
-            "created_at": self.created_at.isoformat(),
-        }
-
-    def cancel(self):
-        if self._process and self._process.returncode is None:
-            try:
-                self._process.terminate()
-            except Exception:
-                pass
-        self.status = "cancelled"
+    def to_dict(self):
+        return {**super().to_dict(), "info_hash": self.info_hash, "file_idx": self.file_idx,
+                "seeders": self.seeders, "peers": self.peers}
 
 
-class TorrentService:
+class TorrentService(PersistentTransfers):
     def __init__(self):
-        self._jobs: Dict[str, TorrentJob] = {}
-        self._history: List[TorrentJob] = []
-        self._bg_tasks: Dict[str, asyncio.Task] = {}
-        # Callbacks registrados para notificaciones al completar
-        self._completion_callbacks: List = []
+        super().__init__(lambda: DOWNLOADS_DIR, "torrent")
 
-    # ------------------------------------------------------------------ #
-    # Public API                                                           #
-    # ------------------------------------------------------------------ #
+    def _slots(self):
+        return download_slots
 
-    def start_torrent_download(
-        self,
-        title: str,
-        magnet: str,
-        info_hash: Optional[str] = None,
-        file_idx: Optional[int] = None,
-        size_bytes: Optional[int] = None,
-    ) -> str:
+    @staticmethod
+    def _fingerprint(magnet, info_hash, file_idx):
+        return source_fingerprint(_source_hash(magnet, info_hash) or magnet, file_idx)
+
+    def start_torrent_download(self, title, magnet, info_hash=None, file_idx=None, size_bytes=None,
+                               priority=0, request_key=None):
         if not _aria2c_available():
             raise RuntimeError("aria2c no está instalado en el sistema")
+        job = TorrentJob(title, magnet, info_hash, file_idx, size_bytes, priority)
+        payload = {"magnet": magnet, "info_hash": info_hash, "file_idx": file_idx, "size_bytes": size_bytes}
+        return self._enqueue(job, payload, self._fingerprint(magnet, info_hash, file_idx), request_key)
 
-        duplicate_id = self.find_active_duplicate(magnet, info_hash, file_idx)
-        if duplicate_id:
-            return duplicate_id
+    def _restore_job(self, row):
+        view = json.loads(row["view"])
+        payload = json.loads(row["payload"]) if row["payload"] else {"magnet": ""}
+        return restore_job_fields(TorrentJob(view["title"], **payload), row, ("seeders", "peers"))
 
-        job = TorrentJob(title, magnet, info_hash, file_idx, size_bytes)
-        self._jobs[job.id] = job
-        task = asyncio.create_task(self._run(job))
-        self._bg_tasks[job.id] = task
-        task.add_done_callback(lambda t, jid=job.id: self._bg_tasks.pop(jid, None))
-        return job.id
-
-    def get_job(self, job_id: str) -> Optional[dict]:
-        job = self._jobs.get(job_id)
-        if job:
-            return job.to_dict()
-        for h in self._history:
-            if h.id == job_id:
-                return h.to_dict()
-        return None
-
-    def get_all_jobs(self) -> List[dict]:
-        active = [j.to_dict() for j in self._jobs.values()]
-        recent = [j.to_dict() for j in self._history[-30:] if j.status != "cancelled"]
-        return active + recent
-
-    def find_active_duplicate(self, magnet: str, info_hash: Optional[str] = None,
-                              file_idx: Optional[int] = None) -> Optional[str]:
-        normalized_hash = _source_hash(magnet, info_hash)
+    def find_active_duplicate(self, magnet, info_hash=None, file_idx=None):
+        fingerprint = self._fingerprint(magnet, info_hash, file_idx)
         for job in self._jobs.values():
-            if job.status not in {"pending", "connecting", "downloading"}:
-                continue
-            same_hash = normalized_hash and _source_hash(job.magnet, job.info_hash) == normalized_hash
-            if (same_hash or job.magnet == magnet) and job.file_idx == file_idx:
+            if job.status in ACTIVE and self._fingerprint(job.magnet, job.info_hash, job.file_idx) == fingerprint:
                 return job.id
         return None
-
-    def cancel_job(self, job_id: str) -> bool:
-        job = self._jobs.get(job_id)
-        if not job:
-            return False
-        job.cancel()
-        task = self._bg_tasks.get(job_id)
-        if task:
-            task.cancel()
-        self._archive(job)
-        return True
-
-    def on_completion(self, callback) -> None:
-        """Registra un callback async(job_dict) que se llama al completar una descarga."""
-        if callback not in self._completion_callbacks:
-            self._completion_callbacks.append(callback)
-
-    # ------------------------------------------------------------------ #
-    # Internal — aria2c subprocess                                        #
-    # ------------------------------------------------------------------ #
 
     # Exit codes that point at the operator, not the network — surface them
     # in human-friendly form so the UI explains itself.
@@ -247,119 +155,45 @@ class TorrentService:
         28: "aria2c rejected a command-line option (try `aria2c --version`)",
     }
 
-    async def _run(self, job: TorrentJob):
-        try:
-            async with download_slots:
-                if job.status != "cancelled":
-                    window = download_window(download_rate_per_job())
-                    async with reserve_space_async(DOWNLOADS_DIR, "downloads", job.size_bytes or window,
-                                                   job_id=job.id) as reservation:
-                        job._reservation = reservation
-                        try:
-                            await self._download(job)
-                        finally:
-                            # The bytes stay reserved while aria2 can still write.
-                            await stop_process(job._process)
-                            job._reservation = None
-        except asyncio.CancelledError:
-            job.status = "cancelled"
-            raise
-        except Exception as exc:
-            logger.exception("Torrent job %s failed", job.id)
-            job.status = "error"
-            job.error_msg = str(exc)
-        finally:
-            job.speed_bytes = 0
-            job.eta_seconds = None
-            self._archive(job)
-
-    async def close(self):
-        tasks = list(self._bg_tasks.values())
-        for job_id in list(self._jobs):
-            self.cancel_job(job_id)
-        await asyncio.gather(*tasks, return_exceptions=True)
-
-    async def _download(self, job: TorrentJob):
-        await asyncio.to_thread(Path(job.download_dir).mkdir, parents=True, exist_ok=True)
-        marker = Path(job.download_dir) / INCOMPLETE_MARKER
-        await asyncio.to_thread(marker.touch)
-        job.status = "connecting"
-
-        # All output stays in this job's directory, including shared boundary
-        # pieces for files aria2 hasn't selected.
-        cmd = build_aria2_command(job.magnet, job.download_dir, job.file_idx)
-        priority = ["nice", "-n", "19"] if shutil.which("nice") else []
-
-        logger.info(f"[torrent] launching aria2c: {' '.join(cmd[:6])} … (magnet trimmed)")
-
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *priority,
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            job._process = proc
-
-            stdout_tail: list[str] = []
-            stderr_tail: list[str] = []
-
-            readers = [asyncio.create_task(self._parse_output(job, proc, stdout_tail)),
-                       asyncio.create_task(self._capture_stderr(proc, stderr_tail))]
+    async def _download(self, job):
+        window = download_window(download_rate_per_job())
+        remaining = max(0, job.size_bytes - job.downloaded_bytes) if job.size_bytes else window
+        if job.size_bytes and job.downloaded_bytes:
+            remaining = max(remaining, min(job.size_bytes, window))
+        async with reserve_space_async(self.store.root, "downloads", remaining, job_id=job.id) as reservation:
+            job._reservation = reservation
             try:
-                await asyncio.gather(*readers)
+                await asyncio.to_thread(prepare_directory, job)
+                job.status = "connecting"
+                self.checkpoint(job, force=True)
+                await self._transfer(job)
+                job.status = "processing"
+                self.checkpoint(job, force=True)
+                paths = await asyncio.to_thread(downloaded_videos, job)
+                verified = await asyncio.to_thread(verified_paths, job.download_dir, paths)
+                await self.complete(job, verified)
             finally:
-                # No pipe reader may survive a failed disk check or race
-                # stop_process().communicate() during cancellation.
-                for reader in readers:
-                    reader.cancel()
-                await asyncio.gather(*readers, return_exceptions=True)
+                job._reservation = None
 
-            await proc.wait()
-            if job.status == "cancelled":
-                return
-
-            if proc.returncode == 0:
-                job.local_paths = await asyncio.to_thread(
-                    self._register_completed_download, job, marker
-                )
-                job.local_path = job.local_paths[0] if job.local_paths else None
-                job.status = "completed"
-                job.progress = 100.0
-                job.downloaded_bytes = job.size_bytes or job.downloaded_bytes
-                logger.info(f"Torrent completado: {job.title} → {job.local_path}")
-                await self._notify_completion(job)
-            else:
-                if job.status != "cancelled":
-                    job.status = "error"
-                    hint = self._EXIT_CODE_HINTS.get(proc.returncode or 0, "")
-                    # Try to surface the actual line aria2c complained about.
-                    last_err = next(
-                        (l for l in reversed(stderr_tail + stdout_tail)
-                         if l and not l.startswith("[#") and l != "."),
-                        "",
-                    )
-                    pieces = [f"aria2c exited {proc.returncode}"]
-                    if hint:
-                        pieces.append(f"({hint})")
-                    if last_err:
-                        pieces.append(f"– {last_err[:160]}")
-                    job.error_msg = " ".join(pieces)
-                    logger.error(
-                        "Torrent fallido %s: %s\n--- stderr tail ---\n%s",
-                        job.title, job.error_msg, "\n".join(stderr_tail[-20:]),
-                    )
-
-        except Exception as e:
-            logger.exception(f"Error inesperado en torrent job {job.id}: {e}")
-            job.status = "error"
-            job.error_msg = str(e)
+    async def _transfer(self, job):
+        command = build_aria2_command(job.magnet, job.download_dir, job.file_idx)
+        priority = ["nice", "-n", "19"] if shutil.which("nice") else []
+        process = await asyncio.create_subprocess_exec(
+            *priority, *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+            pass_fds=(job._claim_fd, job._reservation.fd),
+        )
+        try:
+            await self._parse_output(job, process)
+            result = await process.wait()
+            if result:
+                detail = self._EXIT_CODE_HINTS.get(result, "transfer failed")
+                raise TransferError(f"aria2c {result} ({detail})", retryable=result in {2, 6, 15, 27})
+        finally:
+            await stop_process(process)
 
     async def _parse_output(self, job: TorrentJob, proc: asyncio.subprocess.Process,
-                            tail: list[str]):
-        """Parsea la salida de aria2c para extraer progreso, velocidad, seeders y ETA.
-        Mantiene un buffer pequeño de líneas no-progreso (errores, warnings,
-        info) para que el manejador de error pueda reportarlas al UI."""
+                            tail: list[str] | None = None):
+        """Parse bounded aria2 progress without storing raw tracker output."""
         pattern = re.compile(
             r"\[#[0-9a-f]+\s+"
             r"(?:([\d.]+\w+)/([\d.]+\w+))?"
@@ -411,11 +245,6 @@ class TorrentService:
                         job.eta_seconds = _parse_eta_str(eta_str)
                 except Exception:
                     pass
-            else:
-                # Keep last ~40 non-progress lines for error reporting.
-                tail.append(line)
-                if len(tail) > 40:
-                    del tail[:-40]
             if job.size_bytes != previous_size or time.monotonic() - last_space_check >= 5:
                 if job._reservation:
                     remaining = (max(0, job.size_bytes - job.downloaded_bytes)
@@ -424,58 +253,9 @@ class TorrentService:
                 else:
                     await asyncio.to_thread(ensure_download_space, DOWNLOADS_DIR)
                 last_space_check = time.monotonic()
+            if job._running:
+                self.checkpoint(job)
 
-    async def _capture_stderr(self, proc: asyncio.subprocess.Process,
-                              tail: list[str]):
-        if proc.stderr is None:
-            return
-        async for raw in _read_output_lines(proc.stderr):
-            line = raw.decode(errors="ignore").strip()
-            if not line:
-                continue
-            tail.append(line)
-            if len(tail) > 40:
-                del tail[:-40]
-
-    def _find_downloaded_files(self, job: TorrentJob) -> List[str]:
-        """Resolve this transfer's files, including complete season folders."""
-        paths = []
-        for path in Path(job.download_dir).rglob("*"):
-            try:
-                if (path.is_file() and not path.is_symlink()
-                        and path.suffix.lower() in VIDEO_EXTENSIONS
-                        and path.stat().st_size > 0):
-                    paths.append(str(path))
-            except OSError:
-                continue
-        return sorted(paths)
-
-    def _register_completed_download(self, job: TorrentJob, marker: Path) -> List[str]:
-        """Make an aria2 result visible only after playable media is present."""
-        paths = self._find_downloaded_files(job)
-        if not paths:
-            raise RuntimeError(
-                "Torrent finished but no playable video was downloaded; "
-                "the selected Torrentio file index may be invalid"
-            )
-        marker.unlink(missing_ok=True)
-        sync_library_paths(DOWNLOADS_DIR, paths)
-        return paths
-
-    def _archive(self, job: TorrentJob):
-        if job.id in self._jobs:
-            del self._jobs[job.id]
-        if job not in self._history:
-            self._history.append(job)
-        if len(self._history) > HISTORY_LIMIT:
-            self._history = self._history[-HISTORY_LIMIT:]
-
-    async def _notify_completion(self, job: TorrentJob):
-        for cb in self._completion_callbacks:
-            try:
-                await cb(job.to_dict())
-            except Exception as e:
-                logger.error(f"Error en callback de completado: {e}")
 
 
 # ------------------------------------------------------------------ #

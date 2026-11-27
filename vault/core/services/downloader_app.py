@@ -16,7 +16,8 @@ from pydantic import BaseModel, Field
 
 from config import settings
 from services.download_service import DownloadService
-from services.torrent_service import TorrentService, torrent_service
+from services.download_queue import TERMINAL
+from services.torrent_service import torrent_service
 from services.media_library import identify_video
 
 logger = logging.getLogger(__name__)
@@ -107,6 +108,7 @@ async def _auto_fetch_subtitles(local_path: str, title: str):
 
 
 torrent_service.on_completion(_on_torrent_done)
+download_service.on_completion(_on_torrent_done)
 
 
 class YtDlpPayload(BaseModel):
@@ -115,6 +117,8 @@ class YtDlpPayload(BaseModel):
     quality: Optional[str] = "best"
     type: Optional[str] = "video"
     extra_headers: Optional[Dict[str, str]] = None
+    priority: int = Field(0, ge=-1, le=1)
+    request_key: str | None = Field(None, max_length=128)
 
 
 class TorrentPayload(BaseModel):
@@ -123,6 +127,8 @@ class TorrentPayload(BaseModel):
     info_hash: Optional[str] = None
     file_idx: Optional[int] = Field(None, ge=0)
     size_bytes: Optional[int] = Field(None, ge=0)
+    priority: int = Field(0, ge=-1, le=1)
+    request_key: str | None = Field(None, max_length=128)
 
 
 @app.get("/health")
@@ -139,6 +145,8 @@ async def start_yt_dlp(payload: YtDlpPayload):
             payload.quality,
             extra_headers=payload.extra_headers,
             quota_checked=True,
+            priority=payload.priority,
+            request_key=payload.request_key,
         )
         return {"success": True, "job_id": job_id, "type": "yt-dlp"}
     except ValueError as e:
@@ -149,18 +157,20 @@ async def start_yt_dlp(payload: YtDlpPayload):
 
 @app.post("/api/downloads/start-torrent")
 async def start_torrent(payload: TorrentPayload):
-    duplicate_id = torrent_service.find_active_duplicate(payload.magnet, payload.info_hash, payload.file_idx)
-    if duplicate_id:
-        return {"success": True, "job_id": duplicate_id, "type": "torrent", "duplicate": True}
     try:
+        duplicate_id = torrent_service.find_active_duplicate(payload.magnet, payload.info_hash, payload.file_idx)
         job_id = torrent_service.start_torrent_download(
             title=payload.title,
             magnet=payload.magnet,
             info_hash=payload.info_hash,
             file_idx=payload.file_idx,
             size_bytes=payload.size_bytes,
+            priority=payload.priority,
+            request_key=payload.request_key,
         )
-        return {"success": True, "job_id": job_id, "type": "torrent", "duplicate": False}
+        return {"success": True, "job_id": job_id, "type": "torrent", "duplicate": duplicate_id == job_id}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     except RuntimeError as e:
         raise HTTPException(503, str(e))
     except Exception as e:
@@ -169,14 +179,15 @@ async def start_torrent(payload: TorrentPayload):
 
 @app.get("/api/downloads/jobs")
 async def list_jobs():
-    yt_jobs = download_service.get_all_jobs()
-    torrent_jobs = torrent_service.get_all_jobs()
+    yt_jobs, torrent_jobs = await asyncio.gather(
+        asyncio.to_thread(download_service.get_all_jobs), asyncio.to_thread(torrent_service.get_all_jobs),
+    )
     return {"yt_dlp": yt_jobs, "torrent": torrent_jobs}
 
 
 @app.get("/api/downloads/jobs/{job_id}")
 async def get_job(job_id: str):
-    job = download_service.get_job(job_id) or torrent_service.get_job(job_id)
+    job = await asyncio.to_thread(lambda: download_service.get_job(job_id) or torrent_service.get_job(job_id))
     if not job:
         raise HTTPException(404, "Job not found")
     return job
@@ -185,25 +196,28 @@ async def get_job(job_id: str):
 @app.delete("/api/downloads/jobs/{job_id}")
 @app.post("/api/downloads/cancel/{job_id}")
 async def cancel_job(job_id: str):
-    if torrent_service.cancel_job(job_id):
+    if torrent_service.cancel_job(job_id) or download_service.cancel_job(job_id):
         return {"success": True}
     raise HTTPException(404, "Job not found or already completed")
 
 
 @app.post("/api/downloads/stop-all")
 async def stop_all_downloads():
-    cancelled = 0
-    for job in list(torrent_service._jobs.values()):
-        if job.status in ("pending", "connecting", "downloading"):
-            job.cancel()
-            cancelled += 1
-    return {"success": True, "cancelled": cancelled}
+    return {"success": True, "cancelled": torrent_service.stop_all() + download_service.stop_all()}
+
+
+@app.post("/api/downloads/jobs/{job_id}/resume")
+async def resume_job(job_id: str):
+    if torrent_service.resume(job_id) or download_service.resume(job_id):
+        return {"success": True, "job_id": job_id}
+    raise HTTPException(409, "This download cannot be resumed")
 
 
 @app.post("/api/downloads/clear-history")
 async def clear_history():
-    torrent_service._history.clear()
-    download_service.history.clear()
+    await asyncio.gather(
+        asyncio.to_thread(torrent_service.clear_history), asyncio.to_thread(download_service.clear_history),
+    )
     return {"success": True}
 
 
@@ -213,12 +227,12 @@ async def stream_progress(job_id: str, request: Request):
         for _ in range(600):
             if await request.is_disconnected():
                 break
-            job = download_service.get_job(job_id) or torrent_service.get_job(job_id)
+            job = await asyncio.to_thread(lambda: download_service.get_job(job_id) or torrent_service.get_job(job_id))
             if not job:
                 yield f"data: {json.dumps({'status': 'not_found'})}\n\n"
                 break
             yield f"data: {json.dumps(job)}\n\n"
-            if job.get("status") in ("completed", "error", "cancelled"):
+            if job.get("status") in TERMINAL:
                 break
             await asyncio.sleep(2)
 
@@ -255,6 +269,11 @@ async def global_notifications(request: Request):
     )
 
 
+@app.on_event("startup")
+async def restore_downloads():
+    await asyncio.gather(torrent_service.restore(), download_service.restore())
+
+
 @app.on_event("shutdown")
 async def shutdown():
-    await torrent_service.close()
+    await asyncio.gather(torrent_service.close(), download_service.close())
