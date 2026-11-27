@@ -3,19 +3,15 @@ Age rating service — server-side port of Streambert's ageRating.js.
 
 Looks up the TMDB content-rating / release-date certification for a given
 movie/series and maps the country-specific cert to a numeric minimum age.
-Results are cached in-process for 7 days.
+Certification responses use the shared persistent TMDB cache.
 """
 from __future__ import annotations
 
-import os
-import time
 from typing import Optional
 
-import httpx
+from starlette.concurrency import run_in_threadpool
 
-TMDB_API_KEY = os.getenv("TMDB_API_KEY", "")
-TMDB_BASE = "https://api.themoviedb.org/3"
-CACHE_TTL_S = 7 * 24 * 3600
+from services.tmdb_service import tmdb_service
 
 
 # US MPAA → min age
@@ -50,24 +46,6 @@ MAPS = {
 }
 
 
-_cache: dict[str, tuple[float, dict]] = {}
-
-
-def _cache_get(key: str) -> Optional[dict]:
-    entry = _cache.get(key)
-    if not entry:
-        return None
-    ts, val = entry
-    if time.time() - ts > CACHE_TTL_S:
-        _cache.pop(key, None)
-        return None
-    return val
-
-
-def _cache_put(key: str, val: dict) -> None:
-    _cache[key] = (time.time(), val)
-
-
 def cert_to_min_age(country: str, cert: str) -> Optional[int]:
     if not cert:
         return None
@@ -80,28 +58,9 @@ def cert_to_min_age(country: str, cert: str) -> Optional[int]:
 async def get_rating(tmdb_id: int, media_type: str, country: str = "US") -> dict:
     """Return {cert, min_age, country} for a movie or TV series."""
     country = (country or "US").upper()
-    cache_key = f"{media_type}:{tmdb_id}:{country}"
-    cached = _cache_get(cache_key)
-    if cached is not None:
-        return cached
-
-    if not TMDB_API_KEY:
-        return {"cert": None, "min_age": None, "country": country}
-
     media_type = "tv" if media_type == "tv" else "movie"
-    suffix = "content_ratings" if media_type == "tv" else "release_dates"
-    url = f"{TMDB_BASE}/{media_type}/{tmdb_id}/{suffix}"
-
+    data = await run_in_threadpool(tmdb_service.get_certifications, tmdb_id, media_type)
     cert = None
-    try:
-        async with httpx.AsyncClient(timeout=8) as client:
-            r = await client.get(url, params={"api_key": TMDB_API_KEY})
-            r.raise_for_status()
-            data = r.json()
-    except Exception:
-        result = {"cert": None, "min_age": None, "country": country}
-        _cache_put(cache_key, result)
-        return result
 
     if media_type == "tv":
         for row in data.get("results", []):
@@ -120,6 +79,4 @@ async def get_rating(tmdb_id: int, media_type: str, country: str = "US") -> dict
                 break
 
     min_age = cert_to_min_age(country, cert) if cert else None
-    result = {"cert": cert, "min_age": min_age, "country": country}
-    _cache_put(cache_key, result)
-    return result
+    return {"cert": cert, "min_age": min_age, "country": country}

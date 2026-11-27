@@ -131,6 +131,7 @@ const state = {
     embedOverlayRaf: null,
     embedSubtitleOffset: 0,
     subtitleLangPref: null,
+    subtitleController: null,
     subtitleAutoActivated: false,
     videoSubtitles: null,
     videoSubtitleOffset: 0,
@@ -224,12 +225,14 @@ async function boot() {
         el.seriesControls.style.display = "grid";
         el.seasonSelect.addEventListener("change", async () => {
             await loadEpisodes();
-            await Promise.all([loadProgress(), loadSubtitles()]);
+            await loadProgress();
             autoLoadStreams();
+            void loadSubtitles();
         });
         el.episodeSelect.addEventListener("change", async () => {
-            await Promise.all([loadProgress(), loadSubtitles()]);
+            await loadProgress();
             autoLoadStreams();
+            void loadSubtitles();
         });
     }
 
@@ -262,8 +265,7 @@ async function loadDetailMetadata() {
     if (retrying) el.favoriteBtn.focus();
     if (MTYPE === "tv") await loadSeasons();
 
-    // Parallel: progress + subtitles + favorites check
-    await Promise.all([loadProgress(), loadSubtitles(), checkFavorite()]);
+    await Promise.all([loadProgress(), checkFavorite()]);
 
     try {
         const prefs = await window.SVAppearance.loadPrefs();
@@ -278,6 +280,7 @@ async function loadDetailMetadata() {
 
     // Auto-load stream sources
     autoLoadStreams();
+    void loadSubtitles();
     return true;
 }
 
@@ -343,14 +346,15 @@ async function loadSeasons() {
     el.seasonSelect.innerHTML = `<option>${T.loading}</option>`;
     try {
         const data = state.item;
-        const seasons = (data.seasons || []).filter(s => s.season_number > 0);
+        const seasons = (data.seasons || []).filter(s => Number.isInteger(s.season_number) && s.season_number >= 0);
         el.seasonSelect.innerHTML = seasons.map(s =>
             `<option value="${s.season_number}">${T.seasonLabel(s.season_number)}</option>`
         ).join("");
 
         const params = new URLSearchParams(window.location.search);
         const qs = params.get("s");
-        if (qs) el.seasonSelect.value = qs;
+        if (seasons.some(season => String(season.season_number) === qs)) el.seasonSelect.value = qs;
+        else if (seasons.some(season => season.season_number === 1)) el.seasonSelect.value = "1";
 
         await loadEpisodes(params.get("e"));
     } catch {
@@ -1493,6 +1497,10 @@ async function persistProgress(progressSeconds, durationSeconds, completed) {
 /* Subtitles                                                           */
 /* ------------------------------------------------------------------ */
 async function loadSubtitles() {
+    state.subtitleController?.abort();
+    const controller = new AbortController();
+    state.subtitleController = controller;
+    state.remoteSubtitles = [];
     el.subtitleSummary.textContent = T.checkingSubs;
     el.subtitleList.innerHTML = "";
     badge(el.subtitleBadge, "neutral", T.checking);
@@ -1505,11 +1513,14 @@ async function loadSubtitles() {
     }
 
     try {
-        const resp = await fetch(`/api/subtitles/search?${params}`);
+        const resp = await fetch(`/api/subtitles/search?${params}`, {signal: controller.signal});
         const data = await resp.json();
+        if (controller.signal.aborted) return;
         state.remoteSubtitles = data.items || [];
         renderAvailableSubtitles(data);
+        maybeAutoActivateSubtitle();
     } catch {
+        if (controller.signal.aborted) return;
         state.remoteSubtitles = [];
         renderAvailableSubtitles({ message: T.subErr, configured: false, error: true });
     }

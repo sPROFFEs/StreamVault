@@ -34,6 +34,7 @@ from config import settings
 from version import VERSION
 from services.media_library import recover_completed_downloads
 from services import federation_service, media_index, storage_maintenance
+from services.tmdb_service import tmdb_service
 import auth
 import auth_forms
 import database
@@ -256,6 +257,7 @@ async def shutdown_event():
     await downloads.torrent_service.close()
     await downloads.close_playback_tasks()
     await iptv.iptv_service.close()
+    await asyncio.to_thread(tmdb_service.close)
     if not admin.cloudflared_manager.external and not admin.cloudflared_manager.tunnel_url:
         await admin.cloudflared_manager.stop(disable=False)
     logger.info("[SHUTDOWN] StreamVault detenido")

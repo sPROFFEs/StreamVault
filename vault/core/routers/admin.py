@@ -590,27 +590,14 @@ async def delete_download_api(
 # ------------------------------------------------------------------ #
 # #9: TMDB API key management (admin-only, hot-reloadable)            #
 # ------------------------------------------------------------------ #
-from services import tmdb_service as _tmdb_service_module
-
-TMDB_KEY_FILE = os.path.join(settings.DATA_ROOT, "tmdb_key.txt")
+from services.tmdb_service import tmdb_service
 
 
 @router.get("/api/tmdb-key")
-async def get_tmdb_key(admin: database.User = Depends(get_current_admin)):
+def get_tmdb_key(admin: database.User = Depends(get_current_admin)):
     """Return whether a TMDB key is configured and its source."""
     del admin
-    env_key = os.getenv("TMDB_API_KEY", "") or settings.TMDB_API_KEY
-    file_key = ""
-    if os.path.isfile(TMDB_KEY_FILE):
-        try:
-            file_key = Path(TMDB_KEY_FILE).read_text(encoding="utf-8").strip()
-        except OSError:
-            pass
-    active_key = file_key or env_key
-    return {
-        "configured": bool(active_key),
-        "source": "file" if file_key else ("environment" if env_key else None),
-    }
+    return tmdb_service.key_status()
 
 
 class TmdbKeyPayload(BaseModel):
@@ -618,35 +605,29 @@ class TmdbKeyPayload(BaseModel):
 
 
 @router.put("/api/tmdb-key")
-async def set_tmdb_key(
+def set_tmdb_key(
     payload: TmdbKeyPayload,
     admin: database.User = Depends(get_current_admin),
 ):
-    """Persist the TMDB API key to disk and hot-reload it into settings."""
+    """Persist the admin key for every worker using this data volume."""
     del admin
+    key = payload.api_key.strip()
+    if not key:
+        raise HTTPException(422, "TMDB API key cannot be empty")
     try:
-        os.makedirs(os.path.dirname(TMDB_KEY_FILE), exist_ok=True)
-        Path(TMDB_KEY_FILE).write_text(payload.api_key.strip(), encoding="utf-8")
+        return tmdb_service.set_key(key)
     except OSError as exc:
-        raise HTTPException(500, f"Could not save TMDB key: {exc}") from exc
-    # Hot-reload into the running process.
-    settings.TMDB_API_KEY = payload.api_key.strip()
-    _tmdb_service_module.tmdb_service = _tmdb_service_module.TmdbService()
-    return {"configured": True, "source": "file"}
+        raise HTTPException(500, "Could not save TMDB key") from exc
 
 
 @router.delete("/api/tmdb-key")
-async def delete_tmdb_key(admin: database.User = Depends(get_current_admin)):
+def delete_tmdb_key(admin: database.User = Depends(get_current_admin)):
     """Remove the admin-managed TMDB key file and hot-reload."""
     del admin
-    if os.path.isfile(TMDB_KEY_FILE):
-        try:
-            os.remove(TMDB_KEY_FILE)
-        except OSError as exc:
-            raise HTTPException(500, f"Could not delete TMDB key: {exc}") from exc
-    settings.TMDB_API_KEY = ""
-    _tmdb_service_module.tmdb_service = _tmdb_service_module.TmdbService()
-    return {"configured": False, "source": None}
+    try:
+        return tmdb_service.set_key(None)
+    except OSError as exc:
+        raise HTTPException(500, "Could not delete TMDB key") from exc
 
 
 def _update_response(action):

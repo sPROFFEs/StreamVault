@@ -4,40 +4,23 @@ from typing import List, Optional
 
 import httpx
 from fastapi import APIRouter, Depends, Query
+from starlette.concurrency import run_in_threadpool
 
-from config import settings
 from providers.base import StreamResult
 from providers.resolvers import ResolverOrchestrator
 from providers.sources.torrentio import TorrentioProvider
 from providers.torrent_options import prepare_torrent_options
 from routers.preferences import _load_prefs, get_current_user
+from services.tmdb_service import tmdb_service
 import database
 
 router = APIRouter(prefix="/api/stream", tags=["Stream Resolver"])
 orchestrator = ResolverOrchestrator()
 logger = logging.getLogger(__name__)
 
-TMDB_BASE = "https://api.themoviedb.org/3"
-
-
 async def _fetch_imdb_id(tmdb_id: str, media_type: str) -> Optional[str]:
-    if not settings.TMDB_API_KEY:
-        logger.warning("TMDB_API_KEY not set — torrent providers need IMDB IDs")
-        return None
-    endpoint = "tv" if media_type == "tv" else "movie"
-    url = f"{TMDB_BASE}/{endpoint}/{tmdb_id}/external_ids"
-    try:
-        async with httpx.AsyncClient(timeout=8) as client:
-            resp = await client.get(url, params={"api_key": settings.TMDB_API_KEY})
-            if resp.status_code == 200:
-                imdb_id = resp.json().get("imdb_id")
-                logger.info(f"TMDB external_ids: tmdb={tmdb_id} → imdb={imdb_id}")
-                return imdb_id
-            else:
-                logger.warning(f"TMDB external_ids HTTP {resp.status_code} for {tmdb_id}")
-    except Exception as e:
-        logger.warning(f"Could not fetch IMDB ID for tmdb_id={tmdb_id}: {e}")
-    return None
+    ids = await run_in_threadpool(tmdb_service.get_external_ids, tmdb_id, media_type)
+    return ids.get("imdb_id")
 
 
 @router.get("/resolve/{tmdb_id}", response_model=List[StreamResult])
@@ -153,7 +136,7 @@ async def debug_stream(tmdb_id: str, media_type: str = Query("movie", alias="typ
     result: dict = {
         "tmdb_id": tmdb_id,
         "media_type": media_type,
-        "tmdb_key_configured": bool(settings.TMDB_API_KEY),
+        "tmdb_key_configured": (await run_in_threadpool(tmdb_service.key_status))["configured"],
         "providers": {},
     }
 
@@ -223,7 +206,6 @@ async def debug_stream(tmdb_id: str, media_type: str = Query("movie", alias="typ
         ("yts.torrentbay.st", "https://yts.torrentbay.st/api/v2/list_movies.json?limit=1"),
         ("eztv.re", "https://eztv.re/api/get-torrents?limit=1"),
         ("torrentio.strem.fun", "https://torrentio.strem.fun/manifest.json"),
-        ("api.themoviedb.org", f"https://api.themoviedb.org/3/configuration?api_key={settings.TMDB_API_KEY or 'x'}"),
     ]
     async with httpx.AsyncClient(timeout=8, follow_redirects=True, verify=False) as client:
         for label, test_url in hosts:
@@ -232,6 +214,8 @@ async def debug_stream(tmdb_id: str, media_type: str = Query("movie", alias="typ
                 reachable[label] = f"HTTP {resp.status_code}"
             except Exception as exc:
                 reachable[label] = f"FAIL: {exc.__class__.__name__}"
+    config = await run_in_threadpool(tmdb_service.configuration)
+    reachable["api.themoviedb.org"] = "Metadata available" if config else "Metadata unavailable"
     result["network"] = reachable
 
     return result

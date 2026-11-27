@@ -7,11 +7,15 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 import auth
 import database
 from config import settings
 from services.subtitles_service import SubtitlesService
+from services.media_identity import release_year
+from services.media_index import local_tmdb_metadata
+from services.tmdb_service import tmdb_service
 from services.subtitle_content import subtitle_bytes_to_vtt as _subtitle_bytes_to_vtt, download_subtitle, SubtitleTooLarge, SubtitleDownloadError
 
 router = APIRouter(prefix="/api/subtitles", tags=["Subtitles"])
@@ -33,42 +37,17 @@ def _maybe_user(request: Request, db: Session) -> Optional[database.User]:
     except Exception:
         return None
 
-TMDB_BASE = "https://api.themoviedb.org/3"
-
-
-async def _get_tmdb_info(tmdb_id: int, media_type: str) -> dict:
+async def _get_tmdb_info(tmdb_id: int, media_type: str, language: str) -> dict:
     """Obtiene título, año e IMDB ID desde TMDB."""
-    if not settings.TMDB_API_KEY:
-        return {}
-    endpoint = "tv" if media_type == "tv" else "movie"
-    try:
-        async with httpx.AsyncClient(timeout=8) as client:
-            detail = await client.get(
-                f"{TMDB_BASE}/{endpoint}/{tmdb_id}",
-                params={"api_key": settings.TMDB_API_KEY},
-            )
-            ext_ids = await client.get(
-                f"{TMDB_BASE}/{endpoint}/{tmdb_id}/external_ids",
-                params={"api_key": settings.TMDB_API_KEY},
-            )
-            title = ""
-            year: Optional[int] = None
-            if detail.status_code == 200:
-                d = detail.json()
-                title = d.get("title") or d.get("name") or ""
-                date_str = d.get("release_date") or d.get("first_air_date") or ""
-                if date_str and len(date_str) >= 4:
-                    try:
-                        year = int(date_str[:4])
-                    except ValueError:
-                        pass
-            imdb_id = ""
-            if ext_ids.status_code == 200:
-                imdb_id = ext_ids.json().get("imdb_id", "")
-            return {"title": title, "imdb_id": imdb_id, "year": year}
-    except Exception as e:
-        logger.warning(f"No se pudo obtener info TMDB para {tmdb_id}: {e}")
-        return {}
+    get_details = tmdb_service.get_tv_details if media_type == "tv" else tmdb_service.get_movie_details
+    detail, ids = await asyncio.gather(
+        run_in_threadpool(get_details, tmdb_id, language),
+        run_in_threadpool(tmdb_service.get_external_ids, tmdb_id, media_type),
+    )
+    detail = detail or await run_in_threadpool(local_tmdb_metadata, tmdb_id, media_type, language) or {}
+    title = detail.get("original_title") or detail.get("original_name") or detail.get("title") or detail.get("name")
+    return {"title": title or str(tmdb_id), "imdb_id": ids.get("imdb_id") or detail.get("imdb_id"),
+            "year": release_year(detail.get("release_date") or detail.get("first_air_date"))}
 
 
 @router.get("/search")
@@ -76,14 +55,14 @@ async def subtitles_search(
     request: Request,
     tmdb_id: int = Query(...),
     media_type: str = Query(..., pattern="^(movie|tv|series)$"),
-    season: Optional[int] = Query(None, ge=1),
+    season: Optional[int] = Query(None, ge=0),
     episode: Optional[int] = Query(None, ge=1),
     language: str = Query("en", min_length=2, max_length=8),
     db: Session = Depends(get_db),
 ):
     if media_type == "series":
         media_type = "tv"
-    info = await _get_tmdb_info(tmdb_id, media_type)
+    info = await _get_tmdb_info(tmdb_id, media_type, language)
     # Per-user keys override the env defaults when present.
     user = _maybe_user(request, db)
     subdl_key = None

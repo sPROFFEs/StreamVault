@@ -11,7 +11,9 @@ from __future__ import annotations
 import logging
 from typing import List, Optional
 
-import httpx
+from starlette.concurrency import run_in_threadpool
+
+from services.tmdb_service import tmdb_service
 
 logger = logging.getLogger(__name__)
 
@@ -43,20 +45,7 @@ def embed_urls(youtube_key: str, preferred: Optional[str] = None) -> List[str]:
 
 async def youtube_key_for_tmdb(tmdb_id: int, media_type: str = "movie") -> Optional[str]:
     """Pull the first YouTube trailer key from TMDB videos endpoint."""
-    import os
-    api_key = os.getenv("TMDB_API_KEY")
-    if not api_key:
-        return None
-    media_type = "tv" if media_type == "tv" else "movie"
-    url = f"https://api.themoviedb.org/3/{media_type}/{tmdb_id}/videos"
-    try:
-        async with httpx.AsyncClient(timeout=8) as client:
-            r = await client.get(url, params={"api_key": api_key})
-            r.raise_for_status()
-            data = r.json()
-    except Exception:
-        return None
-    candidates = data.get("results", []) or []
+    candidates = await run_in_threadpool(tmdb_service.get_videos, tmdb_id, media_type)
     for typ in ("Trailer", "Teaser", "Clip"):
         for v in candidates:
             if v.get("site") == "YouTube" and v.get("type") == typ and v.get("key"):

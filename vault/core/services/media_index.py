@@ -277,6 +277,45 @@ def get_index(root):
     return _get_index(root, location)
 
 
+def local_tmdb_metadata(tmdb_id, media_type, language, season=None):
+    """Build a minimal playable detail view from an indexed TMDB identity."""
+    if not 0 < tmdb_id < 2**63:
+        return None
+    kind = "series" if media_type == "tv" else "movie"
+    try:
+        entries = get_index(settings.DOWNLOADS_ROOT).candidates([], kind, tmdb_id)
+    except (OSError, sqlite3.Error):
+        logger.warning("Local metadata index is unavailable")
+        return None
+    if not entries:
+        return None
+    item = entries[0]
+    spanish = (language or "").startswith("es")
+    title = (item.get("localized_title") if spanish else None) or item["title"]
+    original = item.get("original_title") or item["title"]
+    date = str(item["year"]) if item.get("year") else None
+    if kind == "movie":
+        return {"id": tmdb_id, "title": title, "original_title": original, "release_date": date,
+                "imdb_id": item.get("imdb_id")}
+    seasons = {}
+    for entry in entries:
+        number = entry.get("season_number")
+        if number is not None:
+            seasons.setdefault(number, set()).update(entry.get("episode_numbers", []))
+    if season is not None:
+        if season not in seasons:
+            return None
+        label = "Episodio" if spanish else "Episode"
+        return {"season_number": season, "episodes": [
+            {"episode_number": number, "name": f"{label} {number}"} for number in sorted(seasons[season])
+        ]}
+    return {"id": tmdb_id, "name": title, "original_name": original, "first_air_date": date,
+            "imdb_id": item.get("imdb_id"), "seasons": [
+                {"season_number": number, "episode_count": len(episodes)}
+                for number, episodes in sorted(seasons.items())
+            ]}
+
+
 async def reconcile_loop():
     while True:
         try:

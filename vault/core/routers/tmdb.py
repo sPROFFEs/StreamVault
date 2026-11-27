@@ -5,22 +5,17 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
-from services.tmdb_service import TMDBService
+from services.media_index import local_tmdb_metadata
+from services.tmdb_service import tmdb_service
 
 router = APIRouter(prefix="/api/tmdb", tags=["TMDB"])
-
-# Instancia global
-tmdb_service = TMDBService()
-
 
 @router.get("/status")
 def get_tmdb_status():
     """Verifica estado del servicio TMDB"""
-    return {
-        "enabled": tmdb_service.enabled,
-        "api_key_set": bool(tmdb_service.api_key),
-        "message": "OK" if tmdb_service.enabled else "TMDB_API_KEY no configurada",
-    }
+    configured = tmdb_service.key_status()["configured"]
+    return {"enabled": configured, "api_key_set": configured,
+            "message": "OK" if configured else "TMDB_API_KEY no configurada"}
 
 
 @router.get("/search/movie")
@@ -67,13 +62,13 @@ def get_movie_details(
     lang: str = Query("en", pattern="^(en|es|en-US|es-ES)$"),
 ):
     """Obtiene detalles completos de una pelicula"""
-    if not tmdb_service.enabled:
-        raise HTTPException(503, "TMDB Service no disponible")
-
-    details = tmdb_service.get_movie_details(tmdb_id, language=lang)
+    details = tmdb_service.get_movie_details(tmdb_id, language=lang) or local_tmdb_metadata(tmdb_id, "movie", lang)
     if not details:
+        if not tmdb_service.enabled:
+            raise HTTPException(503, "TMDB Service no disponible")
         raise HTTPException(404, "Pelicula no encontrada")
 
+    details["title"] = details.get("title") or details.get("original_title")
     details["poster_url"] = tmdb_service.get_poster_url(details.get("poster_path"))
     details["backdrop_url"] = tmdb_service.get_backdrop_url(details.get("backdrop_path"))
 
@@ -86,13 +81,13 @@ def get_tv_details(
     lang: str = Query("en", pattern="^(en|es|en-US|es-ES)$"),
 ):
     """Obtiene detalles completos de una serie"""
-    if not tmdb_service.enabled:
-        raise HTTPException(503, "TMDB Service no disponible")
-
-    details = tmdb_service.get_tv_details(tmdb_id, language=lang)
+    details = tmdb_service.get_tv_details(tmdb_id, language=lang) or local_tmdb_metadata(tmdb_id, "tv", lang)
     if not details:
+        if not tmdb_service.enabled:
+            raise HTTPException(503, "TMDB Service no disponible")
         raise HTTPException(404, "Serie no encontrada")
 
+    details["name"] = details.get("name") or details.get("original_name")
     details["poster_url"] = tmdb_service.get_poster_url(details.get("poster_path"))
     details["backdrop_url"] = tmdb_service.get_backdrop_url(details.get("backdrop_path"))
 
@@ -106,11 +101,12 @@ def get_season_details(
     lang: str = Query("en", pattern="^(en|es|en-US|es-ES)$"),
 ):
     """Obtiene detalles de una temporada (episodios)"""
-    if not tmdb_service.enabled:
-        raise HTTPException(503, "TMDB Service no disponible")
-
-    details = tmdb_service.get_season_details(tmdb_id, season_number, language=lang)
+    details = tmdb_service.get_season_details(tmdb_id, season_number, language=lang) or local_tmdb_metadata(
+        tmdb_id, "tv", lang, season=season_number,
+    )
     if not details:
+        if not tmdb_service.enabled:
+            raise HTTPException(503, "TMDB Service no disponible")
         raise HTTPException(404, "Temporada no encontrada")
 
     for episode in details.get("episodes", []):
