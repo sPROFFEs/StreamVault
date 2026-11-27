@@ -7,8 +7,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from collections import OrderedDict
+from dataclasses import dataclass
 import hashlib
 import hmac
+from http.cookiejar import DefaultCookiePolicy
 import ipaddress
 import json
 import logging
@@ -40,6 +43,62 @@ PLAYABLE_WINDOW = 180
 _syncing: set[int] = set()
 _catalog_cache = {}
 _catalog_lock = threading.Lock()
+_peer_clients: OrderedDict[tuple, _PeerClient] = OrderedDict()
+_MAX_PEER_POOLS = 16
+
+
+class _NoPeerCookies(DefaultCookiePolicy):
+    def set_ok(self, cookie, request):
+        return False
+
+
+@dataclass
+class _PeerClient:
+    client: httpx.AsyncClient
+    users: int = 0
+
+
+class _ConnectionLease:
+    def __init__(self, entry):
+        self.entry = entry
+        entry.users += 1
+
+    async def aclose(self):
+        if self.entry is not None:
+            self.entry.users -= 1
+            self.entry = None
+
+
+async def _peer_connection(origin):
+    # HTTP clients are bound to the event loop that opened their transports.
+    key = (asyncio.get_running_loop(), *origin)
+    entry = _peer_clients.get(key)
+    evicted = None
+    if entry is None:
+        if len(_peer_clients) >= _MAX_PEER_POOLS:
+            idle = next((key for key, item in _peer_clients.items() if not item.users and key[0] is asyncio.get_running_loop()), None)
+            if idle is None:
+                raise httpx.PoolTimeout("Federation connection pool is full")
+            evicted = _peer_clients.pop(idle).client
+        client = httpx.AsyncClient(follow_redirects=False, trust_env=False,
+                                   limits=httpx.Limits(max_connections=10, max_keepalive_connections=2, keepalive_expiry=15))
+        client.cookies.jar.set_policy(_NoPeerCookies())
+        entry = _peer_clients[key] = _PeerClient(client)
+    _peer_clients.move_to_end(key)
+    lease = _ConnectionLease(entry)
+    try:
+        if evicted is not None:
+            await evicted.aclose()
+    except BaseException:
+        await lease.aclose()
+        raise
+    return entry.client, lease
+
+
+async def close_remote_connections():
+    loop = asyncio.get_running_loop()
+    clients = [_peer_clients.pop(key).client for key in tuple(_peer_clients) if key[0] is loop]
+    await asyncio.gather(*(client.aclose() for client in clients), return_exceptions=True)
 
 
 class CatalogItem(BaseModel):
@@ -129,25 +188,30 @@ async def remote_response(peer, route, *, params=None, headers=None, method="GET
     if not route.startswith("/") or ".." in route or "?" in route:
         raise ValueError("Invalid federation route.")
     parsed = urlsplit(peer.base_url)
-    addresses = await asyncio.to_thread(_addresses, parsed.hostname,
-        parsed.port or (443 if parsed.scheme == "https" else 80), peer.allow_private)
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    addresses = await asyncio.to_thread(_addresses, parsed.hostname, port, peer.allow_private)
     _require_secure_transport(parsed, addresses)
     original = httpx.URL(peer.base_url + "/api/federation/v1" + route)
     # Pin this request to a validated IP; preserve HTTP Host and TLS SNI.
     url = original.copy_with(host=addresses[0])
     request_headers = {"Authorization": "Bearer " + peer_token(peer), "Host": original.netloc.decode(),
                        "Accept-Encoding": "identity", **(headers or {})}
-    client = httpx.AsyncClient(timeout=httpx.Timeout(20, connect=5, read=90 if route.endswith("/stream") else 20), follow_redirects=False,
-                              trust_env=False, limits=httpx.Limits(max_connections=2))
+    client, lease = await _peer_connection((parsed.scheme, parsed.hostname, port, addresses[0]))
+    response = None
     try:
+        timeout = httpx.Timeout(20, connect=5, pool=3, read=90 if route.endswith("/stream") else 20)
         request = client.build_request(method, url, params=params, headers=request_headers,
-                                       extensions={"sni_hostname": parsed.hostname})
+                                       timeout=timeout, extensions={"sni_hostname": parsed.hostname})
         response = await client.send(request, stream=True)
         if response.is_redirect:
             raise ValueError("Federation redirects are not allowed.")
-        return client, response
+        return lease, response
     except BaseException:
-        await client.aclose()
+        try:
+            if response is not None:
+                await response.aclose()
+        finally:
+            await lease.aclose()
         raise
 
 
@@ -167,8 +231,10 @@ async def remote_json(peer, route, *, params=None):
             raise ValueError("Invalid federation response.")
         return data
     finally:
-        await response.aclose()
-        await client.aclose()
+        try:
+            await response.aclose()
+        finally:
+            await client.aclose()
 
 
 def indexed_metadata():

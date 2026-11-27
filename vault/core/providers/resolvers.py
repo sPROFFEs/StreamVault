@@ -17,10 +17,11 @@ logger = logging.getLogger(__name__)
 
 class ResolverOrchestrator:
     def __init__(self):
+        self.torrentio = TorrentioProvider()
         self.torrent_providers: List = [
             YtsProvider(),
             EztvProvider(),
-            TorrentioProvider(),
+            self.torrentio,
         ]
         self.embed_providers: List[SourceProvider] = [
             VidSrcIcuProvider(),

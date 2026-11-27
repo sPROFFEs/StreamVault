@@ -8,7 +8,6 @@ from starlette.concurrency import run_in_threadpool
 
 from providers.base import StreamResult
 from providers.resolvers import ResolverOrchestrator
-from providers.sources.torrentio import TorrentioProvider
 from providers.torrent_options import prepare_torrent_options
 from routers.preferences import _load_prefs, get_current_user
 from services.tmdb_service import tmdb_service
@@ -97,7 +96,7 @@ async def resolve_download_options(
 
     try:
         raw = await asyncio.wait_for(
-            TorrentioProvider().get_streams(
+            orchestrator.torrentio.get_streams(
                 tmdb_id,
                 resolved_season,
                 resolved_episode,
@@ -175,7 +174,7 @@ async def debug_stream(tmdb_id: str, media_type: str = Query("movie", alias="typ
             )
             # Quick HEAD check for each embed URL
             checks = []
-            async with httpx.AsyncClient(timeout=5, follow_redirects=True, verify=False) as client:
+            async with httpx.AsyncClient(timeout=5, follow_redirects=False) as client:
                 for embed in (embeds or []):
                     url = embed.get("url", "")
                     try:
@@ -207,7 +206,7 @@ async def debug_stream(tmdb_id: str, media_type: str = Query("movie", alias="typ
         ("eztv.re", "https://eztv.re/api/get-torrents?limit=1"),
         ("torrentio.strem.fun", "https://torrentio.strem.fun/manifest.json"),
     ]
-    async with httpx.AsyncClient(timeout=8, follow_redirects=True, verify=False) as client:
+    async with httpx.AsyncClient(timeout=8, follow_redirects=False) as client:
         for label, test_url in hosts:
             try:
                 resp = await client.get(test_url)

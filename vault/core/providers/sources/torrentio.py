@@ -1,5 +1,12 @@
+import asyncio
+from collections import OrderedDict
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+import json
 import re
 import logging
+import random
+import time
 import httpx
 from typing import List, Dict, Optional
 from urllib.parse import quote
@@ -25,6 +32,39 @@ TRACKERS = (
 
 class TorrentioProvider:
     name = "Torrentio"
+
+    def __init__(self, *, client=None, clock=time.monotonic):
+        self._client = client
+        self._owns_client = client is None
+        self._clock = clock
+        self._cache = OrderedDict()
+        self._requests = {}
+        self._failures = 0
+        self._retry_at = 0
+
+    def status(self):
+        return {"retry_in_seconds": round(max(0, self._retry_at - self._clock())), "in_flight": len(self._requests)}
+
+    async def close(self):
+        tasks = list(self._requests.values())
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        if self._client is not None and self._owns_client:
+            await self._client.aclose()
+            self._client = None
+
+    def _cooldown(self, header=None):
+        self._failures = min(self._failures + 1, 5)
+        delay = 2 ** self._failures + random.random()
+        if header:
+            try:
+                supplied = int(header) if header.isdecimal() else (
+                    parsedate_to_datetime(header) - datetime.now(timezone.utc)).total_seconds()
+                delay = max(delay, supplied)
+            except (ValueError, TypeError, OverflowError):
+                pass
+        self._retry_at = max(self._retry_at, self._clock() + delay)
 
     def _parse_quality(self, name: str) -> str:
         n = name.upper()
@@ -56,8 +96,7 @@ class TorrentioProvider:
         episode: int = None,
         imdb_id: str = None,
     ) -> List[Dict]:
-        if not imdb_id or not imdb_id.startswith("tt"):
-            logger.info(f"Torrentio: no IMDB ID for tmdb_id={tmdb_id}, skipping")
+        if not imdb_id or not re.fullmatch(r"tt[0-9]{5,15}", imdb_id):
             return []
 
         if season is not None and episode is not None:
@@ -65,45 +104,65 @@ class TorrentioProvider:
         else:
             resource = f"movie/{imdb_id}"
 
-        url = f"{TORRENTIO_BASE}/stream/{resource}.json"
-        logger.info(f"Torrentio: querying {url}")
+        cached = self._cache.get(resource)
+        if cached and cached[0] > self._clock():
+            self._cache.move_to_end(resource)
+            return [item.copy() for item in cached[1]]
+        if self._clock() < self._retry_at:
+            return []
+        task = self._requests.get(resource)
+        if task is None:
+            if len(self._requests) >= 12:
+                return []
+            task = asyncio.create_task(self._query(resource))
+            self._requests[resource] = task
+            task.add_done_callback(lambda _: self._requests.pop(resource, None))
+        return [item.copy() for item in await asyncio.shield(task)]
 
+    async def _query(self, resource):
         try:
-            async with httpx.AsyncClient(
-                timeout=12,
-                follow_redirects=True,
-                headers={
-                    "User-Agent": _UA,
-                    "Accept": "application/json, text/plain, */*",
-                    "Accept-Language": "en-US,en;q=0.9",
-                    "Referer": "https://web.stremio.com/",
-                    "Origin": "https://web.stremio.com",
-                },
-            ) as client:
-                resp = await client.get(url)
-                logger.info(f"Torrentio: HTTP {resp.status_code} for {imdb_id}")
-                if resp.status_code != 200:
-                    logger.warning(f"Torrentio: {resp.status_code}: {resp.text[:200]}")
-                    return []
-                data = resp.json()
-        except httpx.TimeoutException:
-            logger.error(f"Torrentio: timeout for {imdb_id}")
+            if self._client is None:
+                self._client = httpx.AsyncClient(timeout=httpx.Timeout(8, connect=3, pool=2), trust_env=False,
+                    limits=httpx.Limits(max_connections=6, max_keepalive_connections=3, keepalive_expiry=30),
+                    headers={"User-Agent": _UA, "Accept": "application/json"})
+            async with asyncio.timeout(10):
+                async with self._client.stream("GET", f"{TORRENTIO_BASE}/stream/{resource}.json", follow_redirects=False) as response:
+                    if response.status_code == 429 or response.status_code >= 500:
+                        self._cooldown(response.headers.get("Retry-After"))
+                        return []
+                    results = await self._read_results(response) if response.status_code == 200 else []
+            if self._clock() >= self._retry_at:
+                self._failures = 0
+        except (httpx.HTTPError, TimeoutError, ValueError, TypeError, AttributeError) as exc:
+            self._cooldown()
+            logger.warning("Torrentio lookup failed (%s)", type(exc).__name__)
             return []
-        except Exception as e:
-            logger.error(f"Torrentio: error for {imdb_id}: {e}")
-            return []
+        self._cache[resource] = (self._clock() + (90 if results else 20), results)
+        self._cache.move_to_end(resource)
+        if len(self._cache) > 256:
+            self._cache.popitem(last=False)
+        return results
 
-        raw_streams = data.get("streams", [])
-        logger.info(f"Torrentio: {len(raw_streams)} raw streams for {imdb_id}")
+    async def _read_results(self, response):
+        body = bytearray()
+        async for chunk in response.aiter_bytes(64 * 1024):
+            body.extend(chunk)
+            if len(body) > 2 * 1024**2:
+                raise ValueError("Torrentio response exceeds the size limit")
+        records = json.loads(body).get("streams", [])
+        return self._parse(records[:500])
 
+    def _parse(self, raw_streams):
         results = []
         for stream in raw_streams:
+            if not isinstance(stream, dict):
+                continue
             info_hash = stream.get("infoHash")
-            if not info_hash:
+            if not isinstance(info_hash, str) or not re.fullmatch(r"[a-fA-F0-9]{40}|[a-zA-Z2-7]{32}", info_hash):
                 continue
 
-            name = stream.get("name", "")
-            title = stream.get("title", "")
+            name = str(stream.get("name") or "")[:256]
+            title = str(stream.get("title") or "")[:1024]
             file_idx = stream.get("fileIdx")
 
             quality = self._parse_quality(name)
@@ -124,5 +183,4 @@ class TorrentioProvider:
             })
 
         results.sort(key=lambda x: x.get("seeders", 0), reverse=True)
-        logger.info(f"Torrentio: returning {len(results[:12])} streams")
         return results[:12]

@@ -286,12 +286,56 @@ def test_remote_connection_pins_dns_and_rejects_redirects(monkeypatch):
     monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: original(transport=httpx.MockTransport(handle), **kwargs))
     peer = SimpleNamespace(base_url="https://publisher.test", allow_private=False,
                            token_ciphertext=federation.encrypt_token("test-private-token"))
-    with pytest.raises(ValueError, match="redirect"):
-        asyncio.run(federation.remote_response(peer, "/health"))
+    async def fetch():
+        try:
+            with pytest.raises(ValueError, match="redirect"):
+                await federation.remote_response(peer, "/health")
+        finally:
+            await federation.close_remote_connections()
+
+    asyncio.run(fetch())
     assert len(requests) == 1
     assert requests[0].url.host == "93.184.216.34"
     assert requests[0].headers["host"] == "publisher.test"
     assert requests[0].extensions["sni_hostname"] == "publisher.test"
+
+
+def test_federation_reuses_pool_but_revalidates_destination_and_credentials(monkeypatch):
+    import httpx
+    from types import SimpleNamespace
+
+    original = httpx.AsyncClient
+    clients, requests = [], []
+    addresses = iter(["93.184.216.34", "93.184.216.34", "93.184.216.35"])
+
+    def handle(request):
+        requests.append(request)
+        return httpx.Response(200, json={"ok": True}, headers={"Set-Cookie": "remote=private"})
+
+    def client(**kwargs):
+        instance = original(transport=httpx.MockTransport(handle), **kwargs)
+        clients.append(instance)
+        return instance
+
+    monkeypatch.setattr(federation, "_addresses", lambda *args: [next(addresses)])
+    monkeypatch.setattr(httpx, "AsyncClient", client)
+    peer = SimpleNamespace(base_url="https://publisher.test", allow_private=False)
+
+    async def run():
+        try:
+            for token in ("first-test-token", "rotated-test-token", "rotated-test-token"):
+                peer.token_ciphertext = federation.encrypt_token(token)
+                assert await federation.remote_json(peer, "/health") == {"ok": True}
+            assert len(clients) == 2
+            assert all(not item.is_closed for item in clients)
+        finally:
+            await federation.close_remote_connections()
+
+    asyncio.run(run())
+    assert all(item.is_closed for item in clients)
+    assert requests[1].headers["authorization"] == "Bearer rotated-test-token"
+    assert "cookie" not in requests[1].headers
+    assert requests[-1].url.host == "93.184.216.35"
 
 
 def test_lan_access_requires_explicit_permission_and_http_is_not_allowed_publicly(monkeypatch):
